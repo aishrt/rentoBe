@@ -5,14 +5,13 @@
  */
 export const emailTheme = {
   colors: {
-    primary: '#0E3B32',
-    gold: '#C8A96A',
-    goldText: '#8A6A2E',
-    ink: '#0B1210',
-    muted: '#5E6662',
-    canvas: '#FAF8F4',
+    primary: '#0254C2',
+    accent: '#C1D9FE',
+    ink: '#08101D',
+    muted: '#5D6470',
+    canvas: '#EEEEEE',
     surface: '#FFFFFF',
-    line: '#E7E2D9',
+    line: '#D8DBE0',
   },
   fonts: {
     display: "Fraunces, Georgia, 'Times New Roman', serif",
