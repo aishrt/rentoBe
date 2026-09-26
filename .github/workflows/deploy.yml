@@ -1,0 +1,102 @@
+# Deploys the API on every push to master (plan §13.3): lint, typecheck and test, then build the Docker
+# image, push it to ECR, register a task definition revision with it and roll it out to ECS.
+#
+# AWS access uses GitHub's OIDC login and the IAM role rento-vroom-github-backend, which trusts only
+# pushes to master of aishrt/rentoBe. No AWS keys are stored in GitHub.
+# Task settings (environment, secrets, CPU, memory) come from deploy/taskdef.prod.json; the pipeline only
+# replaces its image with the one it just built.
+name: Deploy backend
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+# One deploy at a time; a newer push waits for the running one instead of cancelling it.
+concurrency:
+  group: deploy-backend-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-2
+  AWS_ROLE_ARN: arn:aws:iam::935937182366:role/rento-vroom-github-backend
+  ECR_REGISTRY: 935937182366.dkr.ecr.ap-southeast-2.amazonaws.com
+  ECR_REPOSITORY: rento-vroom-backend
+  ECS_CLUSTER: rento-vroom
+  ECS_SERVICE: api-prod
+  TASK_DEFINITION_FILE: deploy/taskdef.prod.json
+  HEALTH_URL: https://api.rentovroom.com/healthz
+
+jobs:
+  check:
+    name: Lint, typecheck and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  deploy:
+    name: Build and deploy to ECS
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Sign in to AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build and push the image
+        id: image
+        run: |
+          image="$ECR_REGISTRY/$ECR_REPOSITORY:$(git rev-parse --short HEAD)"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          docker build -t "$image" .
+          docker push "$image"
+          echo "uri=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Register a task definition revision with the new image
+        id: taskdef
+        run: |
+          jq --arg image "${{ steps.image.outputs.uri }}" '.containerDefinitions[0].image = $image' \
+            "$TASK_DEFINITION_FILE" > taskdef.json
+          arn=$(aws ecs register-task-definition --cli-input-json file://taskdef.json \
+            --query taskDefinition.taskDefinitionArn --output text)
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+          echo "Registered $arn"
+
+      - name: Roll out and wait until the service is stable
+        env:
+          TASK_DEFINITION_ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+            --task-definition "$TASK_DEFINITION_ARN" --query service.serviceName --output text
+          # Each wait polls for up to 10 minutes; a rolling deploy of two tasks usually takes 5.
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            || aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          # A stable service can also mean the circuit breaker rolled back to the previous version.
+          primary=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query "services[0].deployments[?status=='PRIMARY'] | [0].[taskDefinition,rolloutState]" --output text)
+          echo "Primary deployment: $primary"
+          if [ "$primary" != "$TASK_DEFINITION_ARN"$'\t'"COMPLETED" ]; then
+            echo "::error::The new version did not become the running one (ECS rolled back). Check the CloudWatch logs in /ecs/rento-vroom-api-prod."
+            exit 1
+          fi
+
+      - name: Smoke test
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors "$HEALTH_URL"
