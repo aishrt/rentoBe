@@ -5,6 +5,7 @@ export default defineConfig({
   entry: {
     server: 'src/server.ts',
     seed: 'scripts/seed.ts',
+    'create-admin': 'scripts/create-admin.ts',
   },
   format: 'esm',
   platform: 'node',

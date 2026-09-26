@@ -40,6 +40,7 @@ Demo accounts from `npm run seed` (password: your `SEED_DEMO_PASSWORD`). The see
 | `npm run build` / `npm start`                     | Bundle to `dist/` with tsup / run the bundle with plain `node`                                                       |
 | `npm run lint` · `npm run typecheck` · `npm test` | Checks. Tests use an in-memory MongoDB, so they never touch your cluster (the first run downloads a MongoDB binary). |
 | `npm run seed`                                    | Demo accounts (not in production)                                                                                    |
+| `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`         |
 | `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                |
 | `npm run format`                                  | Prettier                                                                                                             |
 
