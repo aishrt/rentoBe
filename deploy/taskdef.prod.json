@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "api",
-      "image": "935937182366.dkr.ecr.ap-southeast-2.amazonaws.com/rento-vroom-backend:ba8e073",
+      "image": "935937182366.dkr.ecr.ap-southeast-2.amazonaws.com/rento-vroom-backend:f92da00",
       "essential": true,
       "portMappings": [{ "containerPort": 4000, "protocol": "tcp" }],
       "stopTimeout": 60,
