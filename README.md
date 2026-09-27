@@ -34,15 +34,15 @@ Demo accounts from `npm run seed` (password: your `SEED_DEMO_PASSWORD`). The see
 
 ## Commands
 
-| Command                                           | What it does                                                                                                         |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `npm run dev`                                     | API with reload on change (`tsx watch`)                                                                              |
-| `npm run build` / `npm start`                     | Bundle to `dist/` with tsup / run the bundle with plain `node`                                                       |
-| `npm run lint` · `npm run typecheck` · `npm test` | Checks. Tests use an in-memory MongoDB, so they never touch your cluster (the first run downloads a MongoDB binary). |
-| `npm run seed`                                    | Demo accounts (not in production)                                                                                    |
-| `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`         |
-| `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                |
-| `npm run format`                                  | Prettier                                                                                                             |
+| Command                                           | What it does                                                                                                                     |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                                     | API with reload on change (`tsx watch`)                                                                                          |
+| `npm run build` / `npm start`                     | Bundle to `dist/` with tsup / run the bundle with plain `node`                                                                   |
+| `npm run lint` · `npm run typecheck` · `npm test` | Checks. Tests use an in-memory MongoDB replica set, so they never touch your cluster (the first run downloads a MongoDB binary). |
+| `npm run seed`                                    | Demo accounts (not in production)                                                                                                |
+| `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`                     |
+| `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                            |
+| `npm run format`                                  | Prettier                                                                                                                         |
 
 ## Email
 
@@ -51,7 +51,24 @@ Emails are React Email templates in `src/emails`, sent through the `Mailer` inte
 - `MAIL_DRIVER=console` (default): nothing is sent. Each email's subject and links are logged and the HTML is saved to `backend/.mail/`.
 - `MAIL_DRIVER=resend`: sends through [Resend](https://resend.com). Needs `RESEND_API_KEY` and an `EMAIL_FROM` address on a domain verified in Resend.
 
-Add a template in `src/emails/templates/` and register it in `emailTemplates` (`src/emails/index.ts`); `sendEmail({ to, template, props })` is then type-checked against its props.
+Add a template in `src/emails/templates/` and register it in `emailTemplates` (`src/emails/index.ts`). Features send it through the job queue, `enqueue('email.send', { to, template, props })`, which is type-checked against the template's props and retried if sending fails.
+
+## Background jobs
+
+A MongoDB `jobs` collection and a runner inside the API process (plan §4.2). No separate worker, no Redis.
+
+- `enqueue(type, payload, { runAt, uniqueKey, refId })` in `src/jobs/queue.ts` adds a job. A `uniqueKey` means the job is only ever created once. `cancelJobs(refId)` cancels a record's queued jobs.
+- Every API process polls every 5 s and claims due jobs with an atomic update, so two processes never run the same job. `RUN_JOBS=false` turns this off, and `JOB_CONCURRENCY` sets how many jobs run at once (default 2).
+- A failed job is retried after 1 min, 5 min, 25 min and 2 h, then marked `FAILED` and logged as `Job failed permanently`. A job left `RUNNING` for 10 minutes by a crashed process goes back in the queue. On shutdown, unfinished jobs go back in the queue.
+- Add a job type with a handler in `src/jobs/handlers/` and register it in `jobHandlers`. Handlers must be safe to run twice.
+
+## Realtime (Socket.IO)
+
+Socket.IO runs on the same server as the API, on `/socket.io` (plan §4.4).
+
+- Only signed-in users connect: browsers send the access cookie from a trusted origin, and mobile apps pass `auth: { token }`. Refused connections get the error `UNAUTHENTICATED`.
+- Each connection joins the room `user:<id>`. `emitToUser(userId, event, payload)` in `src/realtime/realtime.ts` sends to every tab and device of that user.
+- The MongoDB adapter (`@socket.io/mongo-adapter`) passes events between API processes through the `socketEvents` collection and a change stream. That needs a replica set: Atlas always is one, and the tests use an in-memory one.
 
 ## API so far
 
@@ -71,12 +88,15 @@ Errors always look like `{ error: { code, message, fields? } }`. Requests that c
 
 ```
 src/
-  app.ts            Express app (middleware, routes); server.ts starts it with graceful shutdown
+  app.ts            Express app (middleware, routes)
+  server.ts         Starts the API, Socket.IO and the job runner in one process, with graceful shutdown
   env.ts            Environment variables, validated with Zod at startup
-  db.ts             Mongoose connection (sanitizeFilter + strictQuery against NoSQL injection)
-  middleware/       auth (requireAuth, requireRole), CSRF origin check, rate limit, error handler
+  db.ts             Mongoose connection (sanitizeFilter + strictQuery against NoSQL injection), withTransaction()
+  middleware/       auth (requireAuth, requireRole), CSRF origin check, rate limit (MongoDB store), error handler
   modules/          One folder per domain: *.model.ts, *.schemas.ts, *.service.ts, *.routes.ts
     auth/ users/ admin/
+  jobs/             Job queue: job.model.ts, queue.ts, runner.ts, handlers/ (one per job type)
+  realtime/         Socket.IO server, auth and MongoDB adapter
   integrations/     logger, mailer (Resend + console)
   emails/           React Email templates, shared layout and brand theme
   lib/              HttpError, validation helper, lifecycle

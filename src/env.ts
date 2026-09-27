@@ -17,6 +17,9 @@ const commaSeparatedIps = z
   .transform(splitList)
   .pipe(z.array(z.union([z.ipv4(), z.ipv6()], { error: 'Each entry in DNS_SERVERS must be an IP address' })));
 
+// z.coerce.boolean() would read "false" as true.
+const booleanString = z.enum(['true', 'false']).transform((value) => value === 'true');
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -29,6 +32,11 @@ const envSchema = z
     // Optional DNS servers for Node's own lookups. Fixes "querySrv ECONNREFUSED" with mongodb+srv:// URIs
     // on machines where Node can't find the system's DNS server (seen on Windows). Empty = system default.
     DNS_SERVERS: commaSeparatedIps.default([]),
+
+    // Background jobs (plan §4.2): every backend task runs them unless RUN_JOBS=false.
+    RUN_JOBS: booleanString.default(true),
+    // How many jobs each task runs at once (plan §13.6).
+    JOB_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(2),
 
     FRONTEND_URL: z.url().default('http://localhost:5173'),
     FRONTEND_ORIGINS: commaSeparatedOrigins.default(['http://localhost:5173']),

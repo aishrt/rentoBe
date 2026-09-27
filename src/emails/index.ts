@@ -41,7 +41,7 @@ export async function renderEmail<Name extends EmailTemplateName>(
   return { subject: template.subject(props), html, text: toPlainText(html) };
 }
 
-interface SendEmailInput<Name extends EmailTemplateName> {
+export interface SendEmailInput<Name extends EmailTemplateName> {
   to: string | string[];
   template: Name;
   props: EmailTemplateProps<Name>;
@@ -49,8 +49,8 @@ interface SendEmailInput<Name extends EmailTemplateName> {
 }
 
 /**
- * Renders a template and sends it. The background job queue (plan §4) will call this from
- * its `email.send` handler, adding retries; until then callers use it directly.
+ * Renders a template and sends it straight away. Features send email through the job queue
+ * instead, `enqueue('email.send', …)`, which calls this with retries (plan §4.3).
  */
 export async function sendEmail<Name extends EmailTemplateName>(
   { to, template, props, replyTo }: SendEmailInput<Name>,

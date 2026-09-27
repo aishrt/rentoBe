@@ -1,5 +1,5 @@
 import { setServers } from 'node:dns';
-import mongoose from 'mongoose';
+import mongoose, { type ClientSession } from 'mongoose';
 import { env } from './env.js';
 import { logger } from './integrations/logger.js';
 
@@ -25,4 +25,17 @@ export async function disconnectDb(): Promise<void> {
 
 export function isDbConnected(): boolean {
   return mongoose.connection.readyState === mongoose.ConnectionStates.connected;
+}
+
+/**
+ * Runs `work` in a MongoDB transaction: every write commits together, or none do if it throws.
+ * Pass `session` to each query inside. When two transactions write the same document at once,
+ * MongoDB aborts one and it runs again from the start (double-booking prevention, plan §3), so
+ * `work` must be safe to repeat: database writes only, no emails or Stripe calls.
+ */
+export function withTransaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
+  return mongoose.connection.transaction(work, {
+    readConcern: { level: 'snapshot' },
+    writeConcern: { w: 'majority' },
+  });
 }

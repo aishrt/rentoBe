@@ -18,6 +18,15 @@ describe('environment', () => {
     expect(() => parseEnv({ ...baseEnv, DNS_SERVERS: '8.8.8.8,dns.google' })).toThrow(/DNS_SERVERS/);
   });
 
+  it('runs background jobs unless RUN_JOBS=false', () => {
+    expect(parseEnv(baseEnv)).toMatchObject({ RUN_JOBS: true, JOB_CONCURRENCY: 2 });
+    expect(parseEnv({ ...baseEnv, RUN_JOBS: 'false', JOB_CONCURRENCY: '4' })).toMatchObject({
+      RUN_JOBS: false,
+      JOB_CONCURRENCY: 4,
+    });
+    expect(() => parseEnv({ ...baseEnv, RUN_JOBS: 'no' })).toThrow(/RUN_JOBS/);
+  });
+
   it('names every missing required variable', () => {
     expect(() => parseEnv({})).toThrow(/MONGODB_URI[\s\S]*JWT_ACCESS_SECRET/);
   });
