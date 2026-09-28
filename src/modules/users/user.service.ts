@@ -1,14 +1,7 @@
 import { STAFF_ROLES, type Role, type UserDocument } from './user.model.js';
+import type { PublicUser } from './user.schemas.js';
 
-/** The user fields the API returns about the signed-in user. Never includes secrets. */
-export interface PublicUser {
-  id: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  roles: Role[];
-  emailVerified: boolean;
-}
+export type { PublicUser };
 
 export function toPublicUser(user: UserDocument): PublicUser {
   return {

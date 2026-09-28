@@ -1,23 +1,6 @@
 import mongoose from 'mongoose';
 import { STAFF_ROLES, UserModel } from '../users/user.model.js';
-
-/**
- * KPI figures for the admin overview (spec §18). A metric is `null` until the module that owns its
- * data exists (vehicles, bookings, payments, verification), so the dashboard never shows a made-up zero.
- */
-export interface AdminOverview {
-  metrics: {
-    totalUsers: number;
-    activeHosts: number;
-    staffMembers: number;
-    suspendedUsers: number;
-    activeVehicles: number | null;
-    upcomingBookings: number | null;
-    bookingRevenueCents: number | null;
-    pendingVerifications: number | null;
-  };
-  generatedAt: string;
-}
+import type { AdminOverview } from './admin.schemas.js';
 
 export async function getAdminOverview(): Promise<AdminOverview> {
   const [totalUsers, activeHosts, staffMembers, suspendedUsers] = await Promise.all([

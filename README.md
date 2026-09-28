@@ -34,15 +34,16 @@ Demo accounts from `npm run seed` (password: your `SEED_DEMO_PASSWORD`). The see
 
 ## Commands
 
-| Command                                           | What it does                                                                                                                     |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run dev`                                     | API with reload on change (`tsx watch`)                                                                                          |
-| `npm run build` / `npm start`                     | Bundle to `dist/` with tsup / run the bundle with plain `node`                                                                   |
-| `npm run lint` · `npm run typecheck` · `npm test` | Checks. Tests use an in-memory MongoDB replica set, so they never touch your cluster (the first run downloads a MongoDB binary). |
-| `npm run seed`                                    | Demo accounts (not in production)                                                                                                |
-| `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`                     |
-| `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                            |
-| `npm run format`                                  | Prettier                                                                                                                         |
+| Command                                           | What it does                                                                                                                                                                 |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                                     | API with reload on change (`tsx watch`)                                                                                                                                      |
+| `npm run build` / `npm start`                     | Bundle to `dist/` with tsup / run the bundle with plain `node`                                                                                                               |
+| `npm run lint` · `npm run typecheck` · `npm test` | Checks. Tests use an in-memory MongoDB replica set, so they never touch your cluster (the first run downloads a MongoDB binary).                                             |
+| `npm run seed`                                    | Demo accounts (not in production)                                                                                                                                            |
+| `npm run openapi`                                 | Writes the API contract to `openapi.json` from the routes' Zod schemas. Commit it: `npm test` fails while it's out of date, and the website generates its API types from it. |
+| `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`                                                                 |
+| `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                                                                        |
+| `npm run format`                                  | Prettier                                                                                                                                                                     |
 
 ## Email
 
@@ -72,6 +73,8 @@ Socket.IO runs on the same server as the API, on `/socket.io` (plan §4.4).
 
 ## API so far
 
+The full contract, with every request and response shape, is [openapi.json](openapi.json) (plan §2.3). Each module describes its routes in `*.openapi.ts`.
+
 | Route                        | Access         | Notes                                                                                                                                                                                        |
 | ---------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /healthz`               | Public         | 200 when connected to MongoDB, 503 otherwise or while shutting down                                                                                                                          |
@@ -93,13 +96,14 @@ src/
   env.ts            Environment variables, validated with Zod at startup
   db.ts             Mongoose connection (sanitizeFilter + strictQuery against NoSQL injection), withTransaction()
   middleware/       auth (requireAuth, requireRole), CSRF origin check, rate limit (MongoDB store), error handler
-  modules/          One folder per domain: *.model.ts, *.schemas.ts, *.service.ts, *.routes.ts
+  modules/          One folder per domain: *.model.ts, *.schemas.ts, *.service.ts, *.routes.ts, *.openapi.ts
     auth/ users/ admin/
   jobs/             Job queue: job.model.ts, queue.ts, runner.ts, handlers/ (one per job type)
   realtime/         Socket.IO server, auth and MongoDB adapter
+  openapi/          Builds the API contract from each module's *.openapi.ts
   integrations/     logger, mailer (Resend + console)
   emails/           React Email templates, shared layout and brand theme
   lib/              HttpError, validation helper, lifecycle
-scripts/            seed.ts, send-test-email.ts
+scripts/            seed.ts, create-admin.ts, send-test-email.ts, openapi.ts
 test/               API tests (Vitest + Supertest + mongodb-memory-server)
 ```

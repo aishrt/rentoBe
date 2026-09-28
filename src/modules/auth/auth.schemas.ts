@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { publicUserSchema } from '../users/user.schemas.js';
 
 export const loginSchema = z.object({
   email: z
@@ -17,3 +18,8 @@ export const loginSchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
+
+/** The website's page-load check: the signed-in user, or null for a visitor. */
+export const sessionResponseSchema = z
+  .object({ user: publicUserSchema.nullable() })
+  .meta({ id: 'SessionResponse' });
