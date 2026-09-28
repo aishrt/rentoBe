@@ -1,10 +1,58 @@
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
-import { errorResponses, jsonBody, jsonResponse } from '../../openapi/shared.js';
+import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { userResponseSchema } from '../users/user.schemas.js';
-import { loginSchema, sessionResponseSchema } from './auth.schemas.js';
+import {
+  emailLinkSchema,
+  loginSchema,
+  resendVerificationResponseSchema,
+  sessionResponseSchema,
+  signupSchema,
+  verifyEmailResponseSchema,
+} from './auth.schemas.js';
 
 /** The contract for auth.routes.ts (plan §2.3). */
 export function registerAuthPaths(registry: OpenAPIRegistry) {
+  registry.registerPath({
+    method: 'post',
+    path: '/auth/signup',
+    tags: ['Auth'],
+    summary: 'Create a Guest account',
+    description:
+      'Records acceptance of the current Terms and Privacy Policy, emails a link to confirm the address, and signs the new user in (sets the auth cookies). Passwords need 10+ characters, not a common one and not the email name. Rate-limited per IP.',
+    request: { body: jsonBody(signupSchema) },
+    responses: {
+      201: jsonResponse('Account created and signed in', userResponseSchema),
+      ...errorResponses(400, 409, 429),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/auth/verify-email',
+    tags: ['Auth'],
+    summary: 'Confirm an email address',
+    description:
+      'The token from the link in the confirmation email. Each link works once and expires after 24 hours. Works signed out.',
+    request: { body: jsonBody(emailLinkSchema) },
+    responses: {
+      200: jsonResponse('Confirmed', verifyEmailResponseSchema),
+      ...errorResponses(400, 429),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/auth/verify-email/resend',
+    tags: ['Auth'],
+    summary: 'Send a new confirmation link',
+    description: 'The previous link stops working. Up to 5 an hour per user.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Sent, or not needed', resendVerificationResponseSchema),
+      ...errorResponses(401, 429),
+    },
+  });
+
   registry.registerPath({
     method: 'post',
     path: '/auth/login',

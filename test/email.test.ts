@@ -25,6 +25,16 @@ describe('email templates', () => {
     expect(email.text).toContain('Explore Rento Vroom https://www.example.co.nz/');
     expect(email.text).not.toContain('<');
   });
+
+  it('renders the email-confirmation email with its link', async () => {
+    const verifyUrl = 'https://www.example.co.nz/verify-email?token=abc123';
+    const email = await renderEmail('verifyEmail', { firstName: 'Hana', verifyUrl });
+
+    expect(email.subject).toBe('Confirm your email address');
+    expect(email.html).toContain(`href="${verifyUrl}"`);
+    expect(email.text).toContain(`Confirm my email ${verifyUrl}`);
+    expect(email.text).toContain('expires in 24 hours');
+  });
 });
 
 describe('console mailer', () => {
