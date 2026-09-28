@@ -11,6 +11,8 @@ vi.mock('../src/integrations/mailer/index.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   getMailer: () => ({ provider: 'console', send }),
 }));
+const reportError = vi.hoisted(() => vi.fn());
+vi.mock('../src/integrations/sentry.js', () => ({ reportError }));
 
 const silentLog = pino({ level: 'silent' });
 const welcome: EmailJobPayload = {
@@ -59,6 +61,8 @@ describe('job queue', () => {
     await jobs.drain();
     const retry = await JobModel.findById(job._id).lean();
     expect(retry).toMatchObject({ status: 'QUEUED', attempts: 1, lastError: 'Resend is down' });
+    // A failure that will be retried isn't reported to Sentry.
+    expect(reportError).not.toHaveBeenCalled();
     expect(retry!.runAt.getTime()).toBeGreaterThan(minutesFromNow(0.9).getTime());
     expect(retry!.runAt.getTime()).toBeLessThan(minutesFromNow(1.1).getTime());
 
@@ -67,6 +71,11 @@ describe('job queue', () => {
     const failed = await JobModel.findById(job._id).lean();
     expect(failed).toMatchObject({ status: 'FAILED', attempts: 2, lastError: 'Resend is down' });
     expect(failed?.finishedAt).toBeInstanceOf(Date);
+    expect(reportError).toHaveBeenCalledOnce();
+    expect(reportError).toHaveBeenCalledWith(expect.any(Error), {
+      tags: { jobType: 'email.send' },
+      extra: { jobId: job.id, attempts: 2 },
+    });
   });
 
   it('fails a job whose type has no handler', async () => {

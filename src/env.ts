@@ -45,6 +45,12 @@ const envSchema = z
     // Optional parent domain for the auth cookies, e.g. ".rentovroom.co.nz" so www. and api. share them.
     COOKIE_DOMAIN: z.string().optional(),
 
+    // Error monitoring (plan §1.2). Only used when NODE_ENV=production, so development never reports.
+    SENTRY_DSN: z.url().optional(),
+    SENTRY_ENVIRONMENT: z.string().optional(),
+    // The deployed version (git commit), baked into the Docker image, so Sentry can tell releases apart.
+    RELEASE: z.string().optional(),
+
     MAIL_DRIVER: z.enum(['console', 'resend']).default('console'),
     RESEND_API_KEY: z.string().optional(),
     EMAIL_FROM: z.string().min(3).default('Rento Vroom <hello@mail.example.com>'),
