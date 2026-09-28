@@ -1,4 +1,5 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express';
+import { reportError } from '../integrations/sentry.js';
 import { HttpError } from '../lib/http-error.js';
 
 export const notFound: RequestHandler = (req, _res, next) => {
@@ -21,6 +22,10 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   }
 
   req.log?.error({ err }, 'Unhandled error');
+  reportError(err, {
+    tags: { route: `${req.method} ${req.baseUrl}${req.route?.path ?? ''}` },
+    ...(req.auth && { extra: { userId: req.auth.userId } }),
+  });
   res.status(500).json({
     error: { code: 'INTERNAL_ERROR', message: 'Something went wrong on our side. Please try again.' },
   });

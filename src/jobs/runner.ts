@@ -3,6 +3,7 @@ import { hostname } from 'node:os';
 import mongoose from 'mongoose';
 import type { Logger } from 'pino';
 import { logger } from '../integrations/logger.js';
+import { reportError } from '../integrations/sentry.js';
 import { jobHandlers, type JobContext, type JobHandlers } from './handlers/index.js';
 import { JobModel, type JobDocument, type JobStatus } from './job.model.js';
 
@@ -97,6 +98,10 @@ export function createJobRunner({
         await finish(job, 'FAILED', message);
         // CloudWatch counts this message for the failed-jobs alarm (plan §13.1).
         jobLog.error({ err: error }, 'Job failed permanently');
+        reportError(error, {
+          tags: { jobType: job.type },
+          extra: { jobId: job.id, attempts: job.attempts },
+        });
         return;
       }
       const delay = RETRY_DELAYS_MS[Math.min(job.attempts, RETRY_DELAYS_MS.length) - 1]!;

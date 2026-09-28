@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { Server, type DefaultEventsMap, type Socket } from 'socket.io';
 import { env } from '../env.js';
 import { logger } from '../integrations/logger.js';
+import { reportError } from '../integrations/sentry.js';
 import { hasAuthCookie, isTrustedOrigin } from '../middleware/trusted-origin.js';
 import { ACCESS_COOKIE } from '../modules/auth/auth.cookies.js';
 import { verifyAccessToken, type AuthContext } from '../modules/auth/auth.tokens.js';
@@ -78,6 +79,7 @@ async function authenticate(socket: RealtimeSocket, next: (error?: Error) => voi
     next();
   } catch (error) {
     logger.error({ err: error }, 'Could not authenticate a Socket.IO connection');
+    reportError(error, { tags: { area: 'socket-auth' } });
     next(new Error('UNAVAILABLE'));
   }
 }

@@ -71,7 +71,7 @@ jobs:
         run: |
           image="$ECR_REGISTRY/$ECR_REPOSITORY:$(git rev-parse --short HEAD)"
           aws ecr get-login-password | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-          docker build -t "$image" .
+          docker build --build-arg RELEASE="rento-vroom-backend@$(git rev-parse --short HEAD)" -t "$image" .
           docker push "$image"
           echo "uri=$image" >> "$GITHUB_OUTPUT"
 
