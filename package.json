@@ -18,7 +18,8 @@
     "seed": "tsx scripts/seed.ts",
     "db:indexes": "tsx scripts/sync-indexes.ts",
     "create-admin": "tsx scripts/create-admin.ts",
-    "email:test": "tsx scripts/send-test-email.ts"
+    "email:test": "tsx scripts/send-test-email.ts",
+    "email:dev": "tsx watch scripts/email-preview.ts"
   },
   "dependencies": {
     "@sentry/node": "^11.0.0",

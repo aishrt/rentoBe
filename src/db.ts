@@ -1,6 +1,6 @@
 import { setServers } from 'node:dns';
 import mongoose, { type ClientSession } from 'mongoose';
-import { env } from './env.js';
+import { env, isProduction } from './env.js';
 import { logger } from './integrations/logger.js';
 
 // Block NoSQL operator injection such as { "email": { "$ne": null } } (plan §14).
@@ -14,6 +14,9 @@ export async function connectDb(uri: string = env.MONGODB_URI): Promise<typeof m
 
   const connection = await mongoose.connect(uri, {
     serverSelectionTimeoutMS: 10_000,
+    // In production the deploy pipeline builds indexes with a one-off `sync-indexes` task before the new
+    // version starts (plan §3, §13.3), so starting tasks never build them. Locally Mongoose builds them.
+    autoIndex: !isProduction,
   });
   logger.info({ db: connection.connection.name }, 'Connected to MongoDB');
   return connection;

@@ -13,7 +13,9 @@ import {
 } from '../auth/auth.service.js';
 import { passwordContainsEmailName } from '../auth/password-policy.js';
 import { SessionModel } from '../auth/session.model.js';
-import { UserModel } from './user.model.js';
+import { acceptAgreements } from './agreements.js';
+import { UserModel, type AgreementType } from './user.model.js';
+import { toPublicUser, type PublicUser } from './user.service.js';
 
 /*
  * Changes to a signed-in user's own password and email address (plan §6.1). Both need the current
@@ -103,6 +105,22 @@ export async function requestEmailChange(
     ip,
   });
   return { email: input.newEmail };
+}
+
+/**
+ * Records that the user accepted the current version of each document, with the time and their IP,
+ * as a legal record (plan §6.1, §14). Earlier acceptances are kept.
+ */
+export async function acceptLatestAgreements(
+  userId: string,
+  types: AgreementType[],
+  ip?: string,
+): Promise<PublicUser> {
+  const user = await UserModel.findById(userId);
+  if (!user || user.status !== 'ACTIVE') throw unauthenticated();
+  user.agreements.push(...acceptAgreements([...new Set(types)], ip));
+  await user.save();
+  return toPublicUser(user);
 }
 
 /** Switches to the new address from the link sent to it, and tells the old address. */

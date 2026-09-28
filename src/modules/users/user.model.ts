@@ -7,6 +7,13 @@ export type Role = (typeof ROLES)[number];
 /** Roles that can open the admin portal (plan §6.2). */
 export const STAFF_ROLES = ['ADMIN', 'SUPPORT'] as const satisfies readonly Role[];
 
+/**
+ * Extra rights a support staff member can be given (plan §6.2). Admins have all of them.
+ * REFUNDS: issue refunds from the admin portal.
+ */
+export const PERMISSIONS = ['REFUNDS'] as const;
+export type Permission = (typeof PERMISSIONS)[number];
+
 export const USER_STATUSES = ['ACTIVE', 'SUSPENDED'] as const;
 export type UserStatus = (typeof USER_STATUSES)[number];
 
@@ -124,7 +131,7 @@ export interface User {
   dob?: Date;
   avatarUrl?: string;
   roles: Role[];
-  permissions: string[];
+  permissions: Permission[];
   status: UserStatus;
   suspendedReason?: string;
   emailVerifiedAt?: Date;
@@ -170,7 +177,7 @@ const userSchema = new Schema<User>(
     firstName: { type: String, required: true, trim: true },
     lastName: { type: String, required: true, trim: true },
     roles: { type: [String], enum: ROLES, default: ['GUEST'] },
-    permissions: { type: [String], default: [] },
+    permissions: { type: [String], enum: PERMISSIONS, default: [] },
     status: { type: String, enum: USER_STATUSES, default: 'ACTIVE' },
     suspendedReason: String,
     emailVerifiedAt: Date,
