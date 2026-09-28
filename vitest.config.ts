@@ -12,6 +12,7 @@ export default defineConfig({
       NODE_ENV: 'test',
       MONGODB_URI: 'mongodb://127.0.0.1:27017/rento-vroom-test-placeholder',
       JWT_ACCESS_SECRET: 'test-only-secret-that-is-at-least-32-characters-long',
+      ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
       FRONTEND_URL: 'http://localhost:5173',
       FRONTEND_ORIGINS: 'http://localhost:5173',
       MAIL_DRIVER: 'console',

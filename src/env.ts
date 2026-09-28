@@ -42,6 +42,12 @@ const envSchema = z
     FRONTEND_ORIGINS: commaSeparatedOrigins.default(['http://localhost:5173']),
 
     JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
+    // Encrypts sensitive fields before they're saved, such as staff authenticator secrets (plan §14).
+    ENCRYPTION_KEY: z
+      .string({ error: 'ENCRYPTION_KEY is required' })
+      .refine((value) => Buffer.from(value, 'base64').length === 32, {
+        error: 'ENCRYPTION_KEY must be 32 random bytes in base64 (see .env.example)',
+      }),
     // Optional parent domain for the auth cookies, e.g. ".rentovroom.co.nz" so www. and api. share them.
     COOKIE_DOMAIN: z.string().optional(),
 
@@ -55,6 +61,18 @@ const envSchema = z
     RESEND_API_KEY: z.string().optional(),
     EMAIL_FROM: z.string().min(3).default('Rento Vroom <hello@mail.example.com>'),
     EMAIL_REPLY_TO: z.email().optional(),
+
+    // Phone verification codes (plan §6.1): "console" logs them locally; "twilio" sends them with Twilio Verify.
+    SMS_DRIVER: z.enum(['console', 'twilio']).default('console'),
+    TWILIO_ACCOUNT_SID: z
+      .string()
+      .regex(/^AC[0-9a-f]{32}$/, 'TWILIO_ACCOUNT_SID starts with AC')
+      .optional(),
+    TWILIO_AUTH_TOKEN: z.string().min(32).optional(),
+    TWILIO_VERIFY_SERVICE_SID: z
+      .string()
+      .regex(/^VA[0-9a-f]{32}$/, 'TWILIO_VERIFY_SERVICE_SID starts with VA')
+      .optional(),
   })
   .superRefine((env, ctx) => {
     if (env.MAIL_DRIVER === 'resend' && !env.RESEND_API_KEY) {
@@ -63,6 +81,13 @@ const envSchema = z
         path: ['RESEND_API_KEY'],
         message: 'RESEND_API_KEY is required when MAIL_DRIVER=resend',
       });
+    }
+    if (env.SMS_DRIVER === 'twilio') {
+      for (const key of ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_VERIFY_SERVICE_SID'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required when SMS_DRIVER=twilio` });
+        }
+      }
     }
   });
 

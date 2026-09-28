@@ -10,6 +10,9 @@ export const publicUserSchema = z
     lastName: z.string(),
     roles: z.array(z.enum(ROLES)),
     emailVerified: z.boolean(),
+    phone: z.string().optional().meta({ description: 'Verified mobile number, E.164 (+64211234567)' }),
+    phoneVerified: z.boolean(),
+    mfaEnabled: z.boolean().meta({ description: 'Staff: whether the authenticator app is set up' }),
   })
   .meta({ id: 'PublicUser' });
 

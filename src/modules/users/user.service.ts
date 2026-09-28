@@ -11,6 +11,9 @@ export function toPublicUser(user: UserDocument): PublicUser {
     lastName: user.lastName,
     roles: [...user.roles],
     emailVerified: Boolean(user.emailVerifiedAt),
+    ...(user.phone && { phone: user.phone }),
+    phoneVerified: Boolean(user.phoneVerifiedAt),
+    mfaEnabled: Boolean(user.mfa?.enabledAt),
   };
 }
 

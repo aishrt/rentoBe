@@ -18,6 +18,8 @@ const ERRORS: Record<number, string> = {
   400: 'Invalid input. `error.fields` has one message per invalid field.',
   401: 'Not signed in, or the session has ended',
   403: "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+  404: 'Not found',
+  409: 'Conflicts with existing data, e.g. the email address already has an account',
   423: 'Sign-in is paused after too many wrong passwords',
   429: 'Too many requests; try again later',
 };

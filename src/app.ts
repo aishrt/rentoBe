@@ -44,7 +44,7 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   });
   api.use(requireTrustedOrigin);
   api.use('/auth', authRouter({ rateLimit }));
-  api.use('/me', meRouter());
+  api.use('/me', meRouter({ rateLimit }));
   api.use('/admin', adminRouter());
 
   app.use('/api/v1', api);
