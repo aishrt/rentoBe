@@ -20,7 +20,8 @@
         { "name": "LOG_LEVEL", "value": "info" },
         { "name": "FRONTEND_URL", "value": "https://www.rentovroom.com" },
         { "name": "FRONTEND_ORIGINS", "value": "https://www.rentovroom.com" },
-        { "name": "SENTRY_ENVIRONMENT", "value": "production" }
+        { "name": "SENTRY_ENVIRONMENT", "value": "production" },
+        { "name": "MAIL_DRIVER", "value": "resend" }
       ],
       "secrets": [
         {
@@ -34,6 +35,14 @@
         {
           "name": "SENTRY_DSN",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:SENTRY_DSN::"
+        },
+        {
+          "name": "RESEND_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:RESEND_API_KEY::"
+        },
+        {
+          "name": "EMAIL_FROM",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:EMAIL_FROM::"
         }
       ],
       "logConfiguration": {
