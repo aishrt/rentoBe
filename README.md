@@ -54,6 +54,7 @@ Demo accounts (password: your `SEED_DEMO_PASSWORD`):
 | `npm run db:indexes`                              | Creates or updates every collection's indexes from the Mongoose schemas, and drops indexes the schemas no longer declare                                                     |
 | `npm run openapi`                                 | Writes the API contract to `openapi.json` from the routes' Zod schemas. Commit it: `npm test` fails while it's out of date, and the website generates its API types from it. |
 | `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`                                                                 |
+| `npm run email:dev`                               | Previews every email template in the browser on http://localhost:3030, with sample details. Nothing is sent.                                                                 |
 | `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                                                                        |
 | `npm run format`                                  | Prettier                                                                                                                                                                     |
 
@@ -62,7 +63,7 @@ Demo accounts (password: your `SEED_DEMO_PASSWORD`):
 Every collection in plan §3 has a Mongoose model in its module (`src/modules/<module>/<name>.model.ts`), and `src/models.ts` lists them all.
 
 - Shared field types are in `src/lib/model-fields.ts`: money as whole NZD cents (`cents()`), GeoJSON points (`[longitude, latitude]`), the structured NZ address and star ratings.
-- Indexes are declared in the schemas. Mongoose builds a model's indexes when it's first used; `npm run db:indexes` syncs every collection at once.
+- Indexes are declared in the schemas. Locally, Mongoose builds a model's indexes when it's first used, and `npm run db:indexes` syncs every collection at once. Production never builds them at startup (`autoIndex` is off): each deploy runs `dist/sync-indexes.js` as a one-off ECS task before the new version starts, and stops if it fails.
 - Schema changes are additive: a new field is optional or has a default, so existing documents keep working without a migration.
 - Platform settings (fees, cancellation tiers, protection plans, eligibility, review windows and more) come from `getPlatformSettings()` in `src/modules/admin/platform-settings.service.ts`: what admins saved, over the launch defaults in `default-settings.ts`. The defaults are placeholders until the client decides (plan §16).
 - Filters with operators need `mongoose.trusted()`, because `sanitizeFilter` is on (see `src/db.ts`).
@@ -74,7 +75,7 @@ Emails are React Email templates in `src/emails`, sent through the `Mailer` inte
 - `MAIL_DRIVER=console` (default): nothing is sent. Each email's subject and links are logged and the HTML is saved to `backend/.mail/`.
 - `MAIL_DRIVER=resend`: sends through [Resend](https://resend.com). Needs `RESEND_API_KEY` and an `EMAIL_FROM` address on a domain verified in Resend.
 
-Add a template in `src/emails/templates/` and register it in `emailTemplates` (`src/emails/index.ts`). Features send it through the job queue, `enqueue('email.send', { to, template, props })`, which is type-checked against the template's props and retried if sending fails.
+Add a template in `src/emails/templates/`, register it in `emailTemplates` (`src/emails/index.ts`) and give it sample details in `src/emails/preview-props.ts` for `npm run email:dev`. Features send it through the job queue, `enqueue('email.send', { to, template, props })`, which is type-checked against the template's props and retried if sending fails.
 
 ## Background jobs
 
@@ -92,6 +93,19 @@ Socket.IO runs on the same server as the API, on `/socket.io` (plan §4.4).
 - Only signed-in users connect: browsers send the access cookie from a trusted origin, and mobile apps pass `auth: { token }`. Refused connections get the error `UNAUTHENTICATED`.
 - Each connection joins the room `user:<id>`. `emitToUser(userId, event, payload)` in `src/realtime/realtime.ts` sends to every tab and device of that user.
 - The MongoDB adapter (`@socket.io/mongo-adapter`) passes events between API processes through the `socketEvents` collection and a change stream. That needs a replica set: Atlas always is one, and the tests use an in-memory one.
+
+## Website pages (`/pages`)
+
+The website is a single-page app, so vehicle and destination pages get their search and link-preview tags from the backend (plan §1.4). The website's CloudFront sends `/cars/*`, `/rental/*` and `/sitemap.xml` through `https://api.<domain>/pages` (see DEPLOYING_UPDATES.md), and caches the answers for 60 s.
+
+- `GET /pages/cars/:slug` and `GET /pages/rental/:city`: the website's current `index.html` (fetched from `FRONTEND_URL` and kept for 60 s) with the car's or destination's title, description, canonical URL, link-preview tags and JSON-LD. An unknown or inactive car, or an unknown destination, is a real 404. A destination with no cars yet is a normal page. The exact address and the number plate are never included.
+- `GET /pages/sitemap.xml`: the website's indexable pages, destinations and live cars.
+- What's indexable comes from the website's `seo-manifest.json`, written by its build. Until the website has built vehicle or destination pages, their tags say `noindex` and the sitemap leaves them out, so search engines never list an unfinished page.
+- If the website can't be reached, the answer is 502 and CloudFront serves the plain `index.html` instead.
+
+## Roles and permissions
+
+`requireRole('ADMIN', 'SUPPORT')` checks the roles in the access token. `requirePermission('REFUNDS')` checks a support staff member's extra rights, read from the database on each request so a removed permission stops working at once; admins have every permission (plan §6.2). Both run after `requireAuth`, and the admin portal also needs `requireStaffMfa`.
 
 ## API so far
 
@@ -116,6 +130,7 @@ The full contract, with every request and response shape, is [openapi.json](open
 | `POST /api/v1/admin/staff/:id/mfa/reset`        | Admin          | Resets another staff member's lost authenticator and signs them out. Audit-logged.                                                                                                                         |
 | `POST /api/v1/auth/refresh`                     | Refresh cookie | Rotates the refresh token (each works once)                                                                                                                                                                |
 | `POST /api/v1/auth/logout`                      | Any            | Ends the session and clears the cookies                                                                                                                                                                    |
+| `POST /api/v1/me/agreements`                    | Signed in      | `{ types }`, e.g. `['TERMS', 'PRIVACY']`: accepts the current version of those documents, with the time and IP. The user's `pendingAgreements` lists the ones with a new version to accept.                |
 | `GET /api/v1/me`                                | Signed in      | The signed-in user                                                                                                                                                                                         |
 | `GET /api/v1/admin/overview`                    | Admin, Support | KPI figures; `null` for metrics whose module isn't built yet                                                                                                                                               |
 
@@ -132,17 +147,18 @@ src/
   env.ts            Environment variables, validated with Zod at startup
   db.ts             Mongoose connection (sanitizeFilter + strictQuery against NoSQL injection), withTransaction()
   models.ts         Every Mongoose model, for the index sync
-  middleware/       auth (requireAuth, requireRole), CSRF origin check, rate limit (MongoDB store), error handler
+  middleware/       auth (requireAuth, requireRole, requirePermission), CSRF origin check, rate limit (MongoDB store), error handler
   modules/          One folder per domain: *.model.ts, *.schemas.ts, *.service.ts, *.routes.ts, *.openapi.ts
     auth/ users/ admin/ audit/                 routes and services so far
     vehicles/ availability/ bookings/ payments/ payouts/ messages/ reviews/ inspections/
     incidents/ moderation/ support/ help/ notifications/ cms/ search/   models only, until their features are built
   jobs/             Job queue: job.model.ts, queue.ts, runner.ts, handlers/ (one per job type)
   realtime/         Socket.IO server, auth and MongoDB adapter
+  pages/            Page tags for vehicle and destination pages, and sitemap.xml (/pages)
   openapi/          Builds the API contract from each module's *.openapi.ts
   integrations/     logger, mailer (Resend + console), SMS (Twilio Verify + console)
   emails/           React Email templates, shared layout and brand theme
-  lib/              HttpError, validation helper, lifecycle, shared model field types
-scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, send-test-email.ts, openapi.ts
+  lib/              HttpError, validation helper, lifecycle, shared model field types, NZD formatter
+scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, send-test-email.ts, email-preview.ts, openapi.ts
 test/               API tests (Vitest + Supertest + mongodb-memory-server)
 ```

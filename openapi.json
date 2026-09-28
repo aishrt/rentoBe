@@ -83,6 +83,19 @@
           "mfaEnabled": {
             "type": "boolean",
             "description": "Staff: whether the authenticator app is set up"
+          },
+          "pendingAgreements": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "TERMS",
+                "PRIVACY",
+                "GUEST",
+                "HOST"
+              ]
+            },
+            "description": "Legal documents with a new version the user must accept before carrying on (POST /me/agreements). Usually empty."
           }
         },
         "required": [
@@ -93,7 +106,8 @@
           "roles",
           "emailVerified",
           "phoneVerified",
-          "mfaEnabled"
+          "mfaEnabled",
+          "pendingAgreements"
         ]
       },
       "ErrorResponse": {
@@ -214,6 +228,28 @@
         "required": [
           "phone",
           "sent"
+        ]
+      },
+      "AcceptAgreementsRequest": {
+        "type": "object",
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "TERMS",
+                "PRIVACY",
+                "GUEST",
+                "HOST"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 4
+          }
+        },
+        "required": [
+          "types"
         ]
       },
       "MfaSetupResponse": {
@@ -1324,6 +1360,65 @@
           },
           "429": {
             "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/agreements": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Accept the current version of legal documents",
+        "description": "Records the acceptance with its time and IP. The website asks for this when the user has pendingAgreements, after a new version of the Terms, Privacy Policy or an agreement is published.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptAgreementsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
             "content": {
               "application/json": {
                 "schema": {

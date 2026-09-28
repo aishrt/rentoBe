@@ -1,7 +1,7 @@
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { codeSchema, emailResponseSchema, mfaSetupResponseSchema } from '../auth/auth.schemas.js';
-import { changeEmailSchema, changePasswordSchema } from './account.schemas.js';
+import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
 import { userResponseSchema } from './user.schemas.js';
 
 /** The contract for users.routes.ts (plan §2.3). */
@@ -40,6 +40,18 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
       200: jsonResponse('Link sent to the new address', emailResponseSchema),
       ...errorResponses(400, 401, 409, 429),
     },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/agreements',
+    tags: ['Account'],
+    summary: 'Accept the current version of legal documents',
+    description:
+      'Records the acceptance with its time and IP. The website asks for this when the user has pendingAgreements, after a new version of the Terms, Privacy Policy or an agreement is published.',
+    security: signedIn,
+    request: { body: jsonBody(acceptAgreementsSchema) },
+    responses: { 200: jsonResponse('Accepted', userResponseSchema), ...errorResponses(400, 401) },
   });
 
   registry.registerPath({

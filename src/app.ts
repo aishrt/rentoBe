@@ -12,6 +12,7 @@ import { requireTrustedOrigin } from './middleware/trusted-origin.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { meRouter } from './modules/users/users.routes.js';
+import { pagesRouter } from './pages/pages.routes.js';
 
 export interface AppOptions {
   /** Turned off in tests so repeated sign-ins don't hit the per-IP limit. */
@@ -25,6 +26,8 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   app.set('trust proxy', env.TRUST_PROXY);
 
   app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/healthz' } }));
+  // Website pages with their own security headers, ahead of the API's (plan §1.4).
+  app.use('/pages', pagesRouter());
   app.use(helmet());
   app.use(cors({ origin: env.FRONTEND_ORIGINS, credentials: true }));
   app.use(express.json({ limit: '100kb' }));

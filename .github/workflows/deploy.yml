@@ -1,5 +1,6 @@
-# Deploys the API on every push to master (plan §13.3): lint, typecheck and test, then build the Docker
-# image, push it to ECR, register a task definition revision with it and roll it out to ECS.
+# Deploys the API on every push to master (plan §13.3): lint, typecheck, test and build, then build the
+# Docker image, push it to ECR, register a task definition revision with it, sync the database indexes
+# with a one-off task of that revision, and roll it out to ECS.
 # Pull requests into master (including Dependabot's) run the checks only; they never deploy.
 #
 # AWS access uses GitHub's OIDC login and the IAM role rento-vroom-github-backend, which trusts only
@@ -33,7 +34,10 @@ env:
   ECS_CLUSTER: rento-vroom
   ECS_SERVICE: api-prod
   TASK_DEFINITION_FILE: deploy/taskdef.prod.json
-  HEALTH_URL: https://api.rentovroom.com/healthz
+  # The API service's private subnets and security group, for the one-off index sync task.
+  TASK_SUBNETS: subnet-0aca9a8e6581aa2ab,subnet-03dc466f01d257240
+  TASK_SECURITY_GROUP: sg-07f10da5516b3bc7a
+  API_URL: https://api.rentovroom.com
 
 jobs:
   check:
@@ -50,6 +54,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build
 
   deploy:
     name: Build and deploy to ECS
@@ -85,6 +90,32 @@ jobs:
           echo "arn=$arn" >> "$GITHUB_OUTPUT"
           echo "Registered $arn"
 
+      # Production doesn't build indexes when it starts (src/db.ts), so the new version's are created here,
+      # before it takes traffic (plan §3, §13.3). The task runs in the private subnets and reaches Atlas
+      # through the NAT gateway like the API; the pipeline itself never connects to the database.
+      - name: Sync database indexes
+        env:
+          TASK_DEFINITION_ARN: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          task=$(aws ecs run-task --cluster "$ECS_CLUSTER" --launch-type FARGATE \
+            --task-definition "$TASK_DEFINITION_ARN" --started-by sync-indexes \
+            --network-configuration "awsvpcConfiguration={subnets=[$TASK_SUBNETS],securityGroups=[$TASK_SECURITY_GROUP],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"api","command":["node","--enable-source-maps","dist/sync-indexes.js"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          if [ -z "$task" ] || [ "$task" = "None" ]; then
+            echo "::error::ECS didn't start the index sync task."
+            exit 1
+          fi
+          echo "Started $task"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task"
+          read -r code reason <<< "$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task" \
+            --query 'tasks[0].[containers[0].exitCode,stoppedReason]' --output text)"
+          if [ "$code" != "0" ]; then
+            echo "::error::The index sync failed (exit code $code: $reason), so the new version wasn't rolled out. See its log in /ecs/rento-vroom-api-prod."
+            exit 1
+          fi
+          echo "Indexes are in sync."
+
       # ECS starts the new containers, waits for their health checks, then drains the old ones. The
       # circuit breaker replaces a version that never becomes healthy with the previous one (a rollback).
       - name: Roll out and wait until the new version is running
@@ -114,4 +145,7 @@ jobs:
           exit 1
 
       - name: Smoke test
-        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors "$HEALTH_URL"
+        run: |
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors "$API_URL/healthz"
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors -o /dev/null \
+            "$API_URL/pages/sitemap.xml"

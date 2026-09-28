@@ -1,3 +1,4 @@
+import { pendingAgreements } from './agreements.js';
 import { STAFF_ROLES, type Role, type UserDocument } from './user.model.js';
 import type { PublicUser } from './user.schemas.js';
 
@@ -14,6 +15,7 @@ export function toPublicUser(user: UserDocument): PublicUser {
     ...(user.phone && { phone: user.phone }),
     phoneVerified: Boolean(user.phoneVerifiedAt),
     mfaEnabled: Boolean(user.mfa?.enabledAt),
+    pendingAgreements: pendingAgreements(user),
   };
 }
 

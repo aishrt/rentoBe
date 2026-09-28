@@ -5,8 +5,8 @@ import { requireAuth } from '../../middleware/auth.js';
 import { accountChangeRateLimit, codeCheckRateLimit } from '../../middleware/rate-limit.js';
 import { codeSchema } from '../auth/auth.schemas.js';
 import { enableMfa, startMfaSetup } from '../auth/mfa.service.js';
-import { changeEmailSchema, changePasswordSchema } from './account.schemas.js';
-import { changePassword, requestEmailChange } from './account.service.js';
+import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
+import { acceptLatestAgreements, changePassword, requestEmailChange } from './account.service.js';
 import { UserModel } from './user.model.js';
 import { toPublicUser } from './user.service.js';
 
@@ -34,6 +34,12 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
   router.post('/email', ...limit(accountChangeRateLimit), async (req, res) => {
     const input = validate(changeEmailSchema, req.body);
     res.json(await requestEmailChange(req.auth!.userId, input, req.ip));
+  });
+
+  // Accepts the current version of legal documents, e.g. the ones in the user's pendingAgreements.
+  router.post('/agreements', async (req, res) => {
+    const { types } = validate(acceptAgreementsSchema, req.body);
+    res.json({ user: await acceptLatestAgreements(req.auth!.userId, types, req.ip) });
   });
 
   // Staff: set up the authenticator app for two-factor sign-in.
