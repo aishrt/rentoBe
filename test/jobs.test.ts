@@ -152,8 +152,13 @@ describe('job queue', () => {
 
   it('runs jobs as they become due, and hands back an unfinished one when stopped', async () => {
     let finishSlowJob: () => void = () => {};
+    let slowJobStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      slowJobStarted = resolve;
+    });
     const handle = vi.fn(async (payload: EmailJobPayload) => {
       if (payload.to === 'slow@example.co.nz') {
+        slowJobStarted();
         await new Promise<void>((resolve) => {
           finishSlowJob = resolve;
         });
@@ -166,7 +171,7 @@ describe('job queue', () => {
     await vi.waitFor(async () => expect((await JobModel.findById(quick._id))?.status).toBe('DONE'));
 
     const slow = await enqueue('email.send', { ...welcome, to: 'slow@example.co.nz' });
-    await vi.waitFor(async () => expect((await JobModel.findById(slow._id))?.status).toBe('RUNNING'));
+    await started;
 
     await jobs.stop(50);
     const handedBack = await JobModel.findById(slow._id).lean();
@@ -177,6 +182,34 @@ describe('job queue', () => {
     await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(2));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect((await JobModel.findById(slow._id).lean())?.status).toBe('QUEUED');
+  });
+
+  it('hands back a job claimed at the moment the runner is stopped', async () => {
+    // The claim reaches the runner 150 ms after MongoDB saves it, so stop() lands in between.
+    const claim = JobModel.findOneAndUpdate.bind(JobModel);
+    const slowClaim = vi.spyOn(JobModel, 'findOneAndUpdate').mockImplementation(((
+      ...args: Parameters<typeof claim>
+    ) =>
+      claim(...args).then(async (claimed) => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return claimed;
+      })) as never);
+    const handle = vi.fn(async () => {});
+    const job = await enqueue('email.send', welcome);
+    const jobs = runner(handle, { pollIntervalMs: 1_000 });
+
+    try {
+      jobs.start();
+      await vi.waitFor(async () => expect((await JobModel.findById(job._id))?.status).toBe('RUNNING'), {
+        interval: 5,
+      });
+      await jobs.stop(20);
+    } finally {
+      slowClaim.mockRestore();
+    }
+
+    expect(handle).not.toHaveBeenCalled();
+    expect(await JobModel.findById(job._id).lean()).toMatchObject({ status: 'QUEUED', attempts: 0 });
   });
 
   it('sends queued email through the real email.send handler', async () => {
