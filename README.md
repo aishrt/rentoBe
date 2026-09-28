@@ -15,7 +15,7 @@ See [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md), sections 2 (structure a
 cd backend
 npm install
 cp .env.example .env    # then fill in MONGODB_URI, JWT_ACCESS_SECRET and SEED_DEMO_PASSWORD
-npm run seed            # creates the demo accounts below
+npm run seed            # NZ places, destinations, FAQs, help articles, settings, and the demo data below
 npm run dev             # API on http://localhost:4000
 ```
 
@@ -23,14 +23,25 @@ npm run dev             # API on http://localhost:4000
 
 **`querySrv ECONNREFUSED` when connecting?** Node can't reach a DNS server to look up the `mongodb+srv://` address (common on Windows, where Node sometimes falls back to `127.0.0.1`). Add `DNS_SERVERS=8.8.8.8,1.1.1.1` to `.env`. If it still fails, check that your IP address is allowed under Network Access in MongoDB Atlas.
 
-Demo accounts from `npm run seed` (password: your `SEED_DEMO_PASSWORD`). The seed refuses to run in production.
+`npm run seed` is safe to re-run. It writes two kinds of data:
 
-| Account                   | Roles        |
-| ------------------------- | ------------ |
-| `admin@rentovroom.test`   | Admin        |
-| `support@rentovroom.test` | Support      |
-| `host@rentovroom.test`    | Guest + Host |
-| `guest@rentovroom.test`   | Guest        |
+- **Reference data**, in every environment: 83 NZ places (cities, suburbs, airports and visitor destinations, for autocomplete and airport search), the 5 launch destination pages, 12 FAQs, 9 help articles, placeholder legal pages and the platform settings. It only adds what's missing, so it never overwrites an admin's edits.
+- **Demo data**, everywhere except production: the accounts below, 20 live demo cars (four in each launch city, with placeholder photos) and 20 completed trips with reviews in both directions, so ratings and trip history have something to show. Each run resets them.
+
+Demo accounts (password: your `SEED_DEMO_PASSWORD`):
+
+| Account                             | Roles        | Notes                  |
+| ----------------------------------- | ------------ | ---------------------- |
+| `admin@rentovroom.test`             | Admin        |                        |
+| `support@rentovroom.test`           | Support      |                        |
+| `host@rentovroom.test`              | Guest + Host | 4 cars in Auckland     |
+| `host.wellington@rentovroom.test`   | Guest + Host | 4 cars in Wellington   |
+| `host.christchurch@rentovroom.test` | Guest + Host | 4 cars in Christchurch |
+| `host.queenstown@rentovroom.test`   | Guest + Host | 4 cars in Queenstown   |
+| `host.rotorua@rentovroom.test`      | Guest + Host | 4 cars in Rotorua      |
+| `guest@rentovroom.test`             | Guest        | Past trips and reviews |
+| `visitor@rentovroom.test`           | Guest        | Past trips and reviews |
+| `guest2@rentovroom.test`            | Guest        | Past trips and reviews |
 
 ## Commands
 
@@ -39,11 +50,22 @@ Demo accounts from `npm run seed` (password: your `SEED_DEMO_PASSWORD`). The see
 | `npm run dev`                                     | API with reload on change (`tsx watch`)                                                                                                                                      |
 | `npm run build` / `npm start`                     | Bundle to `dist/` with tsup / run the bundle with plain `node`                                                                                                               |
 | `npm run lint` · `npm run typecheck` · `npm test` | Checks. Tests use an in-memory MongoDB replica set, so they never touch your cluster (the first run downloads a MongoDB binary).                                             |
-| `npm run seed`                                    | Demo accounts (not in production)                                                                                                                                            |
+| `npm run seed`                                    | Reference data, plus demo accounts, cars and trips outside production (see above)                                                                                            |
+| `npm run db:indexes`                              | Creates or updates every collection's indexes from the Mongoose schemas, and drops indexes the schemas no longer declare                                                     |
 | `npm run openapi`                                 | Writes the API contract to `openapi.json` from the routes' Zod schemas. Commit it: `npm test` fails while it's out of date, and the website generates its API types from it. |
 | `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`                                                                 |
 | `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                                                                        |
 | `npm run format`                                  | Prettier                                                                                                                                                                     |
+
+## Data model
+
+Every collection in plan §3 has a Mongoose model in its module (`src/modules/<module>/<name>.model.ts`), and `src/models.ts` lists them all.
+
+- Shared field types are in `src/lib/model-fields.ts`: money as whole NZD cents (`cents()`), GeoJSON points (`[longitude, latitude]`), the structured NZ address and star ratings.
+- Indexes are declared in the schemas. Mongoose builds a model's indexes when it's first used; `npm run db:indexes` syncs every collection at once.
+- Schema changes are additive: a new field is optional or has a default, so existing documents keep working without a migration.
+- Platform settings (fees, cancellation tiers, protection plans, eligibility, review windows and more) come from `getPlatformSettings()` in `src/modules/admin/platform-settings.service.ts`: what admins saved, over the launch defaults in `default-settings.ts`. The defaults are placeholders until the client decides (plan §16).
+- Filters with operators need `mongoose.trusted()`, because `sanitizeFilter` is on (see `src/db.ts`).
 
 ## Email
 
@@ -109,15 +131,18 @@ src/
   server.ts         Starts the API, Socket.IO and the job runner in one process, with graceful shutdown
   env.ts            Environment variables, validated with Zod at startup
   db.ts             Mongoose connection (sanitizeFilter + strictQuery against NoSQL injection), withTransaction()
+  models.ts         Every Mongoose model, for the index sync
   middleware/       auth (requireAuth, requireRole), CSRF origin check, rate limit (MongoDB store), error handler
   modules/          One folder per domain: *.model.ts, *.schemas.ts, *.service.ts, *.routes.ts, *.openapi.ts
-    auth/ users/ admin/
+    auth/ users/ admin/ audit/                 routes and services so far
+    vehicles/ availability/ bookings/ payments/ payouts/ messages/ reviews/ inspections/
+    incidents/ moderation/ support/ help/ notifications/ cms/ search/   models only, until their features are built
   jobs/             Job queue: job.model.ts, queue.ts, runner.ts, handlers/ (one per job type)
   realtime/         Socket.IO server, auth and MongoDB adapter
   openapi/          Builds the API contract from each module's *.openapi.ts
-  integrations/     logger, mailer (Resend + console)
+  integrations/     logger, mailer (Resend + console), SMS (Twilio Verify + console)
   emails/           React Email templates, shared layout and brand theme
-  lib/              HttpError, validation helper, lifecycle
-scripts/            seed.ts, create-admin.ts, send-test-email.ts, openapi.ts
+  lib/              HttpError, validation helper, lifecycle, shared model field types
+scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, send-test-email.ts, openapi.ts
 test/               API tests (Vitest + Supertest + mongodb-memory-server)
 ```
