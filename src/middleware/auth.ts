@@ -1,8 +1,8 @@
 import type { Request, RequestHandler } from 'express';
-import { forbidden, unauthenticated } from '../lib/http-error.js';
+import { HttpError, forbidden, unauthenticated } from '../lib/http-error.js';
 import { ACCESS_COOKIE } from '../modules/auth/auth.cookies.js';
 import { verifyAccessToken } from '../modules/auth/auth.tokens.js';
-import type { Role } from '../modules/users/user.model.js';
+import { UserModel, type Role } from '../modules/users/user.model.js';
 
 /** Browsers send the access token as a cookie; future mobile apps send it as a Bearer header (plan §6.1). */
 export function readAccessToken(req: Request): string | undefined {
@@ -28,3 +28,19 @@ export function requireRole(...roles: Role[]): RequestHandler {
     next();
   };
 }
+
+/**
+ * The staff portal opens only once the staff member's authenticator app is set up (plan §6.1).
+ * Staff with one set up can only sign in with its code, so every session reaching here passed it.
+ * Must run after requireAuth; it also refuses an account suspended since its token was issued.
+ */
+export const requireStaffMfa: RequestHandler = async (req, _res, next) => {
+  const user = await UserModel.findById(req.auth?.userId).select('status mfa.enabledAt');
+  if (!user || user.status !== 'ACTIVE') return next(unauthenticated());
+  if (!user.mfa?.enabledAt) {
+    return next(
+      new HttpError(403, 'MFA_SETUP_REQUIRED', 'Set up your authenticator app to open the staff portal.'),
+    );
+  }
+  next();
+};

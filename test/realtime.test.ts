@@ -55,8 +55,9 @@ function outcome(client: ClientSocket): Promise<string> {
 
 async function signIn() {
   const user = await createUser();
-  const { tokens } = await login({ email: 'kiri@example.co.nz', password: PASSWORD, portal: 'app' }, {});
-  return { userId: user.id as string, accessToken: tokens.accessToken };
+  const result = await login({ email: 'kiri@example.co.nz', password: PASSWORD, portal: 'app' }, {});
+  if (!('tokens' in result)) throw new Error('Expected a session, not an authenticator challenge');
+  return { userId: user.id as string, accessToken: result.tokens.accessToken };
 }
 
 describe('Socket.IO', () => {

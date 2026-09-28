@@ -55,6 +55,54 @@ export const emailLinkRateLimit = () =>
     message: 'Too many attempts. Please wait a few minutes and try again.',
   });
 
+/** Password-reset emails per IP. */
+export const forgotPasswordRateLimit = () =>
+  limitRequests({
+    name: 'forgot-password',
+    windowMs: 15 * MINUTE,
+    limit: 5,
+    message: 'Too many reset requests. Please check your inbox, or try again in a few minutes.',
+  });
+
+/** Authenticator codes at staff sign-in, per IP. Each challenge also allows only 5 wrong codes. */
+export const mfaLoginRateLimit = () =>
+  limitRequests({
+    name: 'mfa-login',
+    windowMs: 15 * MINUTE,
+    limit: 20,
+    message: 'Too many sign-in attempts. Please wait a few minutes and try again.',
+  });
+
+/** Password and email changes, per user: each one checks the current password. */
+export const accountChangeRateLimit = () =>
+  limitRequests({
+    name: 'account-change',
+    windowMs: 60 * MINUTE,
+    limit: 10,
+    perUser: true,
+    message: 'Too many changes in a short time. Please try again in an hour.',
+  });
+
+/** SMS codes sent, per user (Twilio Verify also limits each number). */
+export const phoneCodeRateLimit = () =>
+  limitRequests({
+    name: 'phone-code',
+    windowMs: 60 * MINUTE,
+    limit: 5,
+    perUser: true,
+    message: "We've sent several codes already. Please try again in an hour.",
+  });
+
+/** Codes typed in (phone or authenticator setup), per user. */
+export const codeCheckRateLimit = () =>
+  limitRequests({
+    name: 'code-check',
+    windowMs: 15 * MINUTE,
+    limit: 10,
+    perUser: true,
+    message: 'Too many codes tried. Please wait a few minutes and try again.',
+  });
+
 /** Emails a user can ask us to send again, per user. */
 export const resendEmailRateLimit = () =>
   limitRequests({

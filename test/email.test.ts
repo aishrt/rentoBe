@@ -103,6 +103,7 @@ describe('mail configuration', () => {
   const baseEnv = {
     MONGODB_URI: 'mongodb://localhost/test',
     JWT_ACCESS_SECRET: 'x'.repeat(32),
+    ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
   };
 
   it('uses the console mailer by default', () => {

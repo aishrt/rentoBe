@@ -4,6 +4,7 @@ import { parseEnv } from '../src/env.js';
 const baseEnv = {
   MONGODB_URI: 'mongodb+srv://user:pass@cluster0.example.mongodb.net/rento-vroom-dev',
   JWT_ACCESS_SECRET: 'x'.repeat(32),
+  ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
 };
 
 describe('environment', () => {

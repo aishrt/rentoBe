@@ -22,8 +22,21 @@ export interface Agreement {
 }
 
 /**
- * The foundation subset of the `users` collection in plan §3. Phone, verification, driver licence
- * and host profile fields are added with the features that use them.
+ * Staff two-factor sign-in with an authenticator app (plan §6.1). The secrets are encrypted
+ * (src/lib/encryption.ts) and never leave the database except to check a code.
+ */
+export interface StaffMfa {
+  secret?: string;
+  /** Set during setup, until the first code proves the app has it. */
+  pendingSecret?: string;
+  enabledAt?: Date;
+  /** The last code's time step, so the same code can't be used twice (replay). */
+  lastTimeStep?: number;
+}
+
+/**
+ * The foundation subset of the `users` collection in plan §3. Identity, driver licence and host
+ * profile fields are added with the features that use them.
  */
 export interface User {
   email: string;
@@ -35,7 +48,13 @@ export interface User {
   status: UserStatus;
   suspendedReason?: string;
   emailVerifiedAt?: Date;
+  /** E.164, e.g. +64211234567. Set only once verified by SMS code. */
+  phone?: string;
+  phoneVerifiedAt?: Date;
+  /** A number waiting for its SMS code (plan §6.1: a new number needs a new code). */
+  pendingPhone?: string;
   agreements: Agreement[];
+  mfa?: StaffMfa;
   loginFailures: number;
   lockedUntil?: Date;
   lastLoginAt?: Date;
@@ -64,7 +83,22 @@ const userSchema = new Schema<User>(
     status: { type: String, enum: USER_STATUSES, default: 'ACTIVE' },
     suspendedReason: String,
     emailVerifiedAt: Date,
+    phone: String,
+    phoneVerifiedAt: Date,
+    pendingPhone: String,
     agreements: { type: [agreementSchema], default: [] },
+    mfa: {
+      type: new Schema<StaffMfa>(
+        {
+          secret: { type: String, select: false },
+          pendingSecret: { type: String, select: false },
+          enabledAt: Date,
+          lastTimeStep: Number,
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     loginFailures: { type: Number, default: 0 },
     lockedUntil: Date,
     lastLoginAt: Date,
@@ -73,6 +107,8 @@ const userSchema = new Schema<User>(
 );
 
 userSchema.index({ roles: 1, status: 1 });
+// One verified account per mobile number.
+userSchema.index({ phone: 1 }, { unique: true, partialFilterExpression: { phone: { $type: 'string' } } });
 
 export const UserModel = model<User>('User', userSchema);
 export type UserDocument = HydratedDocument<User>;

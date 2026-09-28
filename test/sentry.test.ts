@@ -87,7 +87,11 @@ describe('Sentry setup', () => {
   });
 
   it('rejects a SENTRY_DSN that is not a URL', () => {
-    const base = { MONGODB_URI: 'mongodb://localhost/test', JWT_ACCESS_SECRET: 'x'.repeat(32) };
+    const base = {
+      MONGODB_URI: 'mongodb://localhost/test',
+      JWT_ACCESS_SECRET: 'x'.repeat(32),
+      ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
+    };
     expect(() => parseEnv({ ...base, SENTRY_DSN: 'not-a-dsn' })).toThrow(/SENTRY_DSN/);
     expect(parseEnv({ ...base, SENTRY_DSN: dsn }).SENTRY_DSN).toBe(dsn);
   });

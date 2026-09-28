@@ -21,7 +21,8 @@
         { "name": "FRONTEND_URL", "value": "https://www.rentovroom.com" },
         { "name": "FRONTEND_ORIGINS", "value": "https://www.rentovroom.com" },
         { "name": "SENTRY_ENVIRONMENT", "value": "production" },
-        { "name": "MAIL_DRIVER", "value": "resend" }
+        { "name": "MAIL_DRIVER", "value": "resend" },
+        { "name": "SMS_DRIVER", "value": "twilio" }
       ],
       "secrets": [
         {
@@ -43,6 +44,22 @@
         {
           "name": "EMAIL_FROM",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:EMAIL_FROM::"
+        },
+        {
+          "name": "ENCRYPTION_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:ENCRYPTION_KEY::"
+        },
+        {
+          "name": "TWILIO_ACCOUNT_SID",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:TWILIO_ACCOUNT_SID::"
+        },
+        {
+          "name": "TWILIO_AUTH_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:TWILIO_AUTH_TOKEN::"
+        },
+        {
+          "name": "TWILIO_VERIFY_SERVICE_SID",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:TWILIO_VERIFY_SERVICE_SID::"
         }
       ],
       "logConfiguration": {

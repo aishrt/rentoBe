@@ -1,6 +1,16 @@
 import type { ReactElement } from 'react';
 import { render, toPlainText } from 'react-email';
 import { getMailer, type Mailer, type SentEmail } from '../integrations/mailer/index.js';
+import {
+  ConfirmEmailChangeEmail,
+  EmailChangedEmail,
+  PasswordChangedEmail,
+  ResetPasswordEmail,
+  type ConfirmEmailChangeProps,
+  type EmailChangedProps,
+  type PasswordChangedProps,
+  type ResetPasswordProps,
+} from './templates/account-emails.js';
 import { VerifyEmail, type VerifyEmailProps } from './templates/verify-email.js';
 import { WelcomeEmail, type WelcomeEmailProps } from './templates/welcome-email.js';
 
@@ -20,6 +30,22 @@ export const emailTemplates = {
   verifyEmail: defineTemplate<VerifyEmailProps>({
     subject: () => 'Confirm your email address',
     component: VerifyEmail,
+  }),
+  resetPassword: defineTemplate<ResetPasswordProps>({
+    subject: () => 'Reset your Rento Vroom password',
+    component: ResetPasswordEmail,
+  }),
+  passwordChanged: defineTemplate<PasswordChangedProps>({
+    subject: () => 'Your Rento Vroom password was changed',
+    component: PasswordChangedEmail,
+  }),
+  confirmEmailChange: defineTemplate<ConfirmEmailChangeProps>({
+    subject: () => 'Confirm your new email address',
+    component: ConfirmEmailChangeEmail,
+  }),
+  emailChanged: defineTemplate<EmailChangedProps>({
+    subject: () => 'Your Rento Vroom email address was changed',
+    component: EmailChangedEmail,
   }),
 };
 

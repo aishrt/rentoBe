@@ -1,6 +1,7 @@
 /**
  * Creates a staff account (Admin by default). If the email already has an account, it gains the role,
- * gets the new password, is unlocked and reactivated, and is signed out everywhere; its other details are
+ * gets the new password, is unlocked and reactivated, has its authenticator app removed (so an admin who
+ * lost theirs can get back in and set up a new one), and is signed out everywhere; its other details are
  * left alone.
  * Unlike the demo seed this runs in production, where it is how the first admin is created (plan §13.3).
  *
@@ -53,7 +54,7 @@ async function createAdmin() {
       {
         $set: { passwordHash, status: 'ACTIVE', loginFailures: 0 },
         $addToSet: { roles: input.ADMIN_ROLE },
-        $unset: { lockedUntil: 1, suspendedReason: 1 },
+        $unset: { lockedUntil: 1, suspendedReason: 1, mfa: 1 },
       },
     );
     await SessionModel.deleteMany({ userId: existing._id });
