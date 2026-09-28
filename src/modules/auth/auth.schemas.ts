@@ -21,5 +21,7 @@ export type LoginInput = z.infer<typeof loginSchema>;
 
 /** The website's page-load check: the signed-in user, or null for a visitor. */
 export const sessionResponseSchema = z
-  .object({ user: publicUserSchema.nullable() })
+  // A union rather than .nullable(): the OpenAPI generator writes a nullable reference as an
+  // allOf that null can never match, and the website's generated types would come out wrong.
+  .object({ user: z.union([publicUserSchema, z.null()]) })
   .meta({ id: 'SessionResponse' });

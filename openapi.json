@@ -119,15 +119,12 @@
         "type": "object",
         "properties": {
           "user": {
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/PublicUser"
               },
               {
-                "type": [
-                  "object",
-                  "null"
-                ]
+                "type": "null"
               }
             ]
           }
