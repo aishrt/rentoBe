@@ -52,7 +52,8 @@ export function createJobRunner({
   const running = new Map<string, { job: JobDocument; done: Promise<void> }>();
   let timer: NodeJS.Timeout | undefined;
   let stopping = false;
-  let filling = false;
+  // The claiming loop in progress, if any; stop() waits for it so a job claimed at that moment isn't missed.
+  let filling: Promise<void> | undefined;
   let lastRecovery = 0;
 
   const claimNext = () =>
@@ -124,21 +125,31 @@ export function createJobRunner({
     running.set(job.id, { job, done });
   }
 
-  /** Claims due jobs until every slot is busy or nothing is due. */
-  async function fill(): Promise<void> {
-    if (filling) return;
-    filling = true;
+  async function claimUntilFull(): Promise<void> {
     try {
       while (!stopping && running.size < concurrency) {
         const job = await claimNext();
         if (!job) break;
+        // Claimed just as shutdown began: hand it straight back rather than start it.
+        if (stopping) {
+          await releaseJob(job);
+          break;
+        }
         track(job);
       }
     } catch (error) {
       log.error({ err: error }, 'Could not claim a job');
-    } finally {
-      filling = false;
     }
+  }
+
+  /** Claims due jobs until every slot is busy or nothing is due. */
+  function fill(): Promise<void> {
+    if (!filling && !stopping && running.size < concurrency) {
+      filling = claimUntilFull().finally(() => {
+        filling = undefined;
+      });
+    }
+    return filling ?? Promise.resolve();
   }
 
   async function recoverStuckJobs(): Promise<number> {
@@ -177,16 +188,15 @@ export function createJobRunner({
     await fill();
   }
 
-  async function releaseRunningJobs() {
-    for (const { job } of running.values()) {
-      await JobModel.updateOne(thisClaim(job), {
-        $set: { status: 'QUEUED', runAt: new Date() },
-        // This run didn't finish, so it doesn't use up one of the job's attempts.
-        $inc: { attempts: -1 },
-        $unset: unlock,
-      });
-      log.info({ jobId: job.id, jobType: job.type }, 'Put a running job back in the queue for shutdown');
-    }
+  /** Puts a job this instance claimed back in the queue, for another instance to run. */
+  async function releaseJob(job: JobDocument) {
+    await JobModel.updateOne(thisClaim(job), {
+      $set: { status: 'QUEUED', runAt: new Date() },
+      // This run didn't finish, so it doesn't use up one of the job's attempts.
+      $inc: { attempts: -1 },
+      $unset: unlock,
+    });
+    log.info({ jobId: job.id, jobType: job.type }, 'Put a job back in the queue for shutdown');
   }
 
   return {
@@ -203,6 +213,7 @@ export function createJobRunner({
       stopping = true;
       clearInterval(timer);
       timer = undefined;
+      await filling;
       if (running.size === 0) return;
 
       let timeout: NodeJS.Timeout | undefined;
@@ -213,7 +224,9 @@ export function createJobRunner({
         }),
       ]);
       clearTimeout(timeout);
-      if (timedOut) await releaseRunningJobs();
+      if (timedOut) {
+        for (const { job } of running.values()) await releaseJob(job);
+      }
     },
 
     async drain() {
