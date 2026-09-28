@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "openapi": "tsx scripts/openapi.ts",
     "seed": "tsx scripts/seed.ts",
+    "db:indexes": "tsx scripts/sync-indexes.ts",
     "create-admin": "tsx scripts/create-admin.ts",
     "email:test": "tsx scripts/send-test-email.ts"
   },

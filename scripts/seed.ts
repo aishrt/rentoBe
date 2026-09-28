@@ -1,54 +1,46 @@
 /**
- * Creates or updates the demo accounts used to try sign-in locally and on staging.
- * The full seed (places, destinations, vehicles, FAQs, help articles) arrives with the data models (plan §9, Days 2–3).
+ * Seeds the database (plan §2.4). Safe to re-run.
+ *
+ * - Reference data in every environment: NZ places, the launch destinations, FAQs, help articles,
+ *   placeholder legal pages and the platform settings. Only what's missing is added, so admins' edits
+ *   are kept.
+ * - Demo accounts, 20 demo cars and completed demo trips with reviews, except in production (plan §16,
+ *   item 16). Each run resets them. Needs SEED_DEMO_PASSWORD (12+ characters) in backend/.env.
  *
  *   npm run seed
  */
 import { connectDb, disconnectDb } from '../src/db.js';
 import { env } from '../src/env.js';
-import { hashPassword } from '../src/modules/auth/auth.service.js';
-import { UserModel, type Role } from '../src/modules/users/user.model.js';
+import { DEMO_ACCOUNTS } from './seed-data/demo-accounts.js';
+import { seedDemoData, seedReferenceData } from './seed-data/index.js';
 
-interface DemoUser {
-  email: string;
-  firstName: string;
-  lastName: string;
-  roles: Role[];
-}
-
-const DEMO_USERS: DemoUser[] = [
-  { email: 'admin@rentovroom.test', firstName: 'Aroha', lastName: 'Admin', roles: ['ADMIN'] },
-  { email: 'support@rentovroom.test', firstName: 'Sam', lastName: 'Support', roles: ['SUPPORT'] },
-  { email: 'host@rentovroom.test', firstName: 'Hana', lastName: 'Host', roles: ['GUEST', 'HOST'] },
-  { email: 'guest@rentovroom.test', firstName: 'Kiri', lastName: 'Guest', roles: ['GUEST'] },
-];
+const describe = (counts: Record<string, number>) =>
+  Object.entries(counts)
+    .map(([collection, count]) => `${collection} ${count}`)
+    .join(', ');
 
 async function seed() {
-  if (env.NODE_ENV === 'production') {
-    throw new Error('The demo seed never runs in production (plan §16, item 16).');
-  }
-
+  const withDemo = env.NODE_ENV !== 'production';
   const password = process.env.SEED_DEMO_PASSWORD;
-  if (!password || password.length < 12) {
+  if (withDemo && (!password || password.length < 12)) {
     throw new Error('Set SEED_DEMO_PASSWORD (12+ characters) in backend/.env before seeding.');
   }
 
-  await connectDb();
-  const passwordHash = await hashPassword(password);
+  const connection = await connectDb();
+  console.log(`Database: ${connection.connection.name}`);
 
-  for (const user of DEMO_USERS) {
-    await UserModel.updateOne(
-      { email: user.email },
-      {
-        $set: { ...user, passwordHash, status: 'ACTIVE', emailVerifiedAt: new Date(), loginFailures: 0 },
-        $unset: { lockedUntil: 1 },
-      },
-      { upsert: true },
-    );
+  console.log(`Reference data added: ${describe(await seedReferenceData())}`);
+
+  if (!withDemo) {
+    console.log('Production: demo accounts, cars and trips are not seeded.');
+    return;
   }
 
-  console.log('Demo accounts ready (password: the SEED_DEMO_PASSWORD value):');
-  for (const user of DEMO_USERS) console.log(`  ${user.roles.join('+').padEnd(10)} ${user.email}`);
+  console.log(`Demo data written: ${describe(await seedDemoData(password!))}`);
+  console.log('Demo accounts (password: the SEED_DEMO_PASSWORD value):');
+  for (const account of DEMO_ACCOUNTS) {
+    console.log(`  ${account.roles.join('+').padEnd(10)} ${account.email}`);
+  }
 }
 
 seed()
