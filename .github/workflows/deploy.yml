@@ -85,23 +85,33 @@ jobs:
           echo "arn=$arn" >> "$GITHUB_OUTPUT"
           echo "Registered $arn"
 
-      - name: Roll out and wait until the service is stable
+      # ECS starts the new containers, waits for their health checks, then drains the old ones. The
+      # circuit breaker replaces a version that never becomes healthy with the previous one (a rollback).
+      - name: Roll out and wait until the new version is running
         env:
           TASK_DEFINITION_ARN: ${{ steps.taskdef.outputs.arn }}
         run: |
           aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
             --task-definition "$TASK_DEFINITION_ARN" --query service.serviceName --output text
-          # Each wait polls for up to 10 minutes; a rolling deploy of two tasks usually takes 5.
-          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-            || aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
-          # A stable service can also mean the circuit breaker rolled back to the previous version.
-          primary=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-            --query "services[0].deployments[?status=='PRIMARY'] | [0].[taskDefinition,rolloutState]" --output text)
-          echo "Primary deployment: $primary"
-          if [ "$primary" != "$TASK_DEFINITION_ARN"$'\t'"COMPLETED" ]; then
-            echo "::error::The new version did not become the running one (ECS rolled back). Check the CloudWatch logs in /ecs/rento-vroom-api-prod."
-            exit 1
-          fi
+          # The new deployment can take a few seconds to show up, so poll its own state rather than
+          # waiting for the service to look stable (it still does, briefly, with only the old version).
+          seen=false
+          for attempt in $(seq 1 90); do # 90 x 10 s = 15 minutes; a rollout usually takes 3-5
+            read -r primary state <<< "$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+              --query "services[0].deployments[?status=='PRIMARY'] | [0].[taskDefinition,rolloutState]" --output text)"
+            if [ "$primary" = "$TASK_DEFINITION_ARN" ]; then
+              seen=true
+              case "$state" in
+                COMPLETED) echo "Running: $TASK_DEFINITION_ARN"; exit 0 ;;
+                FAILED) break ;;
+              esac
+            elif [ "$seen" = true ]; then
+              break # replaced by the previous version: ECS rolled back
+            fi
+            sleep 10
+          done
+          echo "::error::The new version did not become the running one (primary: $primary, $state). Check the CloudWatch logs in /ecs/rento-vroom-api-prod."
+          exit 1
 
       - name: Smoke test
         run: curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors "$HEALTH_URL"
