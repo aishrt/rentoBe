@@ -1,9 +1,13 @@
 import bcrypt from 'bcryptjs';
 import mongoose, { type Types } from 'mongoose';
-import { HttpError } from '../../lib/http-error.js';
+import { env } from '../../env.js';
+import { enqueue } from '../../jobs/queue.js';
+import { HttpError, unauthenticated } from '../../lib/http-error.js';
+import { acceptAgreements } from '../users/agreements.js';
 import { UserModel, type UserDocument } from '../users/user.model.js';
 import { isStaff, toPublicUser, type PublicUser } from '../users/user.service.js';
-import type { LoginInput } from './auth.schemas.js';
+import { consumeAuthLink, createAuthLink } from './auth-links.js';
+import type { LoginInput, SignupInput } from './auth.schemas.js';
 import {
   REFRESH_TOKEN_TTL_MS,
   createRefreshToken,
@@ -54,6 +58,81 @@ const accountLocked = (until: Date) => {
 
 const sessionEnded = () =>
   new HttpError(401, 'SESSION_EXPIRED', 'Your session has ended. Please sign in again.');
+
+const VERIFY_EMAIL_VALID_MS = 24 * 60 * 60 * 1000;
+
+const emailTaken = () =>
+  new HttpError(409, 'EMAIL_TAKEN', 'An account with this email address already exists.', {
+    email: 'An account with this email already exists. Log in, or reset your password.',
+  });
+
+const linkInvalid = () => new HttpError(400, 'LINK_INVALID', 'This link has expired or was already used.');
+
+/**
+ * Creates a Guest account, records acceptance of the Terms and Privacy Policy, emails a link to
+ * confirm the address and signs the new user in (plan §6.1). An unconfirmed email doesn't block
+ * browsing or a first checkout; it's required before the first trip starts.
+ */
+export async function signup(input: SignupInput, context: RequestContext): Promise<AuthResult> {
+  if (await UserModel.exists({ email: input.email })) throw emailTaken();
+
+  let user: UserDocument;
+  try {
+    user = await UserModel.create({
+      email: input.email,
+      firstName: input.firstName,
+      lastName: input.lastName,
+      passwordHash: await hashPassword(input.password),
+      roles: ['GUEST'],
+      agreements: acceptAgreements(['TERMS', 'PRIVACY'], context.ip),
+    });
+  } catch (error) {
+    // The same email signed up twice at the same moment; the unique index kept the first.
+    if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) throw emailTaken();
+    throw error;
+  }
+
+  await sendVerificationEmail(user);
+  return { user: toPublicUser(user), tokens: await startSession(user, context) };
+}
+
+async function sendVerificationEmail(user: UserDocument): Promise<void> {
+  const token = await createAuthLink(user._id, 'VERIFY_EMAIL', VERIFY_EMAIL_VALID_MS);
+  await enqueue('email.send', {
+    to: user.email,
+    template: 'verifyEmail',
+    props: { firstName: user.firstName, verifyUrl: `${env.FRONTEND_URL}/verify-email?token=${token}` },
+  });
+}
+
+/** Confirms an email address from the emailed link. Works signed out, e.g. on another device. */
+export async function verifyEmail(token: string): Promise<{ email: string }> {
+  const userId = await consumeAuthLink(token, 'VERIFY_EMAIL');
+  const user = userId && (await UserModel.findById(userId));
+  if (!user) throw linkInvalid();
+
+  const confirmed = await UserModel.updateOne(
+    { _id: user._id, emailVerifiedAt: mongoose.trusted({ $exists: false }) },
+    { $set: { emailVerifiedAt: new Date() } },
+  );
+  if (confirmed.modifiedCount === 1) {
+    await enqueue('email.send', {
+      to: user.email,
+      template: 'welcome',
+      props: { firstName: user.firstName, browseUrl: env.FRONTEND_URL },
+    });
+  }
+  return { email: user.email };
+}
+
+/** Sends a new confirmation link; the previous one stops working. */
+export async function resendVerification(userId: string): Promise<{ sent: boolean }> {
+  const user = await UserModel.findById(userId);
+  if (!user || user.status !== 'ACTIVE') throw unauthenticated();
+  if (user.emailVerifiedAt) return { sent: false };
+  await sendVerificationEmail(user);
+  return { sent: true };
+}
 
 export async function login(input: LoginInput, context: RequestContext): Promise<AuthResult> {
   const user = await UserModel.findOne({ email: input.email }).select('+passwordHash');
