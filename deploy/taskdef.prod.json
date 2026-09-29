@@ -60,6 +60,14 @@
         {
           "name": "TWILIO_VERIFY_SERVICE_SID",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:TWILIO_VERIFY_SERVICE_SID::"
+        },
+        {
+          "name": "STRIPE_SECRET_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:STRIPE_SECRET_KEY::"
+        },
+        {
+          "name": "STRIPE_WEBHOOK_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:STRIPE_WEBHOOK_SECRET::"
         }
       ],
       "logConfiguration": {

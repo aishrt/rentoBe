@@ -22,6 +22,7 @@ const ERRORS: Record<number, string> = {
   409: 'Conflicts with existing data, e.g. the email address already has an account',
   423: 'Sign-in is paused after too many wrong passwords',
   429: 'Too many requests; try again later',
+  503: "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
 };
 
 /** The documented error responses of a route, each with the standard `{ error }` body. */

@@ -73,6 +73,18 @@ const envSchema = z
       .string()
       .regex(/^VA[0-9a-f]{32}$/, 'TWILIO_VERIFY_SERVICE_SID starts with VA')
       .optional(),
+
+    // Payments (plan §8). Without these the payment routes answer 503 and the rest of the API works.
+    // sk_test_ keys use the Stripe sandbox (no real money); sk_live_ keys take real payments.
+    STRIPE_SECRET_KEY: z
+      .string()
+      .regex(/^(sk|rk)_(test|live)_\w+$/, 'STRIPE_SECRET_KEY starts with sk_test_ or sk_live_')
+      .optional(),
+    // The signing secret of the webhook endpoint (Stripe Dashboard → Developers → Webhooks).
+    STRIPE_WEBHOOK_SECRET: z
+      .string()
+      .regex(/^whsec_\w+$/, 'STRIPE_WEBHOOK_SECRET starts with whsec_')
+      .optional(),
   })
   .superRefine((env, ctx) => {
     if (env.MAIL_DRIVER === 'resend' && !env.RESEND_API_KEY) {

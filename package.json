@@ -19,7 +19,9 @@
     "db:indexes": "tsx scripts/sync-indexes.ts",
     "create-admin": "tsx scripts/create-admin.ts",
     "email:test": "tsx scripts/send-test-email.ts",
-    "email:dev": "tsx watch scripts/email-preview.ts"
+    "email:dev": "tsx watch scripts/email-preview.ts",
+    "stripe:check": "tsx scripts/stripe-check.ts",
+    "stripe:setup": "tsx scripts/stripe-setup.ts"
   },
   "dependencies": {
     "@sentry/node": "^11.0.0",
@@ -42,6 +44,7 @@
     "react-email": "^6.11.0",
     "resend": "^6.29.0",
     "socket.io": "^4.8.4",
+    "stripe": "^22.6.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {

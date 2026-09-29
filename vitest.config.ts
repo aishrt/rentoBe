@@ -18,6 +18,9 @@ export default defineConfig({
       MAIL_DRIVER: 'console',
       EMAIL_FROM: 'Rento Vroom <hello@mail.example.com>',
       LOG_LEVEL: 'silent',
+      // Fake sandbox keys: tests replace every Stripe API call, and sign webhooks with this secret.
+      STRIPE_SECRET_KEY: 'sk_test_fake',
+      STRIPE_WEBHOOK_SECRET: 'whsec_fake',
     },
   },
 });

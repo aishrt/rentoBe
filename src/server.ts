@@ -4,6 +4,7 @@ import { connectDb, disconnectDb } from './db.js';
 import { env } from './env.js';
 import { logger } from './integrations/logger.js';
 import { flushSentry, initSentry, reportError } from './integrations/sentry.js';
+import { scheduleRecurringJobs } from './jobs/recurring.js';
 import { createJobRunner } from './jobs/runner.js';
 import { markShuttingDown } from './lib/lifecycle.js';
 import { startRealtime } from './realtime/realtime.js';
@@ -19,6 +20,7 @@ async function main() {
   const server = createServer(createApp());
   const realtime = await startRealtime(server);
   const jobRunner = env.RUN_JOBS ? createJobRunner({ concurrency: env.JOB_CONCURRENCY }) : undefined;
+  if (jobRunner) await scheduleRecurringJobs();
 
   server.listen(env.PORT, () => {
     logger.info(`Rento Vroom API listening on http://localhost:${env.PORT}`);
