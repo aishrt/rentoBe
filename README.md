@@ -105,7 +105,7 @@ The website is a single-page app, so vehicle and destination pages get their sea
 
 ## Roles and permissions
 
-`requireRole('ADMIN', 'SUPPORT')` checks the roles in the access token. `requirePermission('REFUNDS')` checks a support staff member's extra rights, read from the database on each request so a removed permission stops working at once; admins have every permission (plan §6.2). Both run after `requireAuth`, and the admin portal also needs `requireStaffMfa`.
+`requireRole('ADMIN', 'SUPPORT')` checks the roles in the access token. `requirePermission('REFUNDS')` checks a support staff member's extra rights, read from the database on each request so a removed permission stops working at once; admins have every permission (plan §6.2). Both run after `requireAuth`, and the admin portal also runs `requireActiveAccount`, so a suspended staff member loses access at once.
 
 ## API so far
 
@@ -126,8 +126,11 @@ The full contract, with every request and response shape, is [openapi.json](open
 | `POST /api/v1/auth/phone/otp` · `/phone/verify` | Signed in      | `{ phone }` texts a code (Twilio Verify; `SMS_DRIVER=console` logs it locally), then `{ code }` verifies the number. NZ numbers without +64; overseas with their code.                                     |
 | `POST /api/v1/me/password`                      | Signed in      | `{ currentPassword, newPassword }`. Signs out other devices.                                                                                                                                               |
 | `POST /api/v1/me/email`                         | Signed in      | `{ newEmail, currentPassword }`. Emails a link to the new address; the old one works until it's opened.                                                                                                    |
-| `POST /api/v1/me/mfa/setup` · `/me/mfa/verify`  | Staff          | Authenticator app setup: a QR code, then the first code. The staff portal answers 403 `MFA_SETUP_REQUIRED` until it's done.                                                                                |
-| `POST /api/v1/admin/staff/:id/mfa/reset`        | Admin          | Resets another staff member's lost authenticator and signs them out. Audit-logged.                                                                                                                         |
+| `GET /api/v1/me/mfa`                            | Staff          | Whether two-factor sign-in is on, and the authenticator apps (up to 2, never their secrets). Optional for staff; each turns it on or off in the staff portal's Settings.                                   |
+| `POST /api/v1/me/mfa/setup` · `/me/mfa/verify`  | Staff          | Adds an authenticator app: a QR code, then `{ code, name? }` from it. The first turns two-factor on and signs out other devices; a second also needs `currentCode` from the first.                         |
+| `POST /api/v1/me/mfa/devices/:id/remove`        | Staff          | `{ code }` from either app. Removes one of two apps; 409 `MFA_LAST_DEVICE` for the last one.                                                                                                               |
+| `POST /api/v1/me/mfa/disable`                   | Staff          | `{ code }` from any app. Turns two-factor sign-in off and removes every app. Each of these changes emails the staff member.                                                                                |
+| `POST /api/v1/admin/staff/:id/mfa/reset`        | Admin          | Removes another staff member's lost authenticator apps and signs them out. Audit-logged.                                                                                                                   |
 | `POST /api/v1/auth/refresh`                     | Refresh cookie | Rotates the refresh token (each works once)                                                                                                                                                                |
 | `POST /api/v1/auth/logout`                      | Any            | Ends the session and clears the cookies                                                                                                                                                                    |
 | `POST /api/v1/me/agreements`                    | Signed in      | `{ types }`, e.g. `['TERMS', 'PRIVACY']`: accepts the current version of those documents, with the time and IP. The user's `pendingAgreements` lists the ones with a new version to accept.                |

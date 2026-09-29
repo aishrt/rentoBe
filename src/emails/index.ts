@@ -4,10 +4,13 @@ import { getMailer, type Mailer, type SentEmail } from '../integrations/mailer/i
 import {
   ConfirmEmailChangeEmail,
   EmailChangedEmail,
+  MfaChangedEmail,
   PasswordChangedEmail,
   ResetPasswordEmail,
+  mfaChangedSubjects,
   type ConfirmEmailChangeProps,
   type EmailChangedProps,
+  type MfaChangedProps,
   type PasswordChangedProps,
   type ResetPasswordProps,
 } from './templates/account-emails.js';
@@ -46,6 +49,10 @@ export const emailTemplates = {
   emailChanged: defineTemplate<EmailChangedProps>({
     subject: () => 'Your Rento Vroom email address was changed',
     component: EmailChangedEmail,
+  }),
+  mfaChanged: defineTemplate<MfaChangedProps>({
+    subject: ({ change }) => mfaChangedSubjects[change],
+    component: MfaChangedEmail,
   }),
 };
 

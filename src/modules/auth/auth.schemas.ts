@@ -74,6 +74,20 @@ export const mfaLoginSchema = z.object({
 
 export const codeSchema = z.object({ code: codeField });
 
+/** Finishes adding an authenticator app: the first one turns two-factor sign-in on. */
+export const mfaVerifySchema = z.object({
+  code: codeField.meta({ description: 'From the app being added' }),
+  name: z
+    .string()
+    .trim()
+    .max(40, 'Use 40 characters or fewer')
+    .optional()
+    .meta({ description: 'What to call the app, e.g. "Work phone". A default is used when empty.' }),
+  currentCode: codeField
+    .optional()
+    .meta({ description: 'Needed when two-factor sign-in is already on: a code from an app already set up' }),
+});
+
 export const phoneSchema = z.object({
   phone: z.string({ error: 'Enter your mobile number' }).trim().min(1, 'Enter your mobile number').max(30),
 });
@@ -111,6 +125,24 @@ export const mfaSetupResponseSchema = z
     qrCode: z.string().meta({ description: 'The otpauth URL as a PNG data: URL' }),
   })
   .meta({ id: 'MfaSetupResponse' });
+
+export const mfaDeviceSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    addedAt: z.iso.datetime(),
+    lastUsedAt: z.iso.datetime().optional().meta({ description: 'The last time one of its codes was used' }),
+  })
+  .meta({ id: 'MfaDevice' });
+
+/** A staff member's two-factor sign-in. Never includes the secrets. */
+export const mfaStatusResponseSchema = z
+  .object({
+    enabled: z.boolean(),
+    maxDevices: z.number().int().meta({ description: 'How many authenticator apps an account can have' }),
+    devices: z.array(mfaDeviceSchema),
+  })
+  .meta({ id: 'MfaStatus' });
 
 export const resendVerificationResponseSchema = z
   .object({

@@ -12,7 +12,7 @@ export const publicUserSchema = z
     emailVerified: z.boolean(),
     phone: z.string().optional().meta({ description: 'Verified mobile number, E.164 (+64211234567)' }),
     phoneVerified: z.boolean(),
-    mfaEnabled: z.boolean().meta({ description: 'Staff: whether the authenticator app is set up' }),
+    mfaEnabled: z.boolean().meta({ description: 'Staff: whether two-factor sign-in is on' }),
     pendingAgreements: z.array(z.enum(AGREEMENT_TYPES)).meta({
       description:
         'Legal documents with a new version the user must accept before carrying on (POST /me/agreements). Usually empty.',

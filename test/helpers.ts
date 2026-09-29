@@ -2,7 +2,7 @@ import { generate } from 'otplib';
 import request from 'supertest';
 import { expect } from 'vitest';
 import { createApp } from '../src/app.js';
-import { encrypt } from '../src/lib/encryption.js';
+import { decrypt, encrypt } from '../src/lib/encryption.js';
 import { hashPassword } from '../src/modules/auth/auth.service.js';
 import { UserModel, type Role, type UserStatus } from '../src/modules/users/user.model.js';
 
@@ -27,26 +27,35 @@ export async function createUser(
   });
 }
 
-/** A staff member whose authenticator app is set up, with STAFF_TOTP_SECRET. */
+/** A staff member with two-factor sign-in on, and one authenticator app with STAFF_TOTP_SECRET. */
 export async function createStaff(email = 'aroha@example.co.nz', role: Role = 'ADMIN') {
   const user = await createUser({ email, roles: [role], firstName: 'Aroha' });
   await UserModel.updateOne(
     { _id: user._id },
-    { $set: { mfa: { secret: encrypt(STAFF_TOTP_SECRET), enabledAt: new Date() } } },
+    {
+      $set: {
+        mfa: {
+          devices: [{ name: 'Phone', secret: encrypt(STAFF_TOTP_SECRET), addedAt: new Date() }],
+          enabledAt: new Date(),
+        },
+      },
+    },
   );
   return user;
 }
 
 /**
- * A valid, unused authenticator code for a staff member's STAFF_TOTP_SECRET. Each code works once,
- * so after one has been used this gives the next 30-second step's (the server accepts one step ahead).
+ * A valid, unused code from a staff member's authenticator app (STAFF_TOTP_SECRET unless given).
+ * Each code works once, so after one has been used this gives the next 30-second step's (the
+ * server accepts one step ahead).
  */
-export async function staffCode(email = 'aroha@example.co.nz'): Promise<string> {
-  const user = await UserModel.findOne({ email });
+export async function staffCode(email = 'aroha@example.co.nz', secret = STAFF_TOTP_SECRET): Promise<string> {
+  const user = await UserModel.findOne({ email }).select('+mfa.devices.secret');
+  const device = user?.mfa?.devices.find((candidate) => decrypt(candidate.secret) === secret);
   const now = Math.floor(Date.now() / 30_000);
-  const last = user?.mfa?.lastTimeStep;
+  const last = device?.lastTimeStep;
   const step = last === undefined || last < now ? now : last + 1;
-  return generate({ secret: STAFF_TOTP_SECRET, epoch: step * 30 });
+  return generate({ secret, epoch: step * 30 });
 }
 
 export function testApp() {
