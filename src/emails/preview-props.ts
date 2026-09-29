@@ -19,4 +19,10 @@ export const previewProps: { [Name in EmailTemplateName]: EmailTemplateProps<Nam
     newEmail: 'kiri.new@example.co.nz',
     resetUrl: 'https://www.rentovroom.com/forgot-password',
   },
+  mfaChanged: {
+    firstName: 'Kiri',
+    change: 'DEVICE_ADDED',
+    deviceName: 'Work phone',
+    resetUrl: 'https://www.rentovroom.com/forgot-password',
+  },
 };

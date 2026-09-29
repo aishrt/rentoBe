@@ -29,16 +29,38 @@ export interface Agreement {
   ip?: string;
 }
 
+/** How many authenticator apps a staff member can have: their phone, and a backup. */
+export const MAX_MFA_DEVICES = 2;
+
+/** One authenticator app a staff member signs in with. */
+export interface MfaDevice {
+  _id: Types.ObjectId;
+  /** The staff member's name for it, e.g. "Work phone". */
+  name: string;
+  /** Encrypted (src/lib/encryption.ts). */
+  secret: string;
+  addedAt: Date;
+  lastUsedAt?: Date;
+  /** The last code's time step, so the same code can't be used twice (replay). */
+  lastTimeStep?: number;
+}
+
 /**
- * Staff two-factor sign-in with an authenticator app (plan §6.1). The secrets are encrypted
- * (src/lib/encryption.ts) and never leave the database except to check a code.
+ * Staff two-factor sign-in with an authenticator app (plan §6.1), optional and turned on or off by
+ * each staff member in the staff portal's settings. The secrets are encrypted and never leave the
+ * database except to check a code.
  */
 export interface StaffMfa {
-  secret?: string;
+  devices: MfaDevice[];
   /** Set during setup, until the first code proves the app has it. */
   pendingSecret?: string;
+  /** When the first device was added. Set while there is at least one device. */
   enabledAt?: Date;
-  /** The last code's time step, so the same code can't be used twice (replay). */
+  /**
+   * Before a second device was possible, the one app's secret and time step were kept here. They
+   * become the first device the next time they're needed (mfa.service.ts); no migration needed.
+   */
+  secret?: string;
   lastTimeStep?: number;
 }
 
@@ -188,9 +210,21 @@ const userSchema = new Schema<User>(
     mfa: {
       type: new Schema<StaffMfa>(
         {
-          secret: { type: String, select: false },
+          devices: {
+            type: [
+              new Schema<MfaDevice>({
+                name: { type: String, required: true, trim: true, maxlength: 40 },
+                secret: { type: String, required: true, select: false },
+                addedAt: { type: Date, required: true },
+                lastUsedAt: Date,
+                lastTimeStep: Number,
+              }),
+            ],
+            default: [],
+          },
           pendingSecret: { type: String, select: false },
           enabledAt: Date,
+          secret: { type: String, select: false },
           lastTimeStep: Number,
         },
         { _id: false },

@@ -8,6 +8,7 @@ import {
   emailResponseSchema,
   mfaChallengeResponseSchema,
   mfaSetupResponseSchema,
+  mfaStatusResponseSchema,
   phoneCodeResponseSchema,
   resendVerificationResponseSchema,
   sessionResponseSchema,
@@ -99,6 +100,7 @@ describe('API contract (openapi.json)', () => {
     await createUser({ email: 'aroha@example.co.nz', roles: ['ADMIN'] });
     const staff = browserAgent();
     await staff.post('/api/v1/auth/login').send({ email: 'aroha@example.co.nz', password: PASSWORD });
+    mfaStatusResponseSchema.parse((await staff.get('/api/v1/me/mfa')).body);
     mfaSetupResponseSchema.parse((await staff.post('/api/v1/me/mfa/setup')).body);
   });
 });

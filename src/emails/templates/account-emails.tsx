@@ -45,6 +45,57 @@ export function PasswordChangedEmail({ firstName, resetUrl }: PasswordChangedPro
   );
 }
 
+export type MfaChange = 'ENABLED' | 'DEVICE_ADDED' | 'DEVICE_REMOVED' | 'DISABLED';
+
+export interface MfaChangedProps {
+  firstName: string;
+  change: MfaChange;
+  /** The authenticator app added or removed. */
+  deviceName?: string;
+  resetUrl: string;
+}
+
+export const mfaChangedSubjects: Record<MfaChange, string> = {
+  ENABLED: 'Two-factor sign-in is on for your Rento Vroom account',
+  DEVICE_ADDED: 'An authenticator app was added to your Rento Vroom account',
+  DEVICE_REMOVED: 'An authenticator app was removed from your Rento Vroom account',
+  DISABLED: 'Two-factor sign-in was turned off for your Rento Vroom account',
+};
+
+const mfaChangedHeadings: Record<MfaChange, string> = {
+  ENABLED: 'Two-factor sign-in is on',
+  DEVICE_ADDED: 'An authenticator app was added',
+  DEVICE_REMOVED: 'An authenticator app was removed',
+  DISABLED: 'Two-factor sign-in is off',
+};
+
+function mfaChangeDetail(change: MfaChange, deviceName = 'Your authenticator app'): string {
+  switch (change) {
+    case 'ENABLED':
+      return `signing in to your Rento Vroom account now also needs a code from ${deviceName}, and your other devices were signed out.`;
+    case 'DEVICE_ADDED':
+      return `${deviceName} can now give the codes for signing in to your Rento Vroom account.`;
+    case 'DEVICE_REMOVED':
+      return `${deviceName} no longer gives codes for signing in to your Rento Vroom account.`;
+    case 'DISABLED':
+      return 'signing in to your Rento Vroom account now needs only your password.';
+  }
+}
+
+/** Staff two-factor sign-in was turned on or off, or an authenticator app was added or removed. */
+export function MfaChangedEmail({ firstName, change, deviceName, resetUrl }: MfaChangedProps) {
+  return (
+    <EmailLayout preview={mfaChangedSubjects[change]}>
+      <EmailHeading>{mfaChangedHeadings[change]}</EmailHeading>
+      <EmailText>
+        Kia ora {firstName}, {mfaChangeDetail(change, deviceName)}
+      </EmailText>
+      <EmailText>If this wasn't you, reset your password straight away and let an admin know.</EmailText>
+      <EmailButton href={resetUrl}>Reset my password</EmailButton>
+    </EmailLayout>
+  );
+}
+
 export interface ConfirmEmailChangeProps {
   firstName: string;
   newEmail: string;

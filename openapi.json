@@ -82,7 +82,7 @@
           },
           "mfaEnabled": {
             "type": "boolean",
-            "description": "Staff: whether the authenticator app is set up"
+            "description": "Staff: whether two-factor sign-in is on"
           },
           "pendingAgreements": {
             "type": "array",
@@ -250,6 +250,54 @@
         },
         "required": [
           "types"
+        ]
+      },
+      "MfaStatus": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "maxDevices": {
+            "type": "integer",
+            "description": "How many authenticator apps an account can have"
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MfaDevice"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "maxDevices",
+          "devices"
+        ]
+      },
+      "MfaDevice": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "addedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The last time one of its codes was used"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "addedAt"
         ]
       },
       "MfaSetupResponse": {
@@ -1430,13 +1478,62 @@
         }
       }
     },
+    "/me/mfa": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Staff: two-factor sign-in and its authenticator apps",
+        "description": "Two-factor sign-in is optional for staff, and each staff member can have up to two authenticator apps (a backup for a lost phone). Never includes the secrets.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether it is on, and the apps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me/mfa/setup": {
       "post": {
         "tags": [
           "Account"
         ],
-        "summary": "Staff: start setting up the authenticator app",
-        "description": "A new secret, shown once as a QR code. Required before the staff portal opens (403 MFA_SETUP_REQUIRED). Finish with POST /me/mfa/verify.",
+        "summary": "Staff: start adding an authenticator app",
+        "description": "A new secret, shown once as a QR code, for the first app or a backup. Finish with POST /me/mfa/verify. 409 MFA_DEVICE_LIMIT when there are already two.",
         "security": [
           {
             "cookieAuth": []
@@ -1494,8 +1591,234 @@
         "tags": [
           "Account"
         ],
-        "summary": "Staff: finish setting up the authenticator app",
-        "description": "The first code from the app, which proves it has the secret.",
+        "summary": "Staff: finish adding an authenticator app",
+        "description": "The first code from the new app, which proves it has the secret. The first app turns two-factor sign-in on and signs out every other device (this one stays signed in). A second app also needs `currentCode`, from the app already set up. Emails the staff member either way.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "From the app being added"
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 40,
+                    "description": "What to call the app, e.g. \"Work phone\". A default is used when empty."
+                  },
+                  "currentCode": {
+                    "type": "string",
+                    "description": "Needed when two-factor sign-in is already on: a code from an app already set up"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The app is added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/mfa/devices/{id}/remove": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Staff: remove one of two authenticator apps",
+        "description": "Needs a code from either app. The last app can’t be removed (409 MFA_LAST_DEVICE): turn two-factor sign-in off instead. Emails the staff member.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The authenticator app’s id"
+            },
+            "required": true,
+            "description": "The authenticator app’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The apps left",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/mfa/disable": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Staff: turn off two-factor sign-in",
+        "description": "Needs a code from any of their authenticator apps, and removes them all. Sign-in then needs only the password. Emails the staff member.",
         "security": [
           {
             "cookieAuth": []
@@ -1524,7 +1847,7 @@
         },
         "responses": {
           "200": {
-            "description": "Two-factor sign-in is on",
+            "description": "Two-factor sign-in is off",
             "content": {
               "application/json": {
                 "schema": {
@@ -1640,8 +1963,8 @@
         "tags": [
           "Admin"
         ],
-        "summary": "Reset a staff member's lost authenticator",
-        "description": "Admin only, and not for your own account. They are signed out everywhere and set up a new authenticator at their next sign-in. Written to the audit log.",
+        "summary": "Reset a staff member's lost authenticator apps",
+        "description": "Admin only, and not for your own account. Removes all their authenticator apps and signs them out everywhere; they sign in with only their password and can set up a new app in Settings. Written to the audit log.",
         "security": [
           {
             "cookieAuth": []

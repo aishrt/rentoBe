@@ -26,13 +26,13 @@ describe('GET /api/v1/admin/overview', () => {
     expect(response.body.error.code).toBe('FORBIDDEN');
   });
 
-  it("stays closed to staff until they've set up their authenticator app", async () => {
-    await createUser({ email: 'aroha@example.co.nz', roles: ['ADMIN'] });
+  it("opens to staff who haven't turned on two-factor sign-in, but not once they're suspended", async () => {
+    const staff = await createUser({ email: 'aroha@example.co.nz', roles: ['SUPPORT'] });
     const agent = await signedInAs('aroha@example.co.nz');
+    expect((await agent.get('/api/v1/admin/overview')).status).toBe(200);
 
-    const response = await agent.get('/api/v1/admin/overview');
-    expect(response.status).toBe(403);
-    expect(response.body.error.code).toBe('MFA_SETUP_REQUIRED');
+    await UserModel.updateOne({ _id: staff._id }, { $set: { status: 'SUSPENDED' } });
+    expect((await agent.get('/api/v1/admin/overview')).status).toBe(401);
   });
 
   it('returns real user counts to staff, and null for metrics not tracked yet', async () => {

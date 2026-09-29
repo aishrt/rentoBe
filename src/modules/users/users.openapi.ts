@@ -1,6 +1,13 @@
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
+import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
-import { codeSchema, emailResponseSchema, mfaSetupResponseSchema } from '../auth/auth.schemas.js';
+import {
+  codeSchema,
+  emailResponseSchema,
+  mfaSetupResponseSchema,
+  mfaStatusResponseSchema,
+  mfaVerifySchema,
+} from '../auth/auth.schemas.js';
 import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
 import { userResponseSchema } from './user.schemas.js';
 
@@ -55,12 +62,26 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
   });
 
   registry.registerPath({
+    method: 'get',
+    path: '/me/mfa',
+    tags: ['Account'],
+    summary: 'Staff: two-factor sign-in and its authenticator apps',
+    description:
+      'Two-factor sign-in is optional for staff, and each staff member can have up to two authenticator apps (a backup for a lost phone). Never includes the secrets.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Whether it is on, and the apps', mfaStatusResponseSchema),
+      ...errorResponses(401, 403),
+    },
+  });
+
+  registry.registerPath({
     method: 'post',
     path: '/me/mfa/setup',
     tags: ['Account'],
-    summary: 'Staff: start setting up the authenticator app',
+    summary: 'Staff: start adding an authenticator app',
     description:
-      'A new secret, shown once as a QR code. Required before the staff portal opens (403 MFA_SETUP_REQUIRED). Finish with POST /me/mfa/verify.',
+      'A new secret, shown once as a QR code, for the first app or a backup. Finish with POST /me/mfa/verify. 409 MFA_DEVICE_LIMIT when there are already two.',
     security: signedIn,
     responses: {
       200: jsonResponse('Scan this with the app', mfaSetupResponseSchema),
@@ -72,12 +93,46 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
     method: 'post',
     path: '/me/mfa/verify',
     tags: ['Account'],
-    summary: 'Staff: finish setting up the authenticator app',
-    description: 'The first code from the app, which proves it has the secret.',
+    summary: 'Staff: finish adding an authenticator app',
+    description:
+      'The first code from the new app, which proves it has the secret. The first app turns two-factor sign-in on and signs out every other device (this one stays signed in). A second app also needs `currentCode`, from the app already set up. Emails the staff member either way.',
+    security: signedIn,
+    request: { body: jsonBody(mfaVerifySchema) },
+    responses: {
+      200: jsonResponse('The app is added', userResponseSchema),
+      ...errorResponses(400, 401, 403, 409, 429),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/mfa/devices/{id}/remove',
+    tags: ['Account'],
+    summary: 'Staff: remove one of two authenticator apps',
+    description:
+      'Needs a code from either app. The last app can’t be removed (409 MFA_LAST_DEVICE): turn two-factor sign-in off instead. Emails the staff member.',
+    security: signedIn,
+    request: {
+      params: z.object({ id: z.string().meta({ description: 'The authenticator app’s id' }) }),
+      body: jsonBody(codeSchema),
+    },
+    responses: {
+      200: jsonResponse('The apps left', mfaStatusResponseSchema),
+      ...errorResponses(400, 401, 403, 404, 409, 429),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/mfa/disable',
+    tags: ['Account'],
+    summary: 'Staff: turn off two-factor sign-in',
+    description:
+      'Needs a code from any of their authenticator apps, and removes them all. Sign-in then needs only the password. Emails the staff member.',
     security: signedIn,
     request: { body: jsonBody(codeSchema) },
     responses: {
-      200: jsonResponse('Two-factor sign-in is on', userResponseSchema),
+      200: jsonResponse('Two-factor sign-in is off', userResponseSchema),
       ...errorResponses(400, 401, 403, 409, 429),
     },
   });

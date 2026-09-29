@@ -17,7 +17,7 @@ import {
   signAccessToken,
   verifyAccessToken,
 } from './auth.tokens.js';
-import { checkMfaCode } from './mfa.service.js';
+import { checkMfaCode, findUserWithMfaSecrets } from './mfa.service.js';
 import { passwordContainsEmailName } from './password-policy.js';
 import { SessionModel } from './session.model.js';
 
@@ -162,8 +162,8 @@ export async function resendVerification(userId: string): Promise<{ sent: boolea
 }
 
 /**
- * Checks the email and password. Staff with an authenticator get a challenge for the code instead
- * of a session (plan §6.1); everyone else is signed in.
+ * Checks the email and password. Staff who turned on two-factor sign-in get a challenge for the code
+ * instead of a session (plan §6.1); everyone else is signed in.
  */
 export async function login(input: LoginInput, context: RequestContext): Promise<AuthResult | MfaChallenge> {
   const user = await UserModel.findOne({ email: input.email }).select('+passwordHash');
@@ -201,7 +201,7 @@ export async function login(input: LoginInput, context: RequestContext): Promise
   return { user: toPublicUser(user), tokens: await startSession(user, context) };
 }
 
-/** The second step of a staff sign-in: the code from the authenticator app. */
+/** The second step of a staff sign-in: a code from one of their authenticator apps. */
 export async function completeMfaLogin(
   challenge: string,
   code: string,
@@ -210,7 +210,7 @@ export async function completeMfaLogin(
   const pending = await findAuthLink(challenge, 'MFA_CHALLENGE');
   if (!pending) throw challengeExpired();
 
-  const user = await UserModel.findById(pending.userId).select('+mfa.secret');
+  const user = await findUserWithMfaSecrets(pending.userId);
   if (!user || user.status !== 'ACTIVE' || !user.mfa?.enabledAt) throw challengeExpired();
 
   if (!(await checkMfaCode(user, code))) {

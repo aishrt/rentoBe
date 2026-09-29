@@ -3,8 +3,14 @@ import { unauthenticated } from '../../lib/http-error.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { accountChangeRateLimit, codeCheckRateLimit } from '../../middleware/rate-limit.js';
-import { codeSchema } from '../auth/auth.schemas.js';
-import { enableMfa, startMfaSetup } from '../auth/mfa.service.js';
+import { codeSchema, mfaVerifySchema } from '../auth/auth.schemas.js';
+import {
+  addMfaDevice,
+  disableMfa,
+  getMfaStatus,
+  removeMfaDevice,
+  startMfaSetup,
+} from '../auth/mfa.service.js';
 import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
 import { acceptLatestAgreements, changePassword, requestEmailChange } from './account.service.js';
 import { UserModel } from './user.model.js';
@@ -42,14 +48,28 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
     res.json({ user: await acceptLatestAgreements(req.auth!.userId, types, req.ip) });
   });
 
-  // Staff: set up the authenticator app for two-factor sign-in.
+  // Staff: two-factor sign-in with up to two authenticator apps, turned on and off in the staff portal.
+  router.get('/mfa', async (req, res) => {
+    res.json(await getMfaStatus(req.auth!.userId));
+  });
+
   router.post('/mfa/setup', async (req, res) => {
     res.json(await startMfaSetup(req.auth!.userId));
   });
 
   router.post('/mfa/verify', ...limit(codeCheckRateLimit), async (req, res) => {
+    const input = validate(mfaVerifySchema, req.body);
+    res.json({ user: await addMfaDevice(req.auth!, input, req.ip) });
+  });
+
+  router.post('/mfa/devices/:id/remove', ...limit(codeCheckRateLimit), async (req, res) => {
     const { code } = validate(codeSchema, req.body);
-    res.json({ user: await enableMfa(req.auth!.userId, code, req.ip) });
+    res.json(await removeMfaDevice(req.auth!.userId, String(req.params.id), code, req.ip));
+  });
+
+  router.post('/mfa/disable', ...limit(codeCheckRateLimit), async (req, res) => {
+    const { code } = validate(codeSchema, req.body);
+    res.json({ user: await disableMfa(req.auth!.userId, code, req.ip) });
   });
 
   return router;
