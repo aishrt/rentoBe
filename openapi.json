@@ -384,6 +384,157 @@
           "metrics",
           "generatedAt"
         ]
+      },
+      "TestPayment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The Stripe PaymentIntent id (pi_…)"
+          },
+          "clientSecret": {
+            "type": "string",
+            "description": "Lets Stripe.js on the page confirm this one payment. Never logged or stored."
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "nzd"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "clientSecret",
+          "amountCents",
+          "currency"
+        ]
+      },
+      "TestPaymentStatus": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "The PaymentIntent status: succeeded, processing, requires_payment_method, requires_action, canceled, …"
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "paymentMethod": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "The payment method type, e.g. card or link"
+              },
+              "wallet": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "apple_pay or google_pay when a card was paid through a wallet"
+              },
+              "brand": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The card brand, e.g. visa"
+              },
+              "last4": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "type",
+              "wallet",
+              "brand",
+              "last4"
+            ],
+            "description": "Null until the payment has been attempted"
+          },
+          "webhookReceived": {
+            "type": "boolean",
+            "description": "Whether Stripe’s payment_intent.succeeded event reached the webhook"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "amountCents",
+          "currency",
+          "paymentMethod",
+          "webhookReceived"
+        ]
+      },
+      "ExchangeRates": {
+        "type": "object",
+        "properties": {
+          "base": {
+            "type": "string",
+            "enum": [
+              "NZD"
+            ]
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "description": "The day the rates are for; the ECB publishes on European working days"
+          },
+          "source": {
+            "type": "string",
+            "description": "Who published the rates"
+          },
+          "rates": {
+            "type": "object",
+            "properties": {
+              "AUD": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "USD": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "EUR": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "CAD": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "AUD",
+              "USD",
+              "EUR",
+              "CAD"
+            ],
+            "description": "How much of each currency NZ$1 buys"
+          }
+        },
+        "required": [
+          "base",
+          "date",
+          "source",
+          "rates"
+        ]
       }
     },
     "parameters": {}
@@ -2011,6 +2162,187 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/payments/test": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Start a NZ$1 test payment in the Stripe sandbox",
+        "description": "Admin only. Checks the Stripe keys, Apple Pay, Google Pay and the webhook before the booking flow exists. Refused (409 LIVE_MODE) with live keys, and 503 until the keys are set.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The payment, ready for Stripe.js to confirm",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPayment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/payments/test/{id}": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "How a test payment went",
+        "description": "Admin only. Its status, how it was paid (card, Apple Pay, Google Pay) and whether its webhook arrived.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The PaymentIntent id (pi_…)"
+            },
+            "required": true,
+            "description": "The PaymentIntent id (pi_…)",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The test payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestPaymentStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/exchange-rates": {
+      "get": {
+        "tags": [
+          "Currency"
+        ],
+        "summary": "Exchange rates for approximate prices in AUD, USD, EUR and CAD",
+        "description": "Public. Updated daily from the European Central Bank. For display only: every charge, refund and payout is in NZD, and the card issuer converts.",
+        "responses": {
+          "200": {
+            "description": "The latest rates, per NZ$1",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExchangeRates"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
             "content": {
               "application/json": {
                 "schema": {

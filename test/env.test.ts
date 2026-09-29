@@ -28,6 +28,18 @@ describe('environment', () => {
     expect(() => parseEnv({ ...baseEnv, RUN_JOBS: 'no' })).toThrow(/RUN_JOBS/);
   });
 
+  it('takes Stripe secret keys and webhook secrets, not a publishable key pasted by mistake', () => {
+    expect(parseEnv(baseEnv).STRIPE_SECRET_KEY).toBeUndefined();
+    expect(
+      parseEnv({ ...baseEnv, STRIPE_SECRET_KEY: 'sk_test_51Abc', STRIPE_WEBHOOK_SECRET: 'whsec_Abc123' }),
+    ).toMatchObject({ STRIPE_SECRET_KEY: 'sk_test_51Abc', STRIPE_WEBHOOK_SECRET: 'whsec_Abc123' });
+    expect(parseEnv({ ...baseEnv, STRIPE_SECRET_KEY: 'rk_live_51Abc' }).STRIPE_SECRET_KEY).toBe(
+      'rk_live_51Abc',
+    );
+    expect(() => parseEnv({ ...baseEnv, STRIPE_SECRET_KEY: 'pk_test_51Abc' })).toThrow(/sk_test_/);
+    expect(() => parseEnv({ ...baseEnv, STRIPE_WEBHOOK_SECRET: 'sk_test_51Abc' })).toThrow(/whsec_/);
+  });
+
   it('names every missing required variable', () => {
     expect(() => parseEnv({})).toThrow(/MONGODB_URI[\s\S]*JWT_ACCESS_SECRET/);
   });

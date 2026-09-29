@@ -8,6 +8,7 @@ import { AvailabilityBlockModel } from './modules/availability/availability-bloc
 import { BookingModel } from './modules/bookings/booking.model.js';
 import { CmsBlockModel } from './modules/cms/cms-block.model.js';
 import { DestinationModel } from './modules/cms/destination.model.js';
+import { ExchangeRateModel } from './modules/currency/exchange-rate.model.js';
 import { FaqModel } from './modules/help/faq.model.js';
 import { HelpArticleModel } from './modules/help/help-article.model.js';
 import { IncidentModel } from './modules/incidents/incident.model.js';
@@ -56,4 +57,5 @@ export const allModels = [
   DestinationModel,
   PlatformSettingsModel,
   RateLimitModel,
+  ExchangeRateModel,
 ] as const;

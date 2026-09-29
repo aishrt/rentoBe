@@ -11,6 +11,8 @@ import { errorHandler, notFound } from './middleware/error-handler.js';
 import { requireTrustedOrigin } from './middleware/trusted-origin.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
+import { currencyRouter } from './modules/currency/currency.routes.js';
+import { stripeWebhookRouter } from './modules/payments/stripe-webhook.js';
 import { meRouter } from './modules/users/users.routes.js';
 import { pagesRouter } from './pages/pages.routes.js';
 
@@ -30,6 +32,9 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   app.use('/pages', pagesRouter());
   app.use(helmet());
   app.use(cors({ origin: env.FRONTEND_ORIGINS, credentials: true }));
+  // Stripe calls this from its servers, not a browser, and signs the raw body (plan §8.1), so it
+  // comes before the JSON parser and the website-origin check.
+  app.use('/api/v1/payments/webhook', stripeWebhookRouter());
   app.use(express.json({ limit: '100kb' }));
   app.use(cookieParser());
 
@@ -49,6 +54,7 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   api.use('/auth', authRouter({ rateLimit }));
   api.use('/me', meRouter({ rateLimit }));
   api.use('/admin', adminRouter());
+  api.use('/exchange-rates', currencyRouter());
 
   app.use('/api/v1', api);
   app.use(notFound);

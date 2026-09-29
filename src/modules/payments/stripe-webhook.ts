@@ -1,0 +1,94 @@
+import express, { Router } from 'express';
+import mongoose, { type ClientSession } from 'mongoose';
+import Stripe from 'stripe';
+import { withTransaction } from '../../db.js';
+import { env } from '../../env.js';
+import { HttpError } from '../../lib/http-error.js';
+import { StripeEventModel } from './stripe-event.model.js';
+
+type StripeEventType = Stripe.Event['type'];
+export type StripeEventHandler = (event: Stripe.Event, session: ClientSession) => Promise<void>;
+
+/**
+ * The events the webhook endpoint subscribes to (plan §8.1): payments, refunds and card disputes.
+ * `npm run stripe:setup` registers them with Stripe. Connect (`account.updated`) and identity
+ * events join when payouts and verification are built (Days 17–20).
+ */
+export const STRIPE_WEBHOOK_EVENTS = [
+  'payment_intent.succeeded',
+  'payment_intent.amount_capturable_updated',
+  'payment_intent.payment_failed',
+  'payment_intent.canceled',
+  'charge.refunded',
+  'refund.failed',
+  'charge.dispute.created',
+  'charge.dispute.closed',
+] as const satisfies readonly StripeEventType[];
+
+/**
+ * What each event does. A handler runs inside the transaction that records the event, so it only
+ * writes to the database (emails and Stripe calls go through the job queue) and may run twice if
+ * MongoDB retries the transaction. The booking flow (Days 11–13) adds the first handlers; until
+ * then each event is only recorded.
+ */
+export const stripeEventHandlers: Partial<Record<StripeEventType, StripeEventHandler>> = {};
+
+/**
+ * POST /api/v1/payments/webhook (plan §8.1, item 13). Stripe signs each event with the endpoint's
+ * secret and the signature covers the raw body, so this router is mounted before the JSON parser.
+ */
+export function stripeWebhookRouter() {
+  const router = Router();
+
+  router.post('/', express.raw({ type: 'application/json', limit: '1mb' }), async (req, res) => {
+    const event = verifiedEvent(req.body, req.get('stripe-signature'));
+    const firstDelivery = await handleStripeEvent(event);
+    res.json({ received: true, duplicate: !firstDelivery });
+  });
+
+  return router;
+}
+
+function verifiedEvent(body: unknown, signature: string | undefined): Stripe.Event {
+  if (!env.STRIPE_WEBHOOK_SECRET) {
+    throw new HttpError(503, 'PAYMENTS_UNAVAILABLE', 'The Stripe webhook secret is not set.');
+  }
+  if (!Buffer.isBuffer(body) || !signature) throw invalidSignature();
+  try {
+    return Stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET);
+  } catch {
+    throw invalidSignature();
+  }
+}
+
+const invalidSignature = () =>
+  new HttpError(400, 'INVALID_SIGNATURE', 'The Stripe-Signature header is missing or does not match.');
+
+/**
+ * Runs the event's handler and saves the event id in one transaction, so a repeated delivery is
+ * skipped and a failed one saves nothing (Stripe retries it for up to 3 days). Resolves false for
+ * a repeat.
+ */
+export async function handleStripeEvent(event: Stripe.Event): Promise<boolean> {
+  const handler = stripeEventHandlers[event.type];
+  const object = event.data.object as { id?: unknown };
+  try {
+    await withTransaction(async (session) => {
+      await StripeEventModel.create(
+        [
+          {
+            eventId: event.id,
+            type: event.type,
+            objectId: typeof object.id === 'string' ? object.id : undefined,
+          },
+        ],
+        { session },
+      );
+      await handler?.(event, session);
+    });
+    return true;
+  } catch (error) {
+    if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) return false;
+    throw error;
+  }
+}

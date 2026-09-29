@@ -1,6 +1,7 @@
 import { OpenAPIRegistry, OpenApiGeneratorV31 } from '@asteasolutions/zod-to-openapi';
 import { registerAdminPaths } from '../modules/admin/admin.openapi.js';
 import { registerAuthPaths } from '../modules/auth/auth.openapi.js';
+import { registerCurrencyPaths } from '../modules/currency/currency.openapi.js';
 import { registerUserPaths } from '../modules/users/users.openapi.js';
 
 /**
@@ -28,6 +29,7 @@ export function buildOpenApiDocument() {
   registerAuthPaths(registry);
   registerUserPaths(registry);
   registerAdminPaths(registry);
+  registerCurrencyPaths(registry);
 
   return new OpenApiGeneratorV31(registry.definitions).generateDocument({
     openapi: '3.1.0',
