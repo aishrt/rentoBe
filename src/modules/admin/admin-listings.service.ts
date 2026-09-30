@@ -163,7 +163,7 @@ export async function getVehicleForReview(id: string) {
   const vehicle = await findVehicle(id);
   const [host, settings] = await Promise.all([
     UserModel.findById(vehicle.hostId)
-      .select('firstName lastName email emailVerifiedAt phoneVerifiedAt hostProfile.status')
+      .select('firstName lastName email phone emailVerifiedAt phoneVerifiedAt hostProfile.status')
       .lean(),
     getPlatformSettings(),
   ]);
@@ -173,6 +173,7 @@ export async function getVehicleForReview(id: string) {
       id: vehicle.hostId.toString(),
       name: host ? `${host.firstName} ${host.lastName}` : 'Unknown',
       email: host?.email ?? '',
+      ...(host?.phone && host.phoneVerifiedAt && { phone: host.phone }),
       status: host?.hostProfile?.status ?? null,
       emailVerified: Boolean(host?.emailVerifiedAt),
       phoneVerified: Boolean(host?.phoneVerifiedAt),

@@ -61,6 +61,10 @@ export const adminVehicleSchema = z
       id: z.string(),
       name: z.string(),
       email: z.string(),
+      phone: z
+        .string()
+        .optional()
+        .meta({ description: 'The verified mobile, to reach the Host about the listing' }),
       status: z.enum(HOST_STATUSES).nullable(),
       emailVerified: z.boolean(),
       phoneVerified: z.boolean(),
