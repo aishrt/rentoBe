@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { LICENCE_CLASSES } from '../users/user.model.js';
-import { DOCUMENT_TYPES, PHOTO_TYPES } from '../vehicles/vehicle.model.js';
+import { BODY_TYPES, DOCUMENT_TYPES, PHOTO_TYPES } from '../vehicles/vehicle.model.js';
 
 const percent = z.number().min(0).max(100);
 const wholeCents = z.number().int().min(0);
@@ -141,5 +141,19 @@ export const platformSettingsSchema = z.object({
   }),
   /** Non-urgent SMS in these NZ hours wait until the end (plan §7). */
   sms: z.object({ quietHoursStart: timeOfDay, quietHoursEnd: timeOfDay }),
+  /**
+   * The Become a Host earnings estimator's assumptions (plan §16, item 18): a typical daily price for
+   * each body type and how many days a car is booked in a month. Always shown as an estimate.
+   */
+  hostEstimator: z.object({
+    bookedDaysPerMonth: z.number().int().min(1).max(31),
+    dailyCentsByBodyType: z.record(z.enum(BODY_TYPES), wholeCents),
+  }),
+  /** Who issues receipts, and the GST number they show once the client is registered (plan §8.1, item 18). */
+  business: z.object({
+    legalName: z.string().min(1),
+    gstNumber: z.string().regex(/^(\d{2,3}-\d{3}-\d{3})?$/, { error: 'Use the format 123-456-789' }),
+    supportEmail: z.email(),
+  }),
 });
 export type PlatformSettings = z.infer<typeof platformSettingsSchema>;

@@ -135,4 +135,25 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
     quietHoursStart: '21:00',
     quietHoursEnd: '07:00',
   },
+  // Placeholders until the client supplies typical prices and booked days (plan §16, item 18).
+  hostEstimator: {
+    bookedDaysPerMonth: 10,
+    dailyCentsByBodyType: {
+      HATCHBACK: 6_000,
+      SEDAN: 7_000,
+      WAGON: 7_500,
+      SUV: 9_500,
+      UTE: 10_000,
+      VAN: 11_000,
+      PEOPLE_MOVER: 11_000,
+      COUPE: 12_000,
+      CONVERTIBLE: 13_000,
+    },
+  },
+  business: {
+    legalName: 'Rento Vroom',
+    // Shown on receipts once the client is GST-registered (plan §16, item 7).
+    gstNumber: '',
+    supportEmail: 'rentovroom@gmail.com',
+  },
 };

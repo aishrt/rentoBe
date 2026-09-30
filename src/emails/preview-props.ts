@@ -25,4 +25,5 @@ export const previewProps: { [Name in EmailTemplateName]: EmailTemplateProps<Nam
     deviceName: 'Work phone',
     resetUrl: 'https://www.rentovroom.com/forgot-password',
   },
+  supportTicketReceived: { name: 'Kiri', ref: 'ST-4HX8PA', subject: 'Changing my pick-up time' },
 };

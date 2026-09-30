@@ -1,8 +1,11 @@
 import { OpenAPIRegistry, OpenApiGeneratorV31 } from '@asteasolutions/zod-to-openapi';
 import { registerAdminPaths } from '../modules/admin/admin.openapi.js';
 import { registerAuthPaths } from '../modules/auth/auth.openapi.js';
+import { registerContentPaths } from '../modules/cms/content.openapi.js';
 import { registerCurrencyPaths } from '../modules/currency/currency.openapi.js';
+import { registerSearchPaths } from '../modules/search/search.openapi.js';
 import { registerUserPaths } from '../modules/users/users.openapi.js';
+import { registerVehiclePaths } from '../modules/vehicles/vehicles.openapi.js';
 
 /**
  * The API contract (plan §2.3), built from the same Zod schemas the routes use. `npm run openapi`
@@ -30,6 +33,9 @@ export function buildOpenApiDocument() {
   registerUserPaths(registry);
   registerAdminPaths(registry);
   registerCurrencyPaths(registry);
+  registerSearchPaths(registry);
+  registerVehiclePaths(registry);
+  registerContentPaths(registry);
 
   return new OpenApiGeneratorV31(registry.definitions).generateDocument({
     openapi: '3.1.0',

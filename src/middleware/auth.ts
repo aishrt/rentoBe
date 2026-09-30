@@ -12,6 +12,14 @@ export function readAccessToken(req: Request): string | undefined {
   return typeof cookie === 'string' ? cookie : undefined;
 }
 
+/** Reads the session when there is one, for routes that also work signed out (the contact form). */
+export const optionalAuth: RequestHandler = (req, _res, next) => {
+  const token = readAccessToken(req);
+  const auth = token ? verifyAccessToken(token) : null;
+  if (auth) req.auth = auth;
+  next();
+};
+
 export const requireAuth: RequestHandler = (req, _res, next) => {
   const token = readAccessToken(req);
   const auth = token ? verifyAccessToken(token) : null;

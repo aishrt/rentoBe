@@ -535,6 +535,2253 @@
           "source",
           "rates"
         ]
+      },
+      "SearchResults": {
+        "type": "object",
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VehicleCard"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "pageSize": {
+            "type": "integer"
+          },
+          "place": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "lat": {
+                "type": "number"
+              },
+              "lng": {
+                "type": "number"
+              },
+              "airportCode": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "type",
+              "lat",
+              "lng"
+            ],
+            "description": "The place searched; null for all of NZ"
+          },
+          "radiusKm": {
+            "type": "number"
+          },
+          "dates": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "start": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "days": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "days"
+            ]
+          },
+          "placeNotFound": {
+            "type": "boolean",
+            "description": "The typed place matched nothing, so the results cover all of NZ"
+          }
+        },
+        "required": [
+          "results",
+          "total",
+          "page",
+          "pageSize",
+          "place",
+          "radiusKm",
+          "dates",
+          "placeNotFound"
+        ]
+      },
+      "VehicleCard": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "description": "e.g. \"2022 Toyota RAV4\""
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "photo": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "alt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url",
+              "alt"
+            ]
+          },
+          "suburb": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "distanceKm": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "From the searched place; null without one"
+          },
+          "rating": {
+            "$ref": "#/components/schemas/Rating"
+          },
+          "tripCount": {
+            "type": "integer"
+          },
+          "dailyCents": {
+            "type": "integer"
+          },
+          "estimate": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "days": {
+                "type": "integer"
+              },
+              "totalCents": {
+                "type": "integer",
+                "description": "Every mandatory charge for the dates (rental, service fee, mandatory protection, GST), plus airport delivery for an airport search"
+              },
+              "includesAirportDelivery": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "days",
+              "totalCents",
+              "includesAirportDelivery"
+            ],
+            "description": "Only when the search has dates"
+          },
+          "instantBook": {
+            "type": "boolean"
+          },
+          "delivery": {
+            "type": "boolean",
+            "description": "Delivers to an address"
+          },
+          "airportDelivery": {
+            "type": "boolean"
+          },
+          "bodyType": {
+            "type": "string",
+            "enum": [
+              "HATCHBACK",
+              "SEDAN",
+              "WAGON",
+              "SUV",
+              "UTE",
+              "VAN",
+              "PEOPLE_MOVER",
+              "COUPE",
+              "CONVERTIBLE"
+            ]
+          },
+          "fuelType": {
+            "type": "string",
+            "enum": [
+              "PETROL",
+              "DIESEL",
+              "HYBRID",
+              "PHEV",
+              "EV"
+            ]
+          },
+          "transmission": {
+            "type": "string",
+            "enum": [
+              "AUTOMATIC",
+              "MANUAL"
+            ]
+          },
+          "seats": {
+            "type": "integer"
+          },
+          "unlimitedKm": {
+            "type": "boolean"
+          },
+          "petFriendly": {
+            "type": "boolean"
+          },
+          "childSeat": {
+            "type": "boolean"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to three key features"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "make",
+          "model",
+          "year",
+          "photo",
+          "distanceKm",
+          "rating",
+          "tripCount",
+          "dailyCents",
+          "estimate",
+          "instantBook",
+          "delivery",
+          "airportDelivery",
+          "bodyType",
+          "fuelType",
+          "transmission",
+          "seats",
+          "unlimitedKm",
+          "petFriendly",
+          "childSeat",
+          "features"
+        ]
+      },
+      "Rating": {
+        "type": "object",
+        "properties": {
+          "avg": {
+            "type": "number"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "avg",
+          "count"
+        ],
+        "description": "Average stars and how many reviews; count 0 shows as \"New\""
+      },
+      "VehicleMakes": {
+        "type": "object",
+        "properties": {
+          "makes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "make": {
+                  "type": "string"
+                },
+                "models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "make",
+                "models"
+              ]
+            }
+          }
+        },
+        "required": [
+          "makes"
+        ]
+      },
+      "PlaceSuggestions": {
+        "type": "object",
+        "properties": {
+          "suggestions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlaceSuggestion"
+            }
+          }
+        },
+        "required": [
+          "suggestions"
+        ]
+      },
+      "PlaceSuggestion": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`place:<id>` for our places, `google:<placeId>` for a street address"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CITY",
+              "SUBURB",
+              "AIRPORT",
+              "DESTINATION",
+              "ADDRESS"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show and put in the field, e.g. \"Auckland Airport (AKL)\""
+          },
+          "secondary": {
+            "type": "string",
+            "description": "The city or region under the name"
+          },
+          "code": {
+            "type": "string",
+            "description": "Airports: the IATA code"
+          },
+          "lat": {
+            "type": "number",
+            "description": "Our places include coordinates; addresses need GET /places/{id}"
+          },
+          "lng": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "name",
+          "label"
+        ]
+      },
+      "PlaceResponse": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "$ref": "#/components/schemas/PlaceDetails"
+          }
+        },
+        "required": [
+          "place"
+        ]
+      },
+      "PlaceDetails": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`place:<id>` for our places, `google:<placeId>` for a street address"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CITY",
+              "SUBURB",
+              "AIRPORT",
+              "DESTINATION",
+              "ADDRESS"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show and put in the field, e.g. \"Auckland Airport (AKL)\""
+          },
+          "secondary": {
+            "type": "string",
+            "description": "The city or region under the name"
+          },
+          "code": {
+            "type": "string",
+            "description": "Airports: the IATA code"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lng": {
+            "type": "number"
+          },
+          "address": {
+            "type": "object",
+            "properties": {
+              "unit": {
+                "type": "string",
+                "maxLength": 20
+              },
+              "streetNumber": {
+                "type": "string",
+                "maxLength": 20
+              },
+              "street": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 120
+              },
+              "suburb": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "city": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 80
+              },
+              "region": {
+                "type": "string",
+                "enum": [
+                  "Northland",
+                  "Auckland",
+                  "Waikato",
+                  "Bay of Plenty",
+                  "Gisborne",
+                  "Hawke's Bay",
+                  "Taranaki",
+                  "Manawatū-Whanganui",
+                  "Wellington",
+                  "Tasman",
+                  "Nelson",
+                  "Marlborough",
+                  "West Coast",
+                  "Canterbury",
+                  "Otago",
+                  "Southland"
+                ]
+              },
+              "postcode": {
+                "type": "string",
+                "pattern": "^\\d{4}$"
+              }
+            },
+            "required": [
+              "street",
+              "city",
+              "region",
+              "postcode"
+            ],
+            "description": "A street address in the structured NZ format, when every part is known"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "name",
+          "label",
+          "lat",
+          "lng"
+        ]
+      },
+      "FeaturedVehicles": {
+        "type": "object",
+        "properties": {
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VehicleCard"
+            }
+          }
+        },
+        "required": [
+          "vehicles"
+        ]
+      },
+      "VehicleResponse": {
+        "type": "object",
+        "properties": {
+          "vehicle": {
+            "$ref": "#/components/schemas/VehicleDetail"
+          }
+        },
+        "required": [
+          "vehicle"
+        ]
+      },
+      "VehicleDetail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "bodyType": {
+            "type": "string",
+            "enum": [
+              "HATCHBACK",
+              "SEDAN",
+              "WAGON",
+              "SUV",
+              "UTE",
+              "VAN",
+              "PEOPLE_MOVER",
+              "COUPE",
+              "CONVERTIBLE"
+            ]
+          },
+          "fuelType": {
+            "type": "string",
+            "enum": [
+              "PETROL",
+              "DIESEL",
+              "HYBRID",
+              "PHEV",
+              "EV"
+            ]
+          },
+          "transmission": {
+            "type": "string",
+            "enum": [
+              "AUTOMATIC",
+              "MANUAL"
+            ]
+          },
+          "seats": {
+            "type": "integer"
+          },
+          "doors": {
+            "type": "integer"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "powertrain": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "engineCc": {
+                "type": "number"
+              },
+              "cylinders": {
+                "type": "number"
+              },
+              "description": {
+                "type": "string"
+              },
+              "evRangeKm": {
+                "type": "number"
+              },
+              "batteryKwh": {
+                "type": "number"
+              }
+            }
+          },
+          "fuelPolicy": {
+            "type": "string",
+            "enum": [
+              "SAME_LEVEL",
+              "FULL"
+            ]
+          },
+          "kmAllowancePerDay": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unlimitedKm": {
+            "type": "boolean"
+          },
+          "extraKmCents": {
+            "type": "integer"
+          },
+          "petFriendly": {
+            "type": "boolean"
+          },
+          "childSeat": {
+            "type": "boolean"
+          },
+          "pricing": {
+            "type": "object",
+            "properties": {
+              "dailyCents": {
+                "type": "integer"
+              },
+              "weeklyDiscountPct": {
+                "type": "number"
+              },
+              "monthlyDiscountPct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "dailyCents",
+              "weeklyDiscountPct",
+              "monthlyDiscountPct"
+            ]
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "minDays": {
+                "type": "integer"
+              },
+              "maxDays": {
+                "type": "integer"
+              },
+              "minNoticeHours": {
+                "type": "number"
+              },
+              "bufferHours": {
+                "type": "number"
+              },
+              "instantBook": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "minDays",
+              "maxDays",
+              "minNoticeHours",
+              "bufferHours",
+              "instantBook"
+            ]
+          },
+          "cancellationTier": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z_]*$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "refunds": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "minHoursBefore": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "refundPct": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  },
+                  "required": [
+                    "minHoursBefore",
+                    "refundPct"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "code",
+              "name",
+              "summary",
+              "refunds"
+            ]
+          },
+          "photos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "FRONT",
+                    "REAR",
+                    "DRIVER",
+                    "PASSENGER",
+                    "INTERIOR",
+                    "DASH",
+                    "BOOT",
+                    "TYRES",
+                    "DAMAGE"
+                  ]
+                },
+                "url": {
+                  "type": "string"
+                },
+                "alt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "url",
+                "alt"
+              ]
+            }
+          },
+          "compliance": {
+            "$ref": "#/components/schemas/VehicleCompliance"
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "suburb": {
+                "type": "string"
+              },
+              "city": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "approx": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "lat": {
+                    "type": "number"
+                  },
+                  "lng": {
+                    "type": "number"
+                  },
+                  "radiusM": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "lat",
+                  "lng",
+                  "radiusM"
+                ],
+                "description": "A circle that contains the car, for the map; never its address"
+              }
+            },
+            "required": [
+              "approx"
+            ]
+          },
+          "deliveryOptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliveryOptionSummary"
+            }
+          },
+          "protectionPlans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProtectionPlanSummary"
+            }
+          },
+          "rating": {
+            "$ref": "#/components/schemas/Rating"
+          },
+          "tripCount": {
+            "type": "integer"
+          },
+          "host": {
+            "$ref": "#/components/schemas/PublicHost"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "make",
+          "model",
+          "year",
+          "bodyType",
+          "fuelType",
+          "transmission",
+          "seats",
+          "doors",
+          "features",
+          "powertrain",
+          "fuelPolicy",
+          "kmAllowancePerDay",
+          "unlimitedKm",
+          "extraKmCents",
+          "petFriendly",
+          "childSeat",
+          "pricing",
+          "rules",
+          "cancellationTier",
+          "photos",
+          "compliance",
+          "location",
+          "deliveryOptions",
+          "protectionPlans",
+          "rating",
+          "tripCount",
+          "host"
+        ]
+      },
+      "VehicleCompliance": {
+        "type": "object",
+        "properties": {
+          "rego": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "CURRENT",
+                  "EXPIRED",
+                  "NOT_RECORDED"
+                ]
+              },
+              "expiresMonth": {
+                "type": "string",
+                "description": "YYYY-MM"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "inspection": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "CURRENT",
+                  "EXPIRED",
+                  "NOT_RECORDED"
+                ]
+              },
+              "expiresMonth": {
+                "type": "string",
+                "description": "YYYY-MM"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "WOF",
+                  "COF"
+                ],
+                "description": "A Warrant of Fitness, or a Certificate of Fitness"
+              }
+            },
+            "required": [
+              "status",
+              "kind"
+            ]
+          },
+          "ruc": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "description": "Diesel, EV and plug-in hybrid cars pay Road User Charges"
+              },
+              "recorded": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "required",
+              "recorded"
+            ]
+          }
+        },
+        "required": [
+          "rego",
+          "inspection",
+          "ruc"
+        ]
+      },
+      "DeliveryOptionSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "PICKUP",
+              "DELIVERY",
+              "AIRPORT",
+              "CUSTOM"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "feeCents": {
+            "type": "integer"
+          },
+          "airportCode": {
+            "type": "string"
+          },
+          "radiusKm": {
+            "type": "number",
+            "description": "DELIVERY: how far from the car it delivers"
+          },
+          "area": {
+            "type": "string",
+            "description": "PICKUP and CUSTOM: the suburb and city only"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "label",
+          "feeCents"
+        ]
+      },
+      "ProtectionPlanSummary": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "dailyPriceCents": {
+            "type": "integer"
+          },
+          "excessCents": {
+            "type": "integer"
+          },
+          "coverSummary": {
+            "type": "string"
+          },
+          "mandatory": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "dailyPriceCents",
+          "excessCents",
+          "coverSummary",
+          "mandatory"
+        ]
+      },
+      "PublicHost": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "avatarUrl": {
+            "type": "string"
+          },
+          "rating": {
+            "$ref": "#/components/schemas/Rating"
+          },
+          "tripCount": {
+            "type": "integer"
+          },
+          "responseRate": {
+            "type": "number",
+            "description": "Share of booking requests answered, 0–100"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Identity verified"
+          },
+          "joinedYear": {
+            "type": "integer"
+          },
+          "bio": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "firstName",
+          "rating",
+          "tripCount",
+          "verified",
+          "joinedYear"
+        ]
+      },
+      "VehicleAvailability": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "busy": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "start": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "end": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "start",
+                "end"
+              ]
+            },
+            "description": "When the car is taken, merged; never why"
+          },
+          "minNoticeHours": {
+            "type": "number"
+          },
+          "bufferHours": {
+            "type": "number"
+          },
+          "minDays": {
+            "type": "integer"
+          },
+          "maxDays": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "busy",
+          "minNoticeHours",
+          "bufferHours",
+          "minDays",
+          "maxDays"
+        ]
+      },
+      "VehicleReviews": {
+        "type": "object",
+        "properties": {
+          "reviews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VehicleReview"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "pageSize": {
+            "type": "integer"
+          },
+          "rating": {
+            "$ref": "#/components/schemas/Rating"
+          },
+          "categories": {
+            "type": "object",
+            "properties": {
+              "cleanliness": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "communication": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "pickupReturn": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "cleanliness",
+              "communication",
+              "pickupReturn"
+            ],
+            "description": "Average stars in each category"
+          }
+        },
+        "required": [
+          "reviews",
+          "total",
+          "page",
+          "pageSize",
+          "rating",
+          "categories"
+        ]
+      },
+      "VehicleReview": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "author": {
+            "type": "object",
+            "properties": {
+              "firstName": {
+                "type": "string"
+              },
+              "avatarUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "firstName"
+            ]
+          },
+          "overall": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "author",
+          "overall",
+          "createdAt"
+        ]
+      },
+      "QuoteResponse": {
+        "type": "object",
+        "properties": {
+          "quote": {
+            "$ref": "#/components/schemas/Quote"
+          }
+        },
+        "required": [
+          "quote"
+        ]
+      },
+      "Quote": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "False when there are problems; the price is still shown"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TripProblem"
+            }
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "lineItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LineItem"
+            }
+          },
+          "price": {
+            "$ref": "#/components/schemas/GuestPrice"
+          },
+          "protectionPlan": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProtectionPlanSummary"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            ]
+          },
+          "pickup": {
+            "$ref": "#/components/schemas/DeliveryOptionSummary"
+          },
+          "dropoff": {
+            "$ref": "#/components/schemas/DeliveryOptionSummary"
+          },
+          "instantBook": {
+            "type": "boolean"
+          },
+          "cancellationTier": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z_]*$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "refunds": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "minHoursBefore": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "refundPct": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  },
+                  "required": [
+                    "minHoursBefore",
+                    "refundPct"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "code",
+              "name",
+              "summary",
+              "refunds"
+            ]
+          }
+        },
+        "required": [
+          "available",
+          "problems",
+          "start",
+          "end",
+          "days",
+          "lineItems",
+          "price",
+          "protectionPlan",
+          "pickup",
+          "dropoff",
+          "instantBook",
+          "cancellationTier"
+        ]
+      },
+      "TripProblem": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "DATES_UNAVAILABLE",
+              "NOTICE_TOO_SHORT",
+              "TRIP_TOO_SHORT",
+              "TRIP_TOO_LONG",
+              "DOCUMENTS_EXPIRE",
+              "OPTION_NOT_FOUND",
+              "ADDRESS_NEEDED",
+              "OUTSIDE_DELIVERY_AREA",
+              "PLAN_NOT_FOUND"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "LineItem": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "amountCents": {
+            "type": "integer",
+            "description": "Negative for a discount"
+          },
+          "gstCents": {
+            "type": "integer"
+          },
+          "mandatory": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "amountCents",
+          "gstCents",
+          "mandatory"
+        ]
+      },
+      "GuestPrice": {
+        "type": "object",
+        "properties": {
+          "subtotalCents": {
+            "type": "integer",
+            "description": "Rental, after any discount"
+          },
+          "deliveryCents": {
+            "type": "integer"
+          },
+          "serviceFeeCents": {
+            "type": "integer"
+          },
+          "protectionCents": {
+            "type": "integer"
+          },
+          "gstCents": {
+            "type": "integer",
+            "description": "GST included in the total"
+          },
+          "totalCents": {
+            "type": "integer"
+          },
+          "mandatoryCents": {
+            "type": "integer"
+          },
+          "optionalCents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subtotalCents",
+          "deliveryCents",
+          "serviceFeeCents",
+          "protectionCents",
+          "gstCents",
+          "totalCents",
+          "mandatoryCents",
+          "optionalCents"
+        ]
+      },
+      "QuoteRequest": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "description": "\"2026-10-12T10:00\" in NZ time, or ISO 8601 with an offset"
+          },
+          "end": {
+            "type": "string"
+          },
+          "pickupOptionId": {
+            "type": "string",
+            "description": "Left out: collect from the Host"
+          },
+          "returnOptionId": {
+            "type": "string",
+            "description": "Left out: the same as pick-up"
+          },
+          "deliveryAddress": {
+            "type": "object",
+            "properties": {
+              "unit": {
+                "type": "string",
+                "maxLength": 20
+              },
+              "streetNumber": {
+                "type": "string",
+                "maxLength": 20
+              },
+              "street": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 120
+              },
+              "suburb": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "city": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 80
+              },
+              "region": {
+                "type": "string",
+                "enum": [
+                  "Northland",
+                  "Auckland",
+                  "Waikato",
+                  "Bay of Plenty",
+                  "Gisborne",
+                  "Hawke's Bay",
+                  "Taranaki",
+                  "Manawatū-Whanganui",
+                  "Wellington",
+                  "Tasman",
+                  "Nelson",
+                  "Marlborough",
+                  "West Coast",
+                  "Canterbury",
+                  "Otago",
+                  "Southland"
+                ]
+              },
+              "postcode": {
+                "type": "string",
+                "pattern": "^\\d{4}$"
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -48,
+                "maximum": -33
+              },
+              "lng": {
+                "type": "number",
+                "minimum": 165,
+                "maximum": 179.9
+              }
+            },
+            "required": [
+              "street",
+              "city",
+              "region",
+              "postcode",
+              "lat",
+              "lng"
+            ],
+            "description": "Needed for a DELIVERY option"
+          },
+          "protectionPlanCode": {
+            "type": "string",
+            "description": "Left out: the mandatory plan"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ]
+      },
+      "Destinations": {
+        "type": "object",
+        "properties": {
+          "destinations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DestinationSummary"
+            }
+          }
+        },
+        "required": [
+          "destinations"
+        ]
+      },
+      "DestinationSummary": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "maoriName": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "tagline": {
+            "type": "string"
+          },
+          "heroImage": {
+            "type": "string"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lng": {
+            "type": "number"
+          },
+          "airports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IATA codes of the airports that serve it"
+          }
+        },
+        "required": [
+          "slug",
+          "city",
+          "region",
+          "lat",
+          "lng",
+          "airports"
+        ]
+      },
+      "DestinationResponse": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "$ref": "#/components/schemas/DestinationDetail"
+          }
+        },
+        "required": [
+          "destination"
+        ]
+      },
+      "DestinationDetail": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "maoriName": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "tagline": {
+            "type": "string"
+          },
+          "heroImage": {
+            "type": "string"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lng": {
+            "type": "number"
+          },
+          "airports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "IATA codes of the airports that serve it"
+          },
+          "intro": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "city",
+          "region",
+          "lat",
+          "lng",
+          "airports",
+          "intro"
+        ]
+      },
+      "LegalPageResponse": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/LegalPage"
+          }
+        },
+        "required": [
+          "page"
+        ]
+      },
+      "LegalPage": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "legal.terms",
+              "legal.privacy",
+              "legal.cancellation-policy",
+              "legal.host-agreement",
+              "legal.guest-agreement"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "description": "The document version users accept"
+          },
+          "title": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string",
+            "description": "The document in Markdown"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "key",
+          "version",
+          "title",
+          "markdown",
+          "updatedAt"
+        ]
+      },
+      "Faqs": {
+        "type": "object",
+        "properties": {
+          "faqs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Faq"
+            }
+          }
+        },
+        "required": [
+          "faqs"
+        ]
+      },
+      "Faq": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "GUEST",
+              "HOST",
+              "ALL"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "answer",
+          "category",
+          "audience"
+        ]
+      },
+      "PublicPolicies": {
+        "type": "object",
+        "properties": {
+          "fees": {
+            "type": "object",
+            "properties": {
+              "guestServiceFeePct": {
+                "type": "number"
+              },
+              "hostCommissionPct": {
+                "type": "number"
+              },
+              "gstRatePct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "guestServiceFeePct",
+              "hostCommissionPct",
+              "gstRatePct"
+            ]
+          },
+          "cancellation": {
+            "type": "object",
+            "properties": {
+              "tiers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z_]*$"
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "summary": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "refunds": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "minHoursBefore": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "refundPct": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          }
+                        },
+                        "required": [
+                          "minHoursBefore",
+                          "refundPct"
+                        ]
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "name",
+                    "summary",
+                    "refunds"
+                  ]
+                }
+              },
+              "hostSelectableTiers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "defaultTier": {
+                "type": "string"
+              },
+              "hostCancellationFeeCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "tiers",
+              "hostSelectableTiers",
+              "defaultTier",
+              "hostCancellationFeeCents"
+            ]
+          },
+          "protectionPlans": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z_]*$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "dailyPriceCents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "excessCents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "coverSummary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mandatory": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "code",
+                "name",
+                "dailyPriceCents",
+                "excessCents",
+                "coverSummary",
+                "mandatory"
+              ]
+            }
+          },
+          "eligibility": {
+            "type": "object",
+            "properties": {
+              "minAge": {
+                "type": "integer"
+              },
+              "minYearsLicensed": {
+                "type": "number"
+              },
+              "acceptedLicenceClasses": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "NZ_FULL",
+                    "NZ_RESTRICTED",
+                    "NZ_LEARNER",
+                    "OVERSEAS"
+                  ]
+                }
+              },
+              "overseasNeedsEnglishProof": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "minAge",
+              "minYearsLicensed",
+              "acceptedLicenceClasses",
+              "overseasNeedsEnglishProof"
+            ]
+          },
+          "vehicles": {
+            "type": "object",
+            "properties": {
+              "requiredDocuments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "REGO",
+                    "WOF",
+                    "COF",
+                    "RUC",
+                    "INSURANCE",
+                    "OWNER_CONSENT",
+                    "OTHER"
+                  ]
+                }
+              },
+              "requiredPhotoAngles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "FRONT",
+                    "REAR",
+                    "DRIVER",
+                    "PASSENGER",
+                    "INTERIOR",
+                    "DASH",
+                    "BOOT",
+                    "TYRES",
+                    "DAMAGE"
+                  ]
+                }
+              },
+              "vinOrChassisRequired": {
+                "type": "boolean"
+              },
+              "minPhotoWidthPx": {
+                "type": "integer"
+              },
+              "minPhotoHeightPx": {
+                "type": "integer"
+              },
+              "seats": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer"
+                  },
+                  "max": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "doors": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer"
+                  },
+                  "max": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "dailyPriceCents": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer"
+                  },
+                  "max": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "maxDiscountPct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "requiredDocuments",
+              "requiredPhotoAngles",
+              "vinOrChassisRequired",
+              "minPhotoWidthPx",
+              "minPhotoHeightPx",
+              "seats",
+              "doors",
+              "dailyPriceCents",
+              "maxDiscountPct"
+            ]
+          },
+          "search": {
+            "type": "object",
+            "properties": {
+              "maxTripDays": {
+                "type": "integer"
+              },
+              "radiusKm": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number"
+                  },
+                  "default": {
+                    "type": "number"
+                  },
+                  "max": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "min",
+                  "default",
+                  "max"
+                ]
+              }
+            },
+            "required": [
+              "maxTripDays",
+              "radiusKm"
+            ]
+          },
+          "hostEstimator": {
+            "type": "object",
+            "properties": {
+              "bookedDaysPerMonth": {
+                "type": "integer"
+              },
+              "dailyCentsByBodyType": {
+                "type": "object",
+                "properties": {
+                  "HATCHBACK": {
+                    "type": "integer"
+                  },
+                  "SEDAN": {
+                    "type": "integer"
+                  },
+                  "WAGON": {
+                    "type": "integer"
+                  },
+                  "SUV": {
+                    "type": "integer"
+                  },
+                  "UTE": {
+                    "type": "integer"
+                  },
+                  "VAN": {
+                    "type": "integer"
+                  },
+                  "PEOPLE_MOVER": {
+                    "type": "integer"
+                  },
+                  "COUPE": {
+                    "type": "integer"
+                  },
+                  "CONVERTIBLE": {
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            "required": [
+              "bookedDaysPerMonth",
+              "dailyCentsByBodyType"
+            ]
+          },
+          "reviews": {
+            "type": "object",
+            "properties": {
+              "windowDays": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "windowDays"
+            ]
+          },
+          "trips": {
+            "type": "object",
+            "properties": {
+              "lateReturnGraceMinutes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "lateReturnGraceMinutes"
+            ]
+          }
+        },
+        "required": [
+          "fees",
+          "cancellation",
+          "protectionPlans",
+          "eligibility",
+          "vehicles",
+          "search",
+          "hostEstimator",
+          "reviews",
+          "trips"
+        ]
+      },
+      "FeaturedReviews": {
+        "type": "object",
+        "properties": {
+          "show": {
+            "type": "boolean",
+            "description": "False until the published reviews reach the homepage threshold in settings: hide the section"
+          },
+          "reviews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FeaturedReview"
+            }
+          }
+        },
+        "required": [
+          "show",
+          "reviews"
+        ]
+      },
+      "FeaturedReview": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "author": {
+            "type": "object",
+            "properties": {
+              "firstName": {
+                "type": "string"
+              },
+              "avatarUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "firstName"
+            ]
+          },
+          "overall": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "vehicleTitle": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "author",
+          "overall",
+          "body",
+          "vehicleTitle",
+          "createdAt"
+        ]
+      },
+      "ContactResponse": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "The support ticket reference, e.g. ST-4HX8PA"
+          }
+        },
+        "required": [
+          "ref"
+        ]
+      },
+      "ContactRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 100
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "BOOKING",
+              "PAYMENT",
+              "ACCOUNT",
+              "HOSTING",
+              "SAFETY",
+              "PRIVACY",
+              "OTHER"
+            ],
+            "default": "OTHER"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 200
+          },
+          "message": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 5000
+          },
+          "bookingRef": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^RV-[A-Z0-9]{6}$"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "subject",
+          "message"
+        ]
       }
     },
     "parameters": {}
@@ -2343,6 +4590,934 @@
           },
           "503": {
             "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Search Results and Browse Cars",
+        "description": "Public. Live cars matching every filter in spec §5, with their distance from the place. With dates, cars that are taken, need more notice, or whose documents expire are left out, and each card has an estimated total. With no place, the search covers all of NZ.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Typed place, matched to our best place without coordinates"
+            },
+            "required": false,
+            "description": "Typed place, matched to our best place without coordinates",
+            "name": "where",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "A suggestion id from GET /places/suggest"
+            },
+            "required": false,
+            "description": "A suggestion id from GET /places/suggest",
+            "name": "placeId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "number"
+            },
+            "required": false,
+            "name": "lat",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "number"
+            },
+            "required": false,
+            "name": "lng",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "IATA code: also finds cars that deliver to that airport"
+            },
+            "required": false,
+            "description": "IATA code: also finds cars that deliver to that airport",
+            "name": "airport",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "number",
+              "description": "Kept within the range in settings (GET /policies)"
+            },
+            "required": false,
+            "description": "Kept within the range in settings (GET /policies)",
+            "name": "radiusKm",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Pick-up: \"2026-10-12T10:00\" in NZ time, or ISO 8601 with an offset"
+            },
+            "required": false,
+            "description": "Pick-up: \"2026-10-12T10:00\" in NZ time, or ISO 8601 with an offset",
+            "name": "start",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Return, in the same format. Without dates: Browse Cars"
+            },
+            "required": false,
+            "description": "Return, in the same format. Without dates: Browse Cars",
+            "name": "end",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer"
+            },
+            "required": false,
+            "name": "minDailyCents",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer"
+            },
+            "required": false,
+            "name": "maxDailyCents",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "HATCHBACK",
+                  "SEDAN",
+                  "WAGON",
+                  "SUV",
+                  "UTE",
+                  "VAN",
+                  "PEOPLE_MOVER",
+                  "COUPE",
+                  "CONVERTIBLE"
+                ]
+              },
+              "description": "Repeat, or separate with commas"
+            },
+            "required": false,
+            "description": "Repeat, or separate with commas",
+            "name": "types",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "make",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "model",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer"
+            },
+            "required": false,
+            "name": "minYear",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer"
+            },
+            "required": false,
+            "name": "maxYear",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "AUTOMATIC",
+                "MANUAL"
+              ]
+            },
+            "required": false,
+            "name": "transmission",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer"
+            },
+            "required": false,
+            "name": "minSeats",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "PETROL",
+                  "DIESEL",
+                  "HYBRID",
+                  "PHEV",
+                  "EV"
+                ]
+              }
+            },
+            "required": false,
+            "name": "fuel",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "description": "Hybrid, plug-in hybrid or electric"
+            },
+            "required": false,
+            "description": "Hybrid, plug-in hybrid or electric",
+            "name": "electrified",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false,
+            "name": "airportDelivery",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "description": "Delivers to an address"
+            },
+            "required": false,
+            "description": "Delivers to an address",
+            "name": "delivery",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false,
+            "name": "instantBook",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "number",
+              "description": "1–5; leaves out cars without reviews"
+            },
+            "required": false,
+            "description": "1–5; leaves out cars without reviews",
+            "name": "minRating",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false,
+            "name": "unlimitedKm",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false,
+            "name": "petFriendly",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false,
+            "name": "childSeat",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "recommended",
+                "price_asc",
+                "price_desc",
+                "rating",
+                "distance",
+                "newest"
+              ]
+            },
+            "required": false,
+            "name": "sort",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer"
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "description": "Up to 48; 24 by default"
+            },
+            "required": false,
+            "description": "Up to 48; 24 by default",
+            "name": "pageSize",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResults"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/search/makes": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Makes and models of live cars, for the filter",
+        "responses": {
+          "200": {
+            "description": "Makes and their models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehicleMakes"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/places/suggest": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Location autocomplete (NZ only)",
+        "description": "Public. Our cities, suburbs, airports and destinations first (\"taupo\" finds Taupō, \"akl\" the airport), then street addresses from Google Places once it is set up. An empty `q` lists popular places.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "One per search, passed again to GET /places/{id}, so Google bills it once"
+            },
+            "required": false,
+            "description": "One per search, passed again to GET /places/{id}, so Google bills it once",
+            "name": "sessionToken",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaceSuggestions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/places/{id}": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Coordinates and address of a suggestion",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "A suggestion id"
+            },
+            "required": true,
+            "description": "A suggestion id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "sessionToken",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The place",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaceResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles/featured": {
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "The homepage’s featured cars",
+        "description": "Public. The cars admins picked, or else the best-rated live cars.",
+        "responses": {
+          "200": {
+            "description": "Up to 8 cars",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeaturedVehicles"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles/{slug}": {
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "A live listing",
+        "description": "Public. Approved photos, specs, rego and WOF status, policies, delivery options and the Host. Never the plate or the exact address. 404 for anything not live.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehicleResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles/{id}/availability": {
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "When the car is taken",
+        "description": "Public. Busy times between `from` and `to` (6 months by default), merged, never why.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "YYYY-MM-DD or a date and time; now by default"
+            },
+            "required": false,
+            "description": "YYYY-MM-DD or a date and time; now by default",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Busy times",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehicleAvailability"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles/{id}/reviews": {
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "Published guest reviews of the car",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer"
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "10 reviews a page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VehicleReviews"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles/{id}/quote": {
+      "post": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "Price a trip",
+        "description": "Public. The price breakdown in NZD for the dates, pick-up and return options and protection plan, and every problem in the way (dates taken, notice, trip length, documents, delivery area). Holds nothing.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The quote",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/destinations": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "City and destination landing pages",
+        "description": "Public. Featured ones first: they are the homepage tiles.",
+        "responses": {
+          "200": {
+            "description": "Destinations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Destinations"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/destinations/{slug}": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "One destination, for /rental/{slug}",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The destination",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cms/{key}": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "A legal page in Markdown",
+        "description": "Public. The legal pages are placeholders until the client’s legal adviser supplies them.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "legal.terms",
+                "legal.privacy",
+                "legal.cancellation-policy",
+                "legal.host-agreement",
+                "legal.guest-agreement"
+              ]
+            },
+            "required": true,
+            "name": "key",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegalPageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/faqs": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Frequently asked questions",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "GUEST",
+                "HOST"
+              ],
+              "description": "Also includes questions for everyone"
+            },
+            "required": false,
+            "description": "Also includes questions for everyone",
+            "name": "audience",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "description": "Only the homepage’s questions"
+            },
+            "required": false,
+            "description": "Only the homepage’s questions",
+            "name": "home",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Questions in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Faqs"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policies": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Fees, cancellation tiers, protection plans and listing rules",
+        "description": "Public. The settings in force that the website shows: the Cancellation Policy and Insurance pages, the Become a Host estimator, checkout and Host onboarding.",
+        "responses": {
+          "200": {
+            "description": "The policies",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicPolicies"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/featured": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Customer reviews for the homepage",
+        "description": "Public. Real published reviews only, and `show: false` until there are enough (settings).",
+        "responses": {
+          "200": {
+            "description": "Reviews",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeaturedReviews"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/support/tickets": {
+      "post": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Contact Us",
+        "description": "Works signed out. Creates a support ticket and emails its reference to the sender. Rate-limited per IP.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The ticket",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
             "content": {
               "application/json": {
                 "schema": {

@@ -6,10 +6,11 @@
 const store = new Map<string, { value: Promise<unknown>; expiresAt: number }>();
 
 /** The cached value for `key`, loading it when missing or expired. A failed load isn't kept. */
-export function memo<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+export function memo<T>(key: string, ttlMs: number, load: () => PromiseLike<T>): Promise<T> {
   const hit = store.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.value as Promise<T>;
-  const value = load();
+  // A Mongoose query runs again each time it's awaited; a promise settles once.
+  const value = Promise.resolve(load());
   store.set(key, { value, expiresAt: Date.now() + ttlMs });
   value.catch(() => store.delete(key));
   return value;

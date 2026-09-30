@@ -14,6 +14,7 @@ import {
   type PasswordChangedProps,
   type ResetPasswordProps,
 } from './templates/account-emails.js';
+import { SupportTicketReceivedEmail, type SupportTicketReceivedProps } from './templates/support-emails.js';
 import { VerifyEmail, type VerifyEmailProps } from './templates/verify-email.js';
 import { WelcomeEmail, type WelcomeEmailProps } from './templates/welcome-email.js';
 
@@ -53,6 +54,10 @@ export const emailTemplates = {
   mfaChanged: defineTemplate<MfaChangedProps>({
     subject: ({ change }) => mfaChangedSubjects[change],
     component: MfaChangedEmail,
+  }),
+  supportTicketReceived: defineTemplate<SupportTicketReceivedProps>({
+    subject: ({ ref }) => `We've got your message (${ref})`,
+    component: SupportTicketReceivedEmail,
   }),
 };
 

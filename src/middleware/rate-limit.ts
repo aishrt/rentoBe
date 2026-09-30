@@ -103,6 +103,16 @@ export const codeCheckRateLimit = () =>
     message: 'Too many codes tried. Please wait a few minutes and try again.',
   });
 
+/** Contact form messages per IP, against spam (plan §4.1). */
+export const contactRateLimit = () =>
+  limitRequests({
+    name: 'contact',
+    windowMs: 60 * MINUTE,
+    limit: 5,
+    message:
+      "You've sent a few messages already. We'll reply soon; please try again in an hour if it's urgent.",
+  });
+
 /** Emails a user can ask us to send again, per user. */
 export const resendEmailRateLimit = () =>
   limitRequests({
