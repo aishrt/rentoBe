@@ -65,7 +65,7 @@ export const FAQS: SeedFaq[] = [
   {
     question: 'Can I see prices in my own currency?',
     answer:
-      'Yes. Choose AUD, USD, EUR, CAD or GBP to see an approximate price next to the NZD price. You’re always charged in NZD and your card provider converts it, so the amount on your statement can differ slightly.',
+      'Yes. Choose AUD, USD, EUR or CAD to see an approximate price next to the NZD price. You’re always charged in NZD and your card provider converts it, so the amount on your statement can differ slightly.',
     category: 'Payments',
     audience: 'GUEST',
     showOnHome: false,

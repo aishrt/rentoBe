@@ -126,6 +126,15 @@ export async function seedReferenceData() {
   for (const faq of FAQS) {
     created.faqs += await createIfMissing(FaqModel, { question: faq.question }, faq);
   }
+  // GBP was dropped from the currency picker on 29/09/2026. Corrects the seeded answer only while it
+  // still has the original wording, so an admin's own edit is never overwritten.
+  const currencyFaq = FAQS.find((faq) => faq.question === 'Can I see prices in my own currency?');
+  if (currencyFaq) {
+    await FaqModel.updateOne(
+      { question: currencyFaq.question, answer: /AUD, USD, EUR, CAD or GBP/ },
+      { $set: { answer: currencyFaq.answer } },
+    );
+  }
   for (const article of HELP_ARTICLES) {
     created.helpArticles += await createIfMissing(HelpArticleModel, { slug: article.slug }, article);
   }
