@@ -15,6 +15,10 @@ export interface AvailabilityBlock {
   bookingId?: Types.ObjectId;
   /** HOLD only: dates held during checkout, or while a request waits for the Host (plan §8.2). */
   expiresAt?: Date;
+  /** HOST_BLOCK and ADMIN: the Host's or staff member's note, e.g. "Servicing". */
+  note?: string;
+  /** HOST_BLOCK and ADMIN: who added it. */
+  createdBy?: Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -36,6 +40,8 @@ const availabilityBlockSchema = new Schema<AvailabilityBlock>(
     reason: { type: String, enum: BLOCK_REASONS, required: true },
     bookingId: { type: Schema.Types.ObjectId, ref: 'Booking' },
     expiresAt: Date,
+    note: { type: String, trim: true, maxlength: 200 },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
   },
   { collection: 'availabilityBlocks', timestamps: true },
 );

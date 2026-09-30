@@ -85,6 +85,32 @@ const envSchema = z
       .string()
       .regex(/^whsec_\w+$/, 'STRIPE_WEBHOOK_SECRET starts with whsec_')
       .optional(),
+
+    // SMS notifications such as new booking requests (plan §7), sent with Twilio when SMS_DRIVER=twilio.
+    // One of the two: a Messaging Service (MG…) or a Twilio number that can text NZ mobiles.
+    TWILIO_MESSAGING_SERVICE_SID: z
+      .string()
+      .regex(/^MG[0-9a-f]{32}$/, 'TWILIO_MESSAGING_SERVICE_SID starts with MG')
+      .optional(),
+    TWILIO_FROM_NUMBER: z
+      .string()
+      .regex(/^\+\d{8,15}$/, 'TWILIO_FROM_NUMBER is a number in E.164, e.g. +6421…')
+      .optional(),
+
+    // Location search (plan §1.2): "local" suggests our own NZ places only; "google" adds street
+    // addresses from Google Places, with the server key restricted to the Places API.
+    PLACES_DRIVER: z.enum(['local', 'google']).default('local'),
+    GOOGLE_MAPS_SERVER_KEY: z.string().min(20).optional(),
+
+    // Vehicle photos and documents (plan §1.2). "local" keeps files in UPLOAD_DIR and serves them from
+    // this API, for development only; "cloudinary" uploads straight from the browser to Cloudinary.
+    UPLOAD_DRIVER: z.enum(['local', 'cloudinary']).default('local'),
+    UPLOAD_DIR: z.string().default('.uploads'),
+    CLOUDINARY_CLOUD_NAME: z.string().optional(),
+    CLOUDINARY_API_KEY: z.string().optional(),
+    CLOUDINARY_API_SECRET: z.string().optional(),
+    // This API's own address as browsers reach it, for links to files the local driver serves.
+    API_PUBLIC_URL: z.url().default('http://localhost:4000'),
   })
   .superRefine((env, ctx) => {
     if (env.MAIL_DRIVER === 'resend' && !env.RESEND_API_KEY) {
@@ -98,6 +124,24 @@ const envSchema = z
       for (const key of ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_VERIFY_SERVICE_SID'] as const) {
         if (!env[key]) {
           ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required when SMS_DRIVER=twilio` });
+        }
+      }
+    }
+    if (env.PLACES_DRIVER === 'google' && !env.GOOGLE_MAPS_SERVER_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GOOGLE_MAPS_SERVER_KEY'],
+        message: 'GOOGLE_MAPS_SERVER_KEY is required when PLACES_DRIVER=google',
+      });
+    }
+    if (env.UPLOAD_DRIVER === 'cloudinary') {
+      for (const key of ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: `${key} is required when UPLOAD_DRIVER=cloudinary`,
+          });
         }
       }
     }

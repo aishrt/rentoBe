@@ -119,6 +119,13 @@ export interface Booking {
   returnAddress?: NzAddress;
   protectionPlan?: BookedProtectionPlan;
   status: BookingStatus;
+  /**
+   * Whether it was booked instantly (paid now) or as a request the Host accepts (card authorised now,
+   * charged on acceptance). Set when the booking is created (plan §8.2).
+   */
+  instantBook: boolean;
+  /** PAYMENT_PENDING: when the 30-minute hold on the dates ends if payment isn't finished. */
+  holdExpiresAt?: Date;
   requestExpiresAt?: Date;
   vehicleSnapshot: VehicleSnapshot;
   terms: BookedTerms;
@@ -128,7 +135,14 @@ export interface Booking {
   cancelledBy?: Types.ObjectId;
   cancelledAt?: Date;
   cancellationReason?: CancellationReason;
+  /** What the Guest paid and doesn't get back (plan §5, Guest cancellation fees). */
   cancellationFeeCents?: number;
+  /** What was refunded to the Guest when the booking was cancelled. */
+  refundCents?: number;
+  /** The Host's share of a kept cancellation fee, after commission; paid with their next payout. */
+  hostShareCents?: number;
+  /** A Host cancellation fee added to the Host's fees owed (plan §8.1, item 10). */
+  hostCancellationFeeCents?: number;
   lineItems: LineItem[];
   statusHistory: StatusChange[];
   extraCharges: ExtraCharge[];
@@ -208,6 +222,8 @@ const bookingSchema = new Schema<Booking>(
       default: undefined,
     },
     status: { type: String, enum: BOOKING_STATUSES, default: 'PAYMENT_PENDING' },
+    instantBook: { type: Boolean, default: false },
+    holdExpiresAt: Date,
     requestExpiresAt: Date,
     vehicleSnapshot: {
       type: new Schema<VehicleSnapshot>(
@@ -249,6 +265,9 @@ const bookingSchema = new Schema<Booking>(
     cancelledAt: Date,
     cancellationReason: { type: String, enum: CANCELLATION_REASONS },
     cancellationFeeCents: cents(),
+    refundCents: cents(),
+    hostShareCents: cents(),
+    hostCancellationFeeCents: cents(),
     lineItems: { type: [lineItemSchema], default: [] },
     statusHistory: { type: [statusChangeSchema], default: [] },
     extraCharges: { type: [extraChargeSchema], default: [] },

@@ -13,7 +13,9 @@ import { adminRouter } from './modules/admin/admin.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { currencyRouter } from './modules/currency/currency.routes.js';
 import { stripeWebhookRouter } from './modules/payments/stripe-webhook.js';
+import { placesRouter, searchRouter } from './modules/search/search.routes.js';
 import { meRouter } from './modules/users/users.routes.js';
+import { vehiclesRouter } from './modules/vehicles/vehicles.routes.js';
 import { pagesRouter } from './pages/pages.routes.js';
 
 export interface AppOptions {
@@ -55,6 +57,9 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   api.use('/me', meRouter({ rateLimit }));
   api.use('/admin', adminRouter());
   api.use('/exchange-rates', currencyRouter());
+  api.use('/search', searchRouter());
+  api.use('/places', placesRouter());
+  api.use('/vehicles', vehiclesRouter());
 
   app.use('/api/v1', api);
   app.use(notFound);
