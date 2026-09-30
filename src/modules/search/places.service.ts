@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { getPlacesProvider } from '../../integrations/places/places-provider.js';
 import { logger } from '../../integrations/logger.js';
+import type { NzRegion } from '../../lib/model-fields.js';
 import { PlaceModel, toSearchName, type PlaceType } from './place.model.js';
 import type { PlaceDetails, PlaceSuggestion } from './search.schemas.js';
 
@@ -52,6 +53,8 @@ async function toSuggestions(places: PlaceRow[]): Promise<PlaceSuggestion[]> {
       label: placeLabel(place),
       secondary: secondary === place.name ? undefined : secondary,
       ...(place.code && { code: place.code }),
+      city: place.type === 'CITY' ? place.name : (parentName(place.parentId) ?? place.name),
+      region: place.region as NzRegion,
       lat,
       lng,
     };

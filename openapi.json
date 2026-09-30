@@ -952,6 +952,32 @@
             "type": "string",
             "description": "Airports: the IATA code"
           },
+          "city": {
+            "type": "string",
+            "description": "The town or city it is in (itself for a city), for addresses"
+          },
+          "region": {
+            "type": "string",
+            "enum": [
+              "Northland",
+              "Auckland",
+              "Waikato",
+              "Bay of Plenty",
+              "Gisborne",
+              "Hawke's Bay",
+              "Taranaki",
+              "Manawatū-Whanganui",
+              "Wellington",
+              "Tasman",
+              "Nelson",
+              "Marlborough",
+              "West Coast",
+              "Canterbury",
+              "Otago",
+              "Southland"
+            ],
+            "description": "The NZ region, for addresses"
+          },
           "lat": {
             "type": "number",
             "description": "Our places include coordinates; addresses need GET /places/{id}"
@@ -1009,6 +1035,32 @@
           "code": {
             "type": "string",
             "description": "Airports: the IATA code"
+          },
+          "city": {
+            "type": "string",
+            "description": "The town or city it is in (itself for a city), for addresses"
+          },
+          "region": {
+            "type": "string",
+            "enum": [
+              "Northland",
+              "Auckland",
+              "Waikato",
+              "Bay of Plenty",
+              "Gisborne",
+              "Hawke's Bay",
+              "Taranaki",
+              "Manawatū-Whanganui",
+              "Wellington",
+              "Tasman",
+              "Nelson",
+              "Marlborough",
+              "West Coast",
+              "Canterbury",
+              "Otago",
+              "Southland"
+            ],
+            "description": "The NZ region, for addresses"
           },
           "lat": {
             "type": "number"

@@ -20,6 +20,11 @@ export const placeSuggestionSchema = z
       .meta({ description: 'What to show and put in the field, e.g. "Auckland Airport (AKL)"' }),
     secondary: z.string().optional().meta({ description: 'The city or region under the name' }),
     code: z.string().optional().meta({ description: 'Airports: the IATA code' }),
+    city: z
+      .string()
+      .optional()
+      .meta({ description: 'The town or city it is in (itself for a city), for addresses' }),
+    region: z.enum(NZ_REGIONS).optional().meta({ description: 'The NZ region, for addresses' }),
     lat: z
       .number()
       .optional()
