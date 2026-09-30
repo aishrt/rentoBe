@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { auditStaffWrites } from '../../middleware/audit-log.js';
-import { requireActiveAccount, requireAuth, requireRole } from '../../middleware/auth.js';
+import { requireActiveAccount, requireAuth, requirePermission, requireRole } from '../../middleware/auth.js';
+import { adminCancelBooking, bookingView, findBookingFor } from '../bookings/booking.service.js';
+import { adminCancelSchema } from '../bookings/bookings.schemas.js';
 import { resetStaffMfa } from '../auth/mfa.service.js';
 import { createTestPayment, getTestPayment } from '../payments/test-payment.service.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -144,6 +146,17 @@ export function adminRouter() {
         req.ip,
       ),
     });
+  });
+
+  // Staff cancel a booking: a no-show or a platform cancellation, with its refund (plan §8.2).
+  router.post('/bookings/:id/cancel', requirePermission('REFUNDS'), async (req, res) => {
+    const { reason, note } = validate(adminCancelSchema, req.body);
+    const { booking } = await findBookingFor(
+      { userId: req.auth!.userId, roles: req.auth!.roles },
+      String(req.params.id),
+    );
+    const cancelled = await adminCancelBooking(booking, req.auth!.userId, reason, note);
+    res.json({ booking: await bookingView(cancelled, 'STAFF') });
   });
 
   // The calendar override (plan §9, Days 10–11): staff block or unblock dates, never over a booking.

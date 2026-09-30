@@ -2,6 +2,7 @@ import { OpenAPIRegistry, OpenApiGeneratorV31 } from '@asteasolutions/zod-to-ope
 import { registerAdminListingPaths } from '../modules/admin/admin-listings.openapi.js';
 import { registerAdminPaths } from '../modules/admin/admin.openapi.js';
 import { registerAuthPaths } from '../modules/auth/auth.openapi.js';
+import { registerBookingPaths } from '../modules/bookings/bookings.openapi.js';
 import { registerContentPaths } from '../modules/cms/content.openapi.js';
 import { registerCurrencyPaths } from '../modules/currency/currency.openapi.js';
 import { registerSearchPaths } from '../modules/search/search.openapi.js';
@@ -40,6 +41,7 @@ export function buildOpenApiDocument() {
   registerContentPaths(registry);
   registerHostPaths(registry);
   registerAdminListingPaths(registry);
+  registerBookingPaths(registry);
 
   return new OpenApiGeneratorV31(registry.definitions).generateDocument({
     openapi: '3.1.0',

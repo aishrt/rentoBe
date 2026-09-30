@@ -101,14 +101,12 @@ describe('Host application', () => {
       .send({ acceptHostAgreement: true, gstRegistered: true });
     expect(noGst.body.error.fields.gstNumber).toBe('Enter your GST number');
 
-    const applied = await agent
-      .post('/api/v1/me/host-application')
-      .send({
-        acceptHostAgreement: true,
-        bio: 'Auckland local.',
-        gstRegistered: true,
-        gstNumber: '123456789',
-      });
+    const applied = await agent.post('/api/v1/me/host-application').send({
+      acceptHostAgreement: true,
+      bio: 'Auckland local.',
+      gstRegistered: true,
+      gstNumber: '123456789',
+    });
     expect(applied.status).toBe(200);
     expect(applied.body.host).toMatchObject({
       status: 'APPLIED',
@@ -327,14 +325,12 @@ describe('Vehicle onboarding', () => {
 
     const other = await applicant('mere@example.co.nz', '+64217654321');
     expect((await other.agent.get(`/api/v1/host/vehicles/${draft.body.vehicle.id}`)).status).toBe(403);
-    const signature = await other.agent
-      .post('/api/v1/uploads/signature')
-      .send({
-        purpose: 'VEHICLE_PHOTO',
-        vehicleId: draft.body.vehicle.id,
-        contentType: 'image/jpeg',
-        size: 100,
-      });
+    const signature = await other.agent.post('/api/v1/uploads/signature').send({
+      purpose: 'VEHICLE_PHOTO',
+      vehicleId: draft.body.vehicle.id,
+      contentType: 'image/jpeg',
+      size: 100,
+    });
     expect(signature.status).toBe(403);
 
     const notAHost = await createUser({ email: 'guest@example.co.nz' });

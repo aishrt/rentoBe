@@ -11,6 +11,7 @@ import { errorHandler, notFound } from './middleware/error-handler.js';
 import { requireTrustedOrigin } from './middleware/trusted-origin.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
+import { bookingsRouter } from './modules/bookings/bookings.routes.js';
 import {
   cmsRouter,
   destinationsRouter,
@@ -81,6 +82,7 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   api.use('/files', filesRouter());
   api.use('/notifications', notificationsRouter());
   api.use('/host', hostRouter());
+  api.use('/bookings', bookingsRouter({ rateLimit }));
 
   app.use('/api/v1', api);
   app.use(notFound);

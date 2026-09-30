@@ -10,6 +10,8 @@ export const PAYMENT_STATUSES = [
   'FAILED',
   'REFUNDED',
   'PARTIALLY_REFUNDED',
+  /** An authorisation released, or a payment abandoned: nothing was charged. */
+  'CANCELLED',
 ] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 

@@ -86,6 +86,14 @@ export interface LineItem {
   mandatory: boolean;
 }
 
+/** The cancellation tier as it was when booked (plan §3, terms fixed at booking). */
+export interface BookedCancellationTerms {
+  code: string;
+  name: string;
+  summary: string;
+  refunds: { minHoursBefore: number; refundPct: number }[];
+}
+
 /** Every status change, including admin edits, with who made it and why. */
 export interface StatusChange {
   status: BookingStatus;
@@ -132,6 +140,8 @@ export interface Booking {
   price: BookingPrice;
   /** The cancellation tier code, copied from the listing. */
   cancellationPolicy?: string;
+  /** The tier's refund rules, copied when booked, so later changes to the tiers don't apply. */
+  cancellationTerms?: BookedCancellationTerms;
   cancelledBy?: Types.ObjectId;
   cancelledAt?: Date;
   cancellationReason?: CancellationReason;
@@ -261,6 +271,29 @@ const bookingSchema = new Schema<Booking>(
       required: true,
     },
     cancellationPolicy: String,
+    cancellationTerms: {
+      type: new Schema<BookedCancellationTerms>(
+        {
+          code: { type: String, required: true },
+          name: { type: String, required: true },
+          summary: { type: String, required: true },
+          refunds: {
+            type: [
+              new Schema(
+                {
+                  minHoursBefore: { type: Number, required: true, min: 0 },
+                  refundPct: { type: Number, required: true, min: 0, max: 100 },
+                },
+                { _id: false },
+              ),
+            ],
+            default: [],
+          },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     cancelledBy: { type: Schema.Types.ObjectId, ref: 'User' },
     cancelledAt: Date,
     cancellationReason: { type: String, enum: CANCELLATION_REASONS },

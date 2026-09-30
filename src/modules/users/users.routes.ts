@@ -1,5 +1,6 @@
 import { Router, type RequestHandler } from 'express';
 import { unauthenticated } from '../../lib/http-error.js';
+import { parseNzDateTime } from '../../lib/nz-time.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { accountChangeRateLimit, codeCheckRateLimit } from '../../middleware/rate-limit.js';
@@ -15,6 +16,8 @@ import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from 
 import { acceptLatestAgreements, changePassword, requestEmailChange } from './account.service.js';
 import { hostApplicationSchema, hostProfilePatchSchema } from '../hosts/hosts.schemas.js';
 import { applyToHost, getHostProfile, updateHostProfile } from '../hosts/hosts.service.js';
+import { driverLicenceInputSchema } from './driver-licence.schemas.js';
+import { checkoutReadiness, saveDriverLicence } from './driver-licence.service.js';
 import { lastSearchSchema } from './saved.schemas.js';
 import { listFavourites, removeFavourite, saveFavourite, saveLastSearch } from './saved.service.js';
 import { UserModel } from './user.model.js';
@@ -103,6 +106,17 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
 
   router.patch('/host-profile', async (req, res) => {
     res.json({ host: await updateHostProfile(req.auth!.userId, validate(hostProfilePatchSchema, req.body)) });
+  });
+
+  // Checkout's verification step (plan §9, Days 11–13): what's still needed, and the licence details.
+  router.get('/checkout', async (req, res) => {
+    const end = typeof req.query.end === 'string' ? parseNzDateTime(req.query.end) : null;
+    res.json(await checkoutReadiness(req.auth!.userId, end ?? undefined));
+  });
+
+  router.put('/driver-licence', async (req, res) => {
+    const input = validate(driverLicenceInputSchema, req.body);
+    res.json(await saveDriverLicence(req.auth!.userId, input, req.ip));
   });
 
   router.put('/last-search', async (req, res) => {

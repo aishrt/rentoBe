@@ -4739,6 +4739,1026 @@
         "required": [
           "decision"
         ]
+      },
+      "CheckoutReadiness": {
+        "type": "object",
+        "properties": {
+          "emailVerified": {
+            "type": "boolean"
+          },
+          "phoneVerified": {
+            "type": "boolean"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "licence": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "class": {
+                "type": "string",
+                "enum": [
+                  "NZ_FULL",
+                  "NZ_RESTRICTED",
+                  "NZ_LEARNER",
+                  "OVERSEAS"
+                ]
+              },
+              "country": {
+                "type": "string"
+              },
+              "numberEnding": {
+                "type": "string",
+                "description": "The last 3 characters, to recognise it"
+              },
+              "expiry": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "NONE",
+                  "PENDING",
+                  "APPROVED",
+                  "REJECTED"
+                ]
+              },
+              "englishProof": {
+                "type": "string",
+                "enum": [
+                  "IDP",
+                  "APPROVED_TRANSLATION"
+                ]
+              }
+            },
+            "required": [
+              "class",
+              "country",
+              "numberEnding",
+              "expiry",
+              "status"
+            ]
+          },
+          "hasDateOfBirth": {
+            "type": "boolean"
+          },
+          "identityStatus": {
+            "type": "string",
+            "enum": [
+              "NONE",
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ]
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "PHONE_REQUIRED",
+                    "LICENCE_REQUIRED",
+                    "TOO_YOUNG",
+                    "CLASS_NOT_ACCEPTED",
+                    "NOT_LICENSED_LONG_ENOUGH",
+                    "LICENCE_EXPIRES",
+                    "ENGLISH_PROOF_REQUIRED",
+                    "LICENCE_REJECTED"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ]
+            },
+            "description": "Anything that stops this person booking; with `end`, checked against that trip end"
+          }
+        },
+        "required": [
+          "emailVerified",
+          "phoneVerified",
+          "licence",
+          "hasDateOfBirth",
+          "identityStatus",
+          "problems"
+        ]
+      },
+      "DriverLicenceInput": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 20
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^\\d{3}$"
+          },
+          "country": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 60,
+            "default": "New Zealand"
+          },
+          "class": {
+            "type": "string",
+            "enum": [
+              "NZ_FULL",
+              "NZ_RESTRICTED",
+              "NZ_LEARNER",
+              "OVERSEAS"
+            ]
+          },
+          "englishProof": {
+            "type": "string",
+            "enum": [
+              "IDP",
+              "APPROVED_TRANSLATION"
+            ],
+            "description": "For an overseas licence that isn’t in English: an IDP or an approved translation"
+          },
+          "notInEnglish": {
+            "type": "boolean",
+            "default": false
+          },
+          "issuedAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "When the licence was first issued"
+          },
+          "expiry": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "dob": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "Date of birth, for the minimum age"
+          }
+        },
+        "required": [
+          "number",
+          "class",
+          "issuedAt",
+          "expiry",
+          "dob"
+        ]
+      },
+      "BookingResponse": {
+        "type": "object",
+        "properties": {
+          "booking": {
+            "$ref": "#/components/schemas/Booking"
+          }
+        },
+        "required": [
+          "booking"
+        ]
+      },
+      "Booking": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PAYMENT_PENDING",
+              "PENDING",
+              "CONFIRMED",
+              "ACTIVE",
+              "COMPLETED",
+              "CANCELLED",
+              "DECLINED",
+              "EXPIRED"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "GUEST",
+              "HOST",
+              "STAFF"
+            ],
+            "description": "How the signed-in user sees this booking"
+          },
+          "instantBook": {
+            "type": "boolean"
+          },
+          "vehicle": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "slug": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "photoUrl": {
+                "type": "string"
+              },
+              "regoPlate": {
+                "type": "string",
+                "description": "The Guest sees it once confirmed, to find the car"
+              }
+            },
+            "required": [
+              "id",
+              "slug",
+              "title"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "pickup": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "PICKUP",
+                  "DELIVERY",
+                  "AIRPORT",
+                  "CUSTOM"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "feeCents": {
+                "type": "integer"
+              },
+              "airportCode": {
+                "type": "string"
+              },
+              "radiusKm": {
+                "type": "number",
+                "description": "DELIVERY: how far from the car it delivers"
+              },
+              "area": {
+                "type": "string",
+                "description": "PICKUP and CUSTOM: the suburb and city only"
+              },
+              "address": {
+                "type": "string",
+                "description": "The exact address: the Guest’s own delivery address, or the Host’s once the booking is confirmed"
+              },
+              "instructions": {
+                "type": "string",
+                "description": "Once the booking is confirmed"
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "label",
+              "feeCents"
+            ]
+          },
+          "dropoff": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "PICKUP",
+                  "DELIVERY",
+                  "AIRPORT",
+                  "CUSTOM"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "feeCents": {
+                "type": "integer"
+              },
+              "airportCode": {
+                "type": "string"
+              },
+              "radiusKm": {
+                "type": "number",
+                "description": "DELIVERY: how far from the car it delivers"
+              },
+              "area": {
+                "type": "string",
+                "description": "PICKUP and CUSTOM: the suburb and city only"
+              },
+              "address": {
+                "type": "string",
+                "description": "The exact address: the Guest’s own delivery address, or the Host’s once the booking is confirmed"
+              },
+              "instructions": {
+                "type": "string",
+                "description": "Once the booking is confirmed"
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "label",
+              "feeCents"
+            ]
+          },
+          "protectionPlan": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "excessCents": {
+                "type": "integer"
+              },
+              "coverSummary": {
+                "type": "string"
+              },
+              "mandatory": {
+                "type": "boolean"
+              },
+              "priceCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "code",
+              "name",
+              "excessCents",
+              "coverSummary",
+              "mandatory",
+              "priceCents"
+            ]
+          },
+          "cancellationTier": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z_]*$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "refunds": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "minHoursBefore": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "refundPct": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  },
+                  "required": [
+                    "minHoursBefore",
+                    "refundPct"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "code",
+              "name",
+              "summary",
+              "refunds"
+            ]
+          },
+          "lineItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LineItem"
+            }
+          },
+          "price": {
+            "$ref": "#/components/schemas/GuestPrice"
+          },
+          "payout": {
+            "type": "object",
+            "properties": {
+              "hostPayoutCents": {
+                "type": "integer"
+              },
+              "platformFeeCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "hostPayoutCents",
+              "platformFeeCents"
+            ],
+            "description": "The Host’s view: what they earn"
+          },
+          "holdExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "PAYMENT_PENDING: when the dates are released"
+          },
+          "requestExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "PENDING: when the request expires"
+          },
+          "guest": {
+            "type": "object",
+            "properties": {
+              "firstName": {
+                "type": "string"
+              },
+              "avatarUrl": {
+                "type": "string"
+              },
+              "verified": {
+                "type": "boolean",
+                "description": "Identity verified"
+              },
+              "rating": {
+                "$ref": "#/components/schemas/Rating"
+              },
+              "tripCount": {
+                "type": "integer"
+              },
+              "phone": {
+                "type": "string",
+                "description": "Only on a confirmed booking (plan §6.2)"
+              }
+            },
+            "required": [
+              "firstName",
+              "verified",
+              "rating",
+              "tripCount"
+            ]
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "firstName": {
+                "type": "string"
+              },
+              "avatarUrl": {
+                "type": "string"
+              },
+              "verified": {
+                "type": "boolean",
+                "description": "Identity verified"
+              },
+              "rating": {
+                "$ref": "#/components/schemas/Rating"
+              },
+              "tripCount": {
+                "type": "integer"
+              },
+              "phone": {
+                "type": "string",
+                "description": "Only on a confirmed booking (plan §6.2)"
+              },
+              "responseRate": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "firstName",
+              "verified",
+              "rating",
+              "tripCount"
+            ]
+          },
+          "payment": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "PENDING",
+                  "AUTHORISED",
+                  "SUCCEEDED",
+                  "FAILED",
+                  "REFUNDED",
+                  "PARTIALLY_REFUNDED",
+                  "CANCELLED"
+                ]
+              },
+              "failureReason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "cancellation": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "by": {
+                "type": "string",
+                "enum": [
+                  "GUEST",
+                  "HOST",
+                  "SUPPORT"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "GUEST_CANCELLED",
+                  "HOST_CANCELLED",
+                  "REQUEST_WITHDRAWN",
+                  "GUEST_NO_SHOW",
+                  "HOST_NO_SHOW",
+                  "PLATFORM"
+                ]
+              },
+              "refundCents": {
+                "type": "integer"
+              },
+              "feeCents": {
+                "type": "integer"
+              },
+              "hostShareCents": {
+                "type": "integer"
+              },
+              "hostFeeCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "at",
+              "by"
+            ]
+          },
+          "actions": {
+            "type": "object",
+            "properties": {
+              "pay": {
+                "type": "boolean"
+              },
+              "cancel": {
+                "type": "boolean"
+              },
+              "withdraw": {
+                "type": "boolean"
+              },
+              "accept": {
+                "type": "boolean"
+              },
+              "decline": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "pay",
+              "cancel",
+              "withdraw",
+              "accept",
+              "decline"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "ref",
+          "status",
+          "role",
+          "instantBook",
+          "vehicle",
+          "start",
+          "end",
+          "days",
+          "pickup",
+          "dropoff",
+          "protectionPlan",
+          "cancellationTier",
+          "lineItems",
+          "price",
+          "guest",
+          "host",
+          "payment",
+          "cancellation",
+          "actions",
+          "createdAt"
+        ]
+      },
+      "CreateBookingRequest": {
+        "type": "object",
+        "properties": {
+          "vehicleId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{24}$"
+          },
+          "start": {
+            "type": "string",
+            "description": "\"2026-10-12T10:00\" in NZ time, or ISO 8601 with an offset"
+          },
+          "end": {
+            "type": "string"
+          },
+          "pickupOptionId": {
+            "type": "string"
+          },
+          "returnOptionId": {
+            "type": "string"
+          },
+          "deliveryAddress": {
+            "$ref": "#/components/schemas/DeliveryAddress"
+          },
+          "protectionPlanCode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "vehicleId",
+          "start",
+          "end"
+        ]
+      },
+      "DeliveryAddress": {
+        "type": "object",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "streetNumber": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "street": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 120
+          },
+          "suburb": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "city": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 80
+          },
+          "region": {
+            "type": "string",
+            "enum": [
+              "Northland",
+              "Auckland",
+              "Waikato",
+              "Bay of Plenty",
+              "Gisborne",
+              "Hawke's Bay",
+              "Taranaki",
+              "Manawatū-Whanganui",
+              "Wellington",
+              "Tasman",
+              "Nelson",
+              "Marlborough",
+              "West Coast",
+              "Canterbury",
+              "Otago",
+              "Southland"
+            ]
+          },
+          "postcode": {
+            "type": "string",
+            "pattern": "^\\d{4}$"
+          },
+          "lat": {
+            "type": "number",
+            "minimum": -48,
+            "maximum": -33
+          },
+          "lng": {
+            "type": "number",
+            "minimum": 165,
+            "maximum": 179.9
+          }
+        },
+        "required": [
+          "street",
+          "city",
+          "region",
+          "postcode",
+          "lat",
+          "lng"
+        ],
+        "description": "Where to deliver the car, with its coordinates"
+      },
+      "Bookings": {
+        "type": "object",
+        "properties": {
+          "bookings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookingSummary"
+            }
+          }
+        },
+        "required": [
+          "bookings"
+        ]
+      },
+      "BookingSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PAYMENT_PENDING",
+              "PENDING",
+              "CONFIRMED",
+              "ACTIVE",
+              "COMPLETED",
+              "CANCELLED",
+              "DECLINED",
+              "EXPIRED"
+            ]
+          },
+          "instantBook": {
+            "type": "boolean"
+          },
+          "vehicle": {
+            "type": "object",
+            "properties": {
+              "slug": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "photoUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "slug",
+              "title"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "otherParty": {
+            "type": "object",
+            "properties": {
+              "firstName": {
+                "type": "string"
+              },
+              "avatarUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "firstName"
+            ]
+          },
+          "amountCents": {
+            "type": "integer",
+            "description": "The Guest’s total, or the Host’s payout"
+          },
+          "requestExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "ref",
+          "status",
+          "instantBook",
+          "vehicle",
+          "start",
+          "end",
+          "otherParty",
+          "amountCents"
+        ]
+      },
+      "PaymentSession": {
+        "type": "object",
+        "properties": {
+          "clientSecret": {
+            "type": "string",
+            "description": "For Stripe.js to confirm this payment. Never logged or stored."
+          },
+          "customerSessionClientSecret": {
+            "type": "string",
+            "description": "Lets the Payment Element show the Guest’s saved cards"
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "nzd"
+            ]
+          },
+          "captureMethod": {
+            "type": "string",
+            "enum": [
+              "automatic",
+              "manual"
+            ],
+            "description": "manual: a request to book, authorised now and charged when the Host accepts"
+          },
+          "holdExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "clientSecret",
+          "amountCents",
+          "currency",
+          "captureMethod",
+          "holdExpiresAt"
+        ]
+      },
+      "PreparePaymentRequest": {
+        "type": "object",
+        "properties": {
+          "acceptGuestAgreement": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "acceptGuestAgreement"
+        ]
+      },
+      "CancellationPreview": {
+        "type": "object",
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ABANDON_CHECKOUT",
+              "WITHDRAW_REQUEST",
+              "GUEST_CANCELLATION",
+              "HOST_CANCELLATION",
+              null
+            ]
+          },
+          "refundCents": {
+            "type": "integer"
+          },
+          "feeCents": {
+            "type": "integer"
+          },
+          "hostShareCents": {
+            "type": "integer",
+            "description": "Host’s view: their share of a kept fee"
+          },
+          "hostFeeCents": {
+            "type": "integer",
+            "description": "Host’s view: a Host cancellation fee"
+          },
+          "refundPct": {
+            "type": "number"
+          },
+          "hoursBeforeStart": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence to show before the user confirms"
+          }
+        },
+        "required": [
+          "allowed",
+          "kind",
+          "refundCents",
+          "feeCents",
+          "hostShareCents",
+          "hostFeeCents",
+          "refundPct",
+          "hoursBeforeStart",
+          "message"
+        ]
+      },
+      "CancelBookingRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      },
+      "DeclineBookingRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      },
+      "AdminCancelRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "GUEST_NO_SHOW",
+              "HOST_NO_SHOW",
+              "PLATFORM"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "reason",
+          "note"
+        ]
       }
     },
     "parameters": {}
@@ -10457,6 +11477,976 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/checkout": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "What checkout’s verification step still needs",
+        "description": "Mobile, licence details and the eligibility rules in settings. With `end`, the licence is checked against that trip end.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "end",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Readiness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutReadiness"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/driver-licence": {
+      "put": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Save driver licence details",
+        "description": "The number is encrypted, and a keyed hash finds the same licence on another account (a risk flag, not an error). Support staff check licences until the identity check arrives.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriverLicenceInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Readiness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutReadiness"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings": {
+      "post": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Book a car",
+        "description": "Checks the Guest (409 VERIFICATION_REQUIRED, with the missing items in `fields.verification`) and the trip (as the quote does; 409 DATES_UNAVAILABLE), then creates a PAYMENT_PENDING booking and holds the dates for 30 minutes. The same request again returns the same booking.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "My trips, or my bookings as a Host",
+        "description": "Groups (plan §8.2): upcoming (confirmed, and requests), current, completed, cancelled (cancelled, declined, expired), and requests (Hosts: waiting for an answer). Unpaid checkouts are left out.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "guest",
+                "host"
+              ]
+            },
+            "required": false,
+            "name": "role",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "upcoming",
+                "current",
+                "completed",
+                "cancelled",
+                "requests"
+              ]
+            },
+            "required": false,
+            "name": "group",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bookings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bookings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "One booking, as the Guest, the Host or staff see it",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/payment": {
+      "post": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Start paying",
+        "description": "Records the Guest Agreement and returns the PaymentIntent’s client secret (charged now for Instant Book, authorised only for a request) and a customer session for saved cards. 409 HOLD_EXPIRED after 30 minutes.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreparePaymentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The payment session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/payment/sync": {
+      "post": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Apply the payment result now",
+        "description": "Called after Stripe.js confirms, so the booking updates without waiting for the webhook.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/cancellation-preview": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "What cancelling would refund and cost",
+        "description": "Shown before the user confirms (plan §5): the refund, the fee under the booking’s tier, and a sentence to show.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancellationPreview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/cancel": {
+      "post": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Cancel a booking, or withdraw a request",
+        "description": "The Guest: an unpaid checkout is released, a request withdrawn (nothing charged), a confirmed booking refunded under its tier. The Host: a confirmed booking is refunded in full and any Host cancellation fee applies; a request is declined instead (409 USE_DECLINE).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/accept": {
+      "post": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Host: accept a request",
+        "description": "Captures the authorised payment and confirms the booking. 409 when it has expired or was answered.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/decline": {
+      "post": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Host: decline a request",
+        "description": "Releases the Guest’s authorisation. No fee.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclineBookingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/bookings/{id}/cancel": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: cancel for a no-show, or as a platform cancellation",
+        "description": "Admins, and support staff with the REFUNDS permission. A Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminCancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The booking",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {

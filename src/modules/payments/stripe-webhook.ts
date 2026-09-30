@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import { withTransaction } from '../../db.js';
 import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
+import { bookingPaymentHandlers } from '../bookings/payment-events.js';
 import { StripeEventModel } from './stripe-event.model.js';
 
 type StripeEventType = Stripe.Event['type'];
@@ -28,10 +29,12 @@ export const STRIPE_WEBHOOK_EVENTS = [
 /**
  * What each event does. A handler runs inside the transaction that records the event, so it only
  * writes to the database (emails and Stripe calls go through the job queue) and may run twice if
- * MongoDB retries the transaction. The booking flow (Days 11–13) adds the first handlers; until
- * then each event is only recorded.
+ * MongoDB retries the transaction. Payments for bookings, refunds and disputes are handled in
+ * bookings/payment-events.ts; the staff test payment's events are only recorded.
  */
-export const stripeEventHandlers: Partial<Record<StripeEventType, StripeEventHandler>> = {};
+export const stripeEventHandlers: Partial<Record<StripeEventType, StripeEventHandler>> = {
+  ...bookingPaymentHandlers,
+};
 
 /**
  * POST /api/v1/payments/webhook (plan §8.1, item 13). Stripe signs each event with the endpoint's
