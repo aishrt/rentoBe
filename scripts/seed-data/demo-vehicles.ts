@@ -652,6 +652,7 @@ export function buildDemoVehicle(
     unlimitedKm: spec.kmPerDay === undefined,
     petFriendly: spec.petFriendly ?? false,
     childSeat: spec.childSeat ?? false,
+    ownerIsHost: true,
     pricing: {
       dailyCents: spec.dailyDollars * 100,
       weeklyDiscountPct: spec.weeklyDiscountPct,

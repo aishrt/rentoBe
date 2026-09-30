@@ -19,6 +19,11 @@ export interface Notification {
   error?: string;
   sentAt?: Date;
   readAt?: Date;
+  /**
+   * Set by notify() on one event's notifications, e.g. `BOOKING_CONFIRMED:<bookingId>:<userId>`, so a
+   * job that runs again never notifies twice.
+   */
+  dedupeKey?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -34,8 +39,15 @@ const notificationSchema = new Schema<Notification>(
     error: String,
     sentAt: Date,
     readAt: Date,
+    dedupeKey: String,
   },
   { timestamps: true, minimize: false },
+);
+
+// One notification per channel for each event.
+notificationSchema.index(
+  { dedupeKey: 1, channel: 1 },
+  { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } },
 );
 
 // The notification centre: unread first, newest first.

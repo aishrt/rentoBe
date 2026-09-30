@@ -19,10 +19,13 @@ import {
   reviewsRouter,
 } from './modules/cms/content.routes.js';
 import { currencyRouter } from './modules/currency/currency.routes.js';
+import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { stripeWebhookRouter } from './modules/payments/stripe-webhook.js';
 import { placesRouter, searchRouter } from './modules/search/search.routes.js';
 import { supportRouter } from './modules/support/support.routes.js';
+import { filesRouter, uploadsRouter } from './modules/uploads/uploads.routes.js';
 import { meRouter } from './modules/users/users.routes.js';
+import { hostRouter } from './modules/vehicles/host-vehicles.routes.js';
 import { vehiclesRouter } from './modules/vehicles/vehicles.routes.js';
 import { pagesRouter } from './pages/pages.routes.js';
 
@@ -74,6 +77,10 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   api.use('/policies', policiesRouter());
   api.use('/reviews', reviewsRouter());
   api.use('/support', supportRouter({ rateLimit }));
+  api.use('/uploads', uploadsRouter());
+  api.use('/files', filesRouter());
+  api.use('/notifications', notificationsRouter());
+  api.use('/host', hostRouter());
 
   app.use('/api/v1', api);
   app.use(notFound);

@@ -15,6 +15,7 @@ export function toPublicUser(user: UserDocument): PublicUser {
     ...(user.phone && { phone: user.phone }),
     phoneVerified: Boolean(user.phoneVerifiedAt),
     mfaEnabled: Boolean(user.mfa?.enabledAt),
+    hostStatus: user.hostProfile?.status ?? null,
     pendingAgreements: pendingAgreements(user),
   };
 }

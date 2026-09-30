@@ -191,15 +191,13 @@ describe('Saved cars and the last search', () => {
     expect((await agent.delete(`/api/v1/me/favourites/${car.id}`)).status).toBe(204);
     expect((await agent.get('/api/v1/me/favourites')).body).toEqual({ vehicleIds: [] });
 
-    const saved = await agent
-      .put('/api/v1/me/last-search')
-      .send({
-        place: 'Auckland',
-        lat: -36.85,
-        lng: 174.76,
-        start: '2026-12-01T10:00',
-        end: '2026-12-04T10:00',
-      });
+    const saved = await agent.put('/api/v1/me/last-search').send({
+      place: 'Auckland',
+      lat: -36.85,
+      lng: 174.76,
+      start: '2026-12-01T10:00',
+      end: '2026-12-04T10:00',
+    });
     expect(saved.status).toBe(204);
     const { UserModel } = await import('../src/modules/users/user.model.js');
     const stored = await UserModel.findById(user._id).lean();

@@ -7,3 +7,4 @@ coverage
 # Emails written by the console mailer in local development
 .mail
 *.log
+.uploads

@@ -84,6 +84,20 @@
             "type": "boolean",
             "description": "Staff: whether two-factor sign-in is on"
           },
+          "hostStatus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "APPLIED",
+              "APPROVED",
+              "REJECTED",
+              "SUSPENDED",
+              null
+            ],
+            "description": "Where their Host application is; null if they never applied"
+          },
           "pendingAgreements": {
             "type": "array",
             "items": {
@@ -107,6 +121,7 @@
           "emailVerified",
           "phoneVerified",
           "mfaEnabled",
+          "hostStatus",
           "pendingAgreements"
         ]
       },
@@ -2824,6 +2839,1905 @@
           "email",
           "subject",
           "message"
+        ]
+      },
+      "HostProfileResponse": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "$ref": "#/components/schemas/HostProfile"
+          }
+        },
+        "required": [
+          "host"
+        ]
+      },
+      "HostProfile": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "APPLIED",
+              "APPROVED",
+              "REJECTED",
+              "SUSPENDED"
+            ]
+          },
+          "appliedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reviewNotes": {
+            "type": "string",
+            "description": "Why an application was rejected, if it was"
+          },
+          "bio": {
+            "type": "string"
+          },
+          "gstRegistered": {
+            "type": "boolean"
+          },
+          "gstNumber": {
+            "type": "string"
+          },
+          "payoutsEnabled": {
+            "type": "boolean",
+            "description": "Payout setup (Stripe Connect) arrives in Phase 3"
+          },
+          "rating": {
+            "type": "object",
+            "properties": {
+              "avg": {
+                "type": "number"
+              },
+              "count": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "avg",
+              "count"
+            ]
+          },
+          "tripCount": {
+            "type": "integer"
+          },
+          "responseRate": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "status",
+          "appliedAt",
+          "gstRegistered",
+          "payoutsEnabled",
+          "rating",
+          "tripCount"
+        ]
+      },
+      "HostApplicationRequest": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "gstRegistered": {
+            "type": "boolean",
+            "default": false
+          },
+          "gstNumber": {
+            "type": "string",
+            "pattern": "^\\d{2,3}-?\\d{3}-?\\d{3}$"
+          },
+          "acceptHostAgreement": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "acceptHostAgreement"
+        ]
+      },
+      "HostProfilePatch": {
+        "type": "object",
+        "properties": {
+          "bio": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "gstRegistered": {
+            "type": "boolean"
+          },
+          "gstNumber": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d{2,3}-?\\d{3}-?\\d{3}$"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "HostVehicles": {
+        "type": "object",
+        "properties": {
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostVehicleSummary"
+            }
+          }
+        },
+        "required": [
+          "vehicles"
+        ]
+      },
+      "HostVehicleSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "UNDER_REVIEW",
+              "CHANGES_REQUESTED",
+              "REJECTED",
+              "ACTIVE",
+              "INACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "onboardingStep": {
+            "type": "integer"
+          },
+          "photo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "missingCount": {
+            "type": "integer"
+          },
+          "pendingChanges": {
+            "type": "boolean",
+            "description": "New photos or documents waiting for support staff"
+          },
+          "dailyCents": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "status",
+          "onboardingStep",
+          "photo",
+          "missingCount",
+          "pendingChanges",
+          "dailyCents",
+          "updatedAt"
+        ]
+      },
+      "HostVehicleResponse": {
+        "type": "object",
+        "properties": {
+          "vehicle": {
+            "$ref": "#/components/schemas/HostVehicle"
+          }
+        },
+        "required": [
+          "vehicle"
+        ]
+      },
+      "HostVehicle": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "UNDER_REVIEW",
+              "CHANGES_REQUESTED",
+              "REJECTED",
+              "ACTIVE",
+              "INACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "reviewNotes": {
+            "type": "string"
+          },
+          "onboardingStep": {
+            "type": "integer"
+          },
+          "regoPlate": {
+            "type": "string"
+          },
+          "vin": {
+            "type": "string"
+          },
+          "chassisNo": {
+            "type": "string"
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "bodyType": {
+            "type": "string",
+            "enum": [
+              "HATCHBACK",
+              "SEDAN",
+              "WAGON",
+              "SUV",
+              "UTE",
+              "VAN",
+              "PEOPLE_MOVER",
+              "COUPE",
+              "CONVERTIBLE"
+            ]
+          },
+          "fuelType": {
+            "type": "string",
+            "enum": [
+              "PETROL",
+              "DIESEL",
+              "HYBRID",
+              "PHEV",
+              "EV"
+            ]
+          },
+          "transmission": {
+            "type": "string",
+            "enum": [
+              "AUTOMATIC",
+              "MANUAL"
+            ]
+          },
+          "seats": {
+            "type": "integer"
+          },
+          "doors": {
+            "type": "integer"
+          },
+          "powertrain": {
+            "type": "object",
+            "properties": {
+              "engineCc": {
+                "type": "number"
+              },
+              "cylinders": {
+                "type": "number"
+              },
+              "description": {
+                "type": "string"
+              },
+              "evRangeKm": {
+                "type": "number"
+              },
+              "batteryKwh": {
+                "type": "number"
+              }
+            }
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "petFriendly": {
+            "type": "boolean"
+          },
+          "childSeat": {
+            "type": "boolean"
+          },
+          "damageNotes": {
+            "type": "string"
+          },
+          "regoExpiry": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          },
+          "wofExpiry": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          },
+          "cofExpiry": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          },
+          "rucValidToKm": {
+            "type": "number"
+          },
+          "ownerIsHost": {
+            "type": "boolean"
+          },
+          "pricing": {
+            "type": "object",
+            "properties": {
+              "dailyCents": {
+                "type": "integer"
+              },
+              "weeklyDiscountPct": {
+                "type": "number"
+              },
+              "monthlyDiscountPct": {
+                "type": "number"
+              },
+              "extraKmCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "dailyCents",
+              "weeklyDiscountPct",
+              "monthlyDiscountPct",
+              "extraKmCents"
+            ]
+          },
+          "kmAllowancePerDay": {
+            "type": "number"
+          },
+          "unlimitedKm": {
+            "type": "boolean"
+          },
+          "fuelPolicy": {
+            "type": "string",
+            "enum": [
+              "SAME_LEVEL",
+              "FULL"
+            ]
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "minDays": {
+                "type": "integer"
+              },
+              "maxDays": {
+                "type": "integer"
+              },
+              "minNoticeHours": {
+                "type": "number"
+              },
+              "bufferHours": {
+                "type": "number"
+              },
+              "instantBook": {
+                "type": "boolean"
+              },
+              "cancellationTier": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "minDays",
+              "maxDays",
+              "minNoticeHours",
+              "bufferHours",
+              "instantBook"
+            ]
+          },
+          "photos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "FRONT",
+                    "REAR",
+                    "DRIVER",
+                    "PASSENGER",
+                    "INTERIOR",
+                    "DASH",
+                    "BOOT",
+                    "TYRES",
+                    "DAMAGE"
+                  ]
+                },
+                "url": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "APPROVED",
+                    "REJECTED"
+                  ]
+                },
+                "qualityFlag": {
+                  "type": "string",
+                  "enum": [
+                    "OK",
+                    "LOW_RES",
+                    "DARK",
+                    "BLURRY",
+                    "ADMIN_FLAGGED"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "url",
+                "status",
+                "qualityFlag"
+              ]
+            }
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "REGO",
+                    "WOF",
+                    "COF",
+                    "RUC",
+                    "INSURANCE",
+                    "OWNER_CONSENT",
+                    "OTHER"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "VERIFIED",
+                    "REJECTED"
+                  ]
+                },
+                "expiry": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "YYYY-MM-DD"
+                },
+                "link": {
+                  "type": "string",
+                  "description": "A short-lived link to open the private file"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "status",
+                "link"
+              ]
+            }
+          },
+          "deliveryOptions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "PICKUP",
+                    "DELIVERY",
+                    "AIRPORT",
+                    "CUSTOM"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "address": {
+                  "$ref": "#/components/schemas/AddressWithPoint"
+                },
+                "airportCode": {
+                  "type": "string"
+                },
+                "feeCents": {
+                  "type": "integer"
+                },
+                "radiusKm": {
+                  "type": "number"
+                },
+                "instructions": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "label",
+                "feeCents"
+              ]
+            }
+          },
+          "recurringRules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "daysOfWeek": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                },
+                "startTime": {
+                  "type": "string"
+                },
+                "endTime": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "daysOfWeek",
+                "startTime",
+                "endTime"
+              ]
+            }
+          },
+          "suburb": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "rating": {
+            "type": "object",
+            "properties": {
+              "avg": {
+                "type": "number"
+              },
+              "count": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "avg",
+              "count"
+            ]
+          },
+          "tripCount": {
+            "type": "integer"
+          },
+          "checklist": {
+            "$ref": "#/components/schemas/ListingChecklist"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "status",
+          "onboardingStep",
+          "features",
+          "petFriendly",
+          "childSeat",
+          "ownerIsHost",
+          "unlimitedKm",
+          "fuelPolicy",
+          "rules",
+          "photos",
+          "documents",
+          "deliveryOptions",
+          "recurringRules",
+          "rating",
+          "tripCount",
+          "checklist",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "AddressWithPoint": {
+        "type": "object",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "streetNumber": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "street": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 120
+          },
+          "suburb": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "city": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 80
+          },
+          "region": {
+            "type": "string",
+            "enum": [
+              "Northland",
+              "Auckland",
+              "Waikato",
+              "Bay of Plenty",
+              "Gisborne",
+              "Hawke's Bay",
+              "Taranaki",
+              "Manawatū-Whanganui",
+              "Wellington",
+              "Tasman",
+              "Nelson",
+              "Marlborough",
+              "West Coast",
+              "Canterbury",
+              "Otago",
+              "Southland"
+            ]
+          },
+          "postcode": {
+            "type": "string",
+            "pattern": "^\\d{4}$"
+          },
+          "lat": {
+            "type": "number",
+            "minimum": -48,
+            "maximum": -33
+          },
+          "lng": {
+            "type": "number",
+            "minimum": 165,
+            "maximum": 179.9
+          }
+        },
+        "required": [
+          "street",
+          "city",
+          "region",
+          "postcode",
+          "lat",
+          "lng"
+        ],
+        "description": "A structured NZ address with its coordinates (plan §3)"
+      },
+      "ListingChecklist": {
+        "type": "object",
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "integer"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "step",
+                "field",
+                "message"
+              ]
+            }
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ]
+            }
+          }
+        },
+        "required": [
+          "complete",
+          "missing",
+          "flags"
+        ]
+      },
+      "VehiclePatch": {
+        "type": "object",
+        "properties": {
+          "regoPlate": {
+            "type": "string"
+          },
+          "vin": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-HJ-NPR-Z0-9]{17}$"
+          },
+          "chassisNo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 5,
+            "maxLength": 30
+          },
+          "make": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "year": {
+            "type": "integer",
+            "minimum": 1950
+          },
+          "variant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 60
+          },
+          "bodyType": {
+            "type": "string",
+            "enum": [
+              "HATCHBACK",
+              "SEDAN",
+              "WAGON",
+              "SUV",
+              "UTE",
+              "VAN",
+              "PEOPLE_MOVER",
+              "COUPE",
+              "CONVERTIBLE"
+            ]
+          },
+          "fuelType": {
+            "type": "string",
+            "enum": [
+              "PETROL",
+              "DIESEL",
+              "HYBRID",
+              "PHEV",
+              "EV"
+            ]
+          },
+          "transmission": {
+            "type": "string",
+            "enum": [
+              "AUTOMATIC",
+              "MANUAL"
+            ]
+          },
+          "seats": {
+            "type": "integer"
+          },
+          "doors": {
+            "type": "integer"
+          },
+          "powertrain": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "engineCc": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "cylinders": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 16
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "evRangeKm": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1500
+              },
+              "batteryKwh": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 250
+              }
+            }
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "maxItems": 20
+          },
+          "petFriendly": {
+            "type": "boolean"
+          },
+          "childSeat": {
+            "type": "boolean"
+          },
+          "damageNotes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1000
+          },
+          "regoExpiry": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          },
+          "wofExpiry": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          },
+          "cofExpiry": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          },
+          "rucValidToKm": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 2000000
+          },
+          "ownerIsHost": {
+            "type": "boolean"
+          },
+          "pricing": {
+            "type": "object",
+            "properties": {
+              "dailyCents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "weeklyDiscountPct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "default": 0
+              },
+              "monthlyDiscountPct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "default": 0
+              },
+              "extraKmCents": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000,
+                "default": 0
+              }
+            },
+            "required": [
+              "dailyCents"
+            ]
+          },
+          "kmAllowancePerDay": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 50,
+            "maximum": 2000
+          },
+          "unlimitedKm": {
+            "type": "boolean"
+          },
+          "fuelPolicy": {
+            "type": "string",
+            "enum": [
+              "SAME_LEVEL",
+              "FULL"
+            ]
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "minDays": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 90
+              },
+              "maxDays": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 365
+              },
+              "minNoticeHours": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 336
+              },
+              "bufferHours": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 72
+              },
+              "instantBook": {
+                "type": "boolean"
+              },
+              "cancellationTier": {
+                "type": "string"
+              }
+            }
+          },
+          "deliveryOptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliveryOptionInput"
+            },
+            "maxItems": 10
+          },
+          "onboardingStep": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          }
+        }
+      },
+      "DeliveryOptionInput": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Keep an existing option (bookings refer to it)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "PICKUP",
+              "DELIVERY",
+              "AIRPORT",
+              "CUSTOM"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 80
+          },
+          "address": {
+            "type": "object",
+            "properties": {
+              "unit": {
+                "type": "string",
+                "maxLength": 20
+              },
+              "streetNumber": {
+                "type": "string",
+                "maxLength": 20
+              },
+              "street": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 120
+              },
+              "suburb": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "city": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 80
+              },
+              "region": {
+                "type": "string",
+                "enum": [
+                  "Northland",
+                  "Auckland",
+                  "Waikato",
+                  "Bay of Plenty",
+                  "Gisborne",
+                  "Hawke's Bay",
+                  "Taranaki",
+                  "Manawatū-Whanganui",
+                  "Wellington",
+                  "Tasman",
+                  "Nelson",
+                  "Marlborough",
+                  "West Coast",
+                  "Canterbury",
+                  "Otago",
+                  "Southland"
+                ]
+              },
+              "postcode": {
+                "type": "string",
+                "pattern": "^\\d{4}$"
+              },
+              "lat": {
+                "type": "number",
+                "minimum": -48,
+                "maximum": -33
+              },
+              "lng": {
+                "type": "number",
+                "minimum": 165,
+                "maximum": 179.9
+              }
+            },
+            "required": [
+              "street",
+              "city",
+              "region",
+              "postcode",
+              "lat",
+              "lng"
+            ],
+            "description": "PICKUP and CUSTOM: the address"
+          },
+          "airportCode": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{3}$"
+          },
+          "feeCents": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50000,
+            "default": 0
+          },
+          "radiusKm": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "DELIVERY: how far from the car"
+          },
+          "instructions": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Shown to the Guest once the booking is confirmed, e.g. where to meet at the airport"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "PhotoAttach": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "FRONT",
+              "REAR",
+              "DRIVER",
+              "PASSENGER",
+              "INTERIOR",
+              "DASH",
+              "BOOT",
+              "TYRES",
+              "DAMAGE"
+            ]
+          },
+          "upload": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "qualityFlag": {
+            "type": "string",
+            "enum": [
+              "OK",
+              "LOW_RES",
+              "DARK",
+              "BLURRY"
+            ],
+            "default": "OK",
+            "description": "The browser's checks: LOW_RES, DARK or BLURRY are shown to support staff (plan §9, Days 8–11)"
+          }
+        },
+        "required": [
+          "type",
+          "upload"
+        ]
+      },
+      "DocumentAttach": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "REGO",
+              "WOF",
+              "COF",
+              "RUC",
+              "INSURANCE",
+              "OWNER_CONSENT",
+              "OTHER"
+            ]
+          },
+          "upload": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "expiry": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "YYYY-MM-DD"
+          }
+        },
+        "required": [
+          "type",
+          "upload"
+        ]
+      },
+      "HostCalendar": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CalendarBlock"
+            }
+          },
+          "rules": {
+            "type": "object",
+            "properties": {
+              "minNoticeHours": {
+                "type": "number"
+              },
+              "bufferHours": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "minNoticeHours",
+              "bufferHours"
+            ]
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "blocks",
+          "rules"
+        ]
+      },
+      "CalendarBlock": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "BOOKED",
+              "HOLD",
+              "HOST_BLOCK",
+              "RECURRING",
+              "BUFFER",
+              "ADMIN"
+            ]
+          },
+          "note": {
+            "type": "string"
+          },
+          "holdExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "booking": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "guestFirstName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ref",
+              "status",
+              "guestFirstName"
+            ],
+            "description": "BOOKED and HOLD blocks: the booking (\"Request pending\" while it waits)"
+          }
+        },
+        "required": [
+          "id",
+          "start",
+          "end",
+          "reason"
+        ]
+      },
+      "BlockResponse": {
+        "type": "object",
+        "properties": {
+          "block": {
+            "$ref": "#/components/schemas/CalendarBlock"
+          }
+        },
+        "required": [
+          "block"
+        ]
+      },
+      "BlockInput": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "description": "\"2026-10-12T10:00\" in NZ time, or a date \"2026-10-12\" for the whole day"
+          },
+          "end": {
+            "type": "string",
+            "description": "Exclusive; a date means the start of that day"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ]
+      },
+      "RecurringResult": {
+        "type": "object",
+        "properties": {
+          "blocks": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "start": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "end": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "start",
+                "end"
+              ]
+            },
+            "description": "Times left open because a booking or request is there"
+          }
+        },
+        "required": [
+          "blocks",
+          "skipped"
+        ]
+      },
+      "RecurringRulesInput": {
+        "type": "object",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "daysOfWeek": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 6
+                  },
+                  "minItems": 1
+                },
+                "startTime": {
+                  "type": "string",
+                  "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+                },
+                "endTime": {
+                  "type": "string",
+                  "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+                }
+              },
+              "required": [
+                "daysOfWeek",
+                "startTime",
+                "endTime"
+              ]
+            },
+            "maxItems": 14
+          }
+        },
+        "required": [
+          "rules"
+        ]
+      },
+      "UploadTarget": {
+        "type": "object",
+        "properties": {
+          "driver": {
+            "type": "string",
+            "enum": [
+              "local",
+              "cloudinary"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "PUT",
+              "POST"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "PUT: send the file as the body with these"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "POST: a multipart form with these fields and the file as `file`"
+          },
+          "maxBytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "driver",
+          "method",
+          "url",
+          "maxBytes"
+        ],
+        "description": "Where to send one file. Afterwards, attach it with the key the upload returned: local uploads answer `{ key }`, Cloudinary answers `{ public_id }`."
+      },
+      "UploadRequest": {
+        "type": "object",
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "VEHICLE_PHOTO",
+              "VEHICLE_DOCUMENT"
+            ]
+          },
+          "vehicleId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{24}$"
+          },
+          "contentType": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 15728640
+          }
+        },
+        "required": [
+          "purpose",
+          "vehicleId",
+          "contentType",
+          "size"
+        ]
+      },
+      "Notifications": {
+        "type": "object",
+        "properties": {
+          "notifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationItem"
+            }
+          },
+          "unreadCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "notifications",
+          "unreadCount"
+        ]
+      },
+      "NotificationItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "link": {
+            "type": "string",
+            "description": "A website path to open"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "read": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "title",
+          "createdAt",
+          "read"
+        ]
+      },
+      "UnreadCount": {
+        "type": "object",
+        "properties": {
+          "unreadCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unreadCount"
+        ]
+      },
+      "MarkNotificationsRead": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "maxItems": 100,
+            "description": "Left out: marks every notification read"
+          }
+        }
+      },
+      "HostApplications": {
+        "type": "object",
+        "properties": {
+          "applications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HostApplication"
+            }
+          }
+        },
+        "required": [
+          "applications"
+        ]
+      },
+      "HostApplication": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "emailVerified": {
+            "type": "boolean"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "phoneVerified": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "APPLIED",
+              "APPROVED",
+              "REJECTED",
+              "SUSPENDED"
+            ]
+          },
+          "appliedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "bio": {
+            "type": "string"
+          },
+          "gstRegistered": {
+            "type": "boolean"
+          },
+          "gstNumber": {
+            "type": "string"
+          },
+          "reviewNotes": {
+            "type": "string"
+          },
+          "vehicles": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "underReview": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "underReview"
+            ]
+          }
+        },
+        "required": [
+          "userId",
+          "firstName",
+          "lastName",
+          "email",
+          "emailVerified",
+          "phoneVerified",
+          "status",
+          "appliedAt",
+          "gstRegistered",
+          "vehicles"
+        ]
+      },
+      "HostDecision": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ReviewNotes": {
+        "type": "object",
+        "properties": {
+          "notes": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      },
+      "RequiredReviewNotes": {
+        "type": "object",
+        "properties": {
+          "notes": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "notes"
+        ]
+      },
+      "ReviewQueue": {
+        "type": "object",
+        "properties": {
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewQueueItem"
+            }
+          }
+        },
+        "required": [
+          "vehicles"
+        ]
+      },
+      "ReviewQueueItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "UNDER_REVIEW",
+              "CHANGES_REQUESTED",
+              "REJECTED",
+              "ACTIVE",
+              "INACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "APPLIED",
+                  "APPROVED",
+                  "REJECTED",
+                  "SUSPENDED",
+                  null
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "status"
+            ]
+          },
+          "city": {
+            "type": "string"
+          },
+          "pendingPhotos": {
+            "type": "integer"
+          },
+          "pendingDocuments": {
+            "type": "integer"
+          },
+          "flags": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "host",
+          "pendingPhotos",
+          "pendingDocuments",
+          "flags",
+          "updatedAt"
+        ]
+      },
+      "AdminVehicle": {
+        "type": "object",
+        "properties": {
+          "vehicle": {
+            "$ref": "#/components/schemas/HostVehicle"
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "APPLIED",
+                  "APPROVED",
+                  "REJECTED",
+                  "SUSPENDED",
+                  null
+                ]
+              },
+              "emailVerified": {
+                "type": "boolean"
+              },
+              "phoneVerified": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "email",
+              "status",
+              "emailVerified",
+              "phoneVerified"
+            ]
+          }
+        },
+        "required": [
+          "vehicle",
+          "host"
+        ]
+      },
+      "PhotoDecision": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REJECT"
+            ]
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "DocumentDecision": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "VERIFY",
+              "REJECT"
+            ]
+          }
+        },
+        "required": [
+          "decision"
         ]
       }
     },
@@ -5746,6 +7660,2803 @@
           },
           "429": {
             "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/host-application": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Apply to host",
+        "description": "Needs a verified mobile (409 PHONE_NOT_VERIFIED) and the Host Agreement, whose acceptance is recorded. Adds the HOST role; the Host can add a car straight away, and staff approve the application.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostApplicationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The Host profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostProfileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/host-profile": {
+      "get": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "The Host profile and application status",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Host profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostProfileResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Update the bio and GST details",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostProfilePatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The Host profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostProfileResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles": {
+      "get": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "My Vehicles",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every car, newest change first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicles"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Start a new listing (a draft)",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}": {
+      "get": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "One of my cars, with what’s missing",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Save an onboarding step, or edit a live listing",
+        "description": "Every field is optional. On a live listing, prices, rules and delivery change at once; a new plate, VIN, chassis number, make, model or year sends it back to UNDER_REVIEW. 409 PLATE_TAKEN when the plate is on another listing.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VehiclePatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Delete a draft",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/photos": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Add an uploaded photo",
+        "description": "It shows on the listing once support staff approve it.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhotoAttach"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/photos/{photoId}": {
+      "delete": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Remove a photo",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "photoId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/documents": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Add an uploaded document",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentAttach"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/documents/{documentId}": {
+      "delete": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Remove a document",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "documentId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/submit": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Submit a listing for review",
+        "description": "400 LISTING_INCOMPLETE with one field per missing item until the checklist is complete.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/activate": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Show a listing in search again",
+        "description": "Existing bookings stay; the Host cancels them explicitly (plan §8.2).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/deactivate": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Hide a listing from search",
+        "description": "Existing bookings stay; the Host cancels them explicitly (plan §8.2).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The car",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/calendar": {
+      "get": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "The car’s calendar",
+        "description": "Every block with its reason; bookings and requests carry their reference (\"Request pending\").",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The calendar",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostCalendar"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/blocks": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Block dates",
+        "description": "409 BOOKED_DATES when a booking or request is there.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The block",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlockResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/blocks/{blockId}": {
+      "delete": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Unblock dates",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "blockId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/host/vehicles/{id}/recurring-rules": {
+      "put": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Set recurring availability",
+        "description": "Replaces the rules, e.g. unavailable every weekday 8:00–18:00 NZ time, and rebuilds 12 months of blocks. Times already booked are skipped and listed.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecurringRulesInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecurringResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads/signature": {
+      "post": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "Where to upload a photo or document",
+        "description": "The car’s Host (or staff) only. Photos: JPEG, PNG, WebP or HEIC; documents also PDF; up to 15 MB. 503 UPLOADS_UNAVAILABLE until storage is set up in production.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The upload target",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadTarget"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "The notification bell",
+        "description": "The latest 30 in-app notifications and the unread count.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notifications"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/read": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Mark notifications read",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkNotificationsRead"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The unread count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnreadCount"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/host-applications": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Host applications",
+        "description": "Oldest first. `status` is APPLIED by default.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "APPLIED",
+                "APPROVED",
+                "REJECTED",
+                "SUSPENDED"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Applications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostApplications"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/host-applications/{userId}/approve": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Approve a Host application",
+        "description": "409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email. Emails the Host.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "userId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewNotes"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The new status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostDecision"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/host-applications/{userId}/reject": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Reject a Host application",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "userId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequiredReviewNotes"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The new status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "The listing review queue",
+        "description": "Listings under review, and live listings with new photos or documents waiting.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The queue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewQueue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "A listing to review, with its Host",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminVehicle"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/approve": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Approve a listing (and its pending photos and documents)",
+        "description": "409 HOST_NOT_APPROVED until the Host’s application is approved.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewNotes"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/request-changes": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Send a listing back to the Host for changes",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequiredReviewNotes"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/reject": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Reject a listing",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequiredReviewNotes"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/photos/{photoId}": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Approve or reject one photo",
+        "description": "A rejected photo counts as missing until the Host replaces it.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "photoId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhotoDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/documents/{documentId}": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Verify or reject one document",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "documentId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostVehicleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/calendar": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "A car’s calendar",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The calendar",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostCalendar"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/blocks": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Calendar override: block dates",
+        "description": "Never over a booking or request (409 BOOKED_DATES). Written to the audit log.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The block",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "block": {
+                      "$ref": "#/components/schemas/CalendarBlock"
+                    }
+                  },
+                  "required": [
+                    "block"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/vehicles/{id}/blocks/{blockId}": {
+      "delete": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Calendar override: unblock dates",
+        "description": "Staff, Host and recurring blocks; never a trip’s.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "blockId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {

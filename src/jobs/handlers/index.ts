@@ -2,6 +2,7 @@ import type { Logger } from 'pino';
 import type { JobDocument } from '../job.model.js';
 import { sendEmailJob } from './email-send.js';
 import { refreshExchangeRatesJob } from './exchange-rates.js';
+import { sendNotificationJob } from './notification-send.js';
 
 export interface JobContext {
   job: JobDocument;
@@ -15,6 +16,7 @@ export interface JobContext {
 export const jobHandlers = {
   'email.send': sendEmailJob,
   'daily.exchangeRates': refreshExchangeRatesJob,
+  'notification.send': sendNotificationJob,
 } satisfies Record<string, (payload: never, context: JobContext) => Promise<void>>;
 
 export type JobType = keyof typeof jobHandlers;

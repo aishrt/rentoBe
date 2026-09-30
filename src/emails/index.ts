@@ -14,6 +14,39 @@ import {
   type PasswordChangedProps,
   type ResetPasswordProps,
 } from './templates/account-emails.js';
+import {
+  BookingCancelledEmail,
+  BookingConfirmedGuestEmail,
+  BookingConfirmedHostEmail,
+  BookingDeclinedEmail,
+  BookingRequestHostEmail,
+  BookingRequestSentEmail,
+  PaymentFailedEmail,
+  PaymentReceiptEmail,
+  RefundIssuedEmail,
+  RequestExpiredHostEmail,
+  type BookingCancelledProps,
+  type BookingConfirmedGuestProps,
+  type BookingConfirmedHostProps,
+  type BookingDeclinedProps,
+  type BookingRequestHostProps,
+  type BookingRequestSentProps,
+  type PaymentFailedProps,
+  type PaymentReceiptProps,
+  type RefundIssuedProps,
+  type RequestExpiredHostProps,
+} from './templates/booking-emails.js';
+import {
+  HostApplicationDecisionEmail,
+  HostApplicationReceivedEmail,
+  ListingDecisionEmail,
+  ListingSubmittedEmail,
+  listingDecisionSubjects,
+  type HostApplicationDecisionProps,
+  type HostApplicationReceivedProps,
+  type ListingDecisionProps,
+  type ListingSubmittedProps,
+} from './templates/host-emails.js';
 import { SupportTicketReceivedEmail, type SupportTicketReceivedProps } from './templates/support-emails.js';
 import { VerifyEmail, type VerifyEmailProps } from './templates/verify-email.js';
 import { WelcomeEmail, type WelcomeEmailProps } from './templates/welcome-email.js';
@@ -58,6 +91,67 @@ export const emailTemplates = {
   supportTicketReceived: defineTemplate<SupportTicketReceivedProps>({
     subject: ({ ref }) => `We've got your message (${ref})`,
     component: SupportTicketReceivedEmail,
+  }),
+  hostApplicationReceived: defineTemplate<HostApplicationReceivedProps>({
+    subject: () => "We've got your Host application",
+    component: HostApplicationReceivedEmail,
+  }),
+  hostApplicationDecision: defineTemplate<HostApplicationDecisionProps>({
+    subject: ({ approved }) =>
+      approved ? "You're approved to host on Rento Vroom" : 'About your Host application',
+    component: HostApplicationDecisionEmail,
+  }),
+  listingSubmitted: defineTemplate<ListingSubmittedProps>({
+    subject: ({ vehicleTitle }) => `Your ${vehicleTitle} is under review`,
+    component: ListingSubmittedEmail,
+  }),
+  listingDecision: defineTemplate<ListingDecisionProps>({
+    subject: ({ decision, vehicleTitle }) => listingDecisionSubjects[decision](vehicleTitle),
+    component: ListingDecisionEmail,
+  }),
+  bookingRequestHost: defineTemplate<BookingRequestHostProps>({
+    subject: ({ guestFirstName, vehicleTitle }) =>
+      `Booking request from ${guestFirstName} for your ${vehicleTitle}`,
+    component: BookingRequestHostEmail,
+  }),
+  bookingRequestSent: defineTemplate<BookingRequestSentProps>({
+    subject: ({ hostFirstName }) => `Your booking request is with ${hostFirstName}`,
+    component: BookingRequestSentEmail,
+  }),
+  bookingConfirmedGuest: defineTemplate<BookingConfirmedGuestProps>({
+    subject: ({ vehicleTitle, ref }) => `You're booked: ${vehicleTitle} (${ref})`,
+    component: BookingConfirmedGuestEmail,
+  }),
+  bookingConfirmedHost: defineTemplate<BookingConfirmedHostProps>({
+    subject: ({ guestFirstName, vehicleTitle }) => `${guestFirstName} has booked your ${vehicleTitle}`,
+    component: BookingConfirmedHostEmail,
+  }),
+  bookingDeclined: defineTemplate<BookingDeclinedProps>({
+    subject: ({ outcome, vehicleTitle }) =>
+      outcome === 'DECLINED'
+        ? `Your request for the ${vehicleTitle} was declined`
+        : `Your request for the ${vehicleTitle} expired`,
+    component: BookingDeclinedEmail,
+  }),
+  requestExpiredHost: defineTemplate<RequestExpiredHostProps>({
+    subject: ({ guestFirstName }) => `${guestFirstName}'s booking request expired`,
+    component: RequestExpiredHostEmail,
+  }),
+  bookingCancelled: defineTemplate<BookingCancelledProps>({
+    subject: ({ ref }) => `Booking ${ref} is cancelled`,
+    component: BookingCancelledEmail,
+  }),
+  paymentReceipt: defineTemplate<PaymentReceiptProps>({
+    subject: ({ ref, gstNumber }) => `${gstNumber ? 'Tax invoice' : 'Receipt'} for booking ${ref}`,
+    component: PaymentReceiptEmail,
+  }),
+  paymentFailed: defineTemplate<PaymentFailedProps>({
+    subject: ({ vehicleTitle }) => `Your payment for the ${vehicleTitle} didn't go through`,
+    component: PaymentFailedEmail,
+  }),
+  refundIssued: defineTemplate<RefundIssuedProps>({
+    subject: ({ ref }) => `Refund for booking ${ref}`,
+    component: RefundIssuedEmail,
   }),
 };
 

@@ -13,6 +13,8 @@ import {
 } from '../auth/mfa.service.js';
 import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
 import { acceptLatestAgreements, changePassword, requestEmailChange } from './account.service.js';
+import { hostApplicationSchema, hostProfilePatchSchema } from '../hosts/hosts.schemas.js';
+import { applyToHost, getHostProfile, updateHostProfile } from '../hosts/hosts.service.js';
 import { lastSearchSchema } from './saved.schemas.js';
 import { listFavourites, removeFavourite, saveFavourite, saveLastSearch } from './saved.service.js';
 import { UserModel } from './user.model.js';
@@ -87,6 +89,20 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
   router.delete('/favourites/:vehicleId', async (req, res) => {
     await removeFavourite(req.auth!.userId, String(req.params.vehicleId));
     res.status(204).end();
+  });
+
+  // Becoming a Host (plan §9, Days 8–11).
+  router.post('/host-application', async (req, res) => {
+    const input = validate(hostApplicationSchema, req.body);
+    res.json({ host: await applyToHost(req.auth!.userId, input, req.ip) });
+  });
+
+  router.get('/host-profile', async (req, res) => {
+    res.json({ host: await getHostProfile(req.auth!.userId) });
+  });
+
+  router.patch('/host-profile', async (req, res) => {
+    res.json({ host: await updateHostProfile(req.auth!.userId, validate(hostProfilePatchSchema, req.body)) });
   });
 
   router.put('/last-search', async (req, res) => {
