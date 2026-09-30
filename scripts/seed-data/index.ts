@@ -13,7 +13,9 @@ import { FaqModel } from '../../src/modules/help/faq.model.js';
 import { HelpArticleModel } from '../../src/modules/help/help-article.model.js';
 import { ReviewModel } from '../../src/modules/reviews/review.model.js';
 import { PlaceModel } from '../../src/modules/search/place.model.js';
+import { encrypt } from '../../src/lib/encryption.js';
 import { acceptAgreements } from '../../src/modules/users/agreements.js';
+import { licenceNumberHash } from '../../src/modules/users/driver-licence.service.js';
 import { UserModel, type AgreementType, type UserDocument } from '../../src/modules/users/user.model.js';
 import { VehicleModel, type VehicleDocument } from '../../src/modules/vehicles/vehicle.model.js';
 import { DEMO_ACCOUNTS } from './demo-accounts.js';
@@ -26,7 +28,7 @@ import {
   demoRef,
   demoStars,
 } from './demo-trips.js';
-import { DEMO_VEHICLES, buildDemoVehicle } from './demo-vehicles.js';
+import { DEMO_VEHICLES, REVIEW_VEHICLE, buildDemoVehicle } from './demo-vehicles.js';
 import { DESTINATIONS } from './destinations.js';
 import { FAQS } from './faqs.js';
 import { HELP_ARTICLES } from './help-articles.js';
@@ -171,10 +173,26 @@ async function upsertDemoAccounts(password: string, now: Date): Promise<Map<stri
           ...(!isStaff && {
             identityVerification: { status: 'APPROVED', provider: 'demo', verifiedAt: now },
           }),
-          ...(account.hostCity && {
-            hostProfile: {
+          ...(account.phone && { phone: account.phone, phoneVerifiedAt: now }),
+          ...(account.licence && {
+            dob: new Date(Date.UTC(1990, 5, 15)),
+            driverLicence: {
+              number: encrypt(account.licence.number),
+              numberHash: licenceNumberHash(account.licence.number),
+              numberEnding: account.licence.number.slice(-3),
+              ...(account.licence.version && { version: account.licence.version }),
+              country: account.licence.country,
+              class: account.licence.class,
+              ...(account.licence.class === 'OVERSEAS' && { inEnglish: true }),
+              issuedAt: new Date(now.getTime() - 8 * 365 * DAY_MS),
+              expiry: new Date(now.getTime() + 5 * 365 * DAY_MS),
               status: 'APPROVED',
-              appliedAt: new Date(now.getTime() - 120 * DAY_MS),
+            },
+          }),
+          ...((account.hostCity || account.applicant) && {
+            hostProfile: {
+              status: account.applicant ? 'APPLIED' : 'APPROVED',
+              appliedAt: new Date(now.getTime() - (account.applicant ? 1 : 120) * DAY_MS),
               payoutsEnabled: false,
               bio: account.bio,
               responseRate: 100,
@@ -293,6 +311,31 @@ export async function seedDemoData(password: string, now = new Date()) {
     );
     if (!vehicle) throw new Error(`Demo car ${data.slug} wasn't saved`);
     vehicles.push(vehicle);
+  }
+
+  // The applicant's first listing, waiting for review with its photos and documents, so the staff
+  // queues have something in them (plan §9, Days 8–11).
+  const applicant = DEMO_ACCOUNTS.find((demo) => demo.applicant);
+  if (applicant) {
+    const data = buildDemoVehicle(
+      REVIEW_VEHICLE,
+      DEMO_VEHICLES.length,
+      account(applicant.email)._id,
+      settings,
+      now,
+    );
+    await VehicleModel.findOneAndUpdate(
+      { slug: data.slug },
+      {
+        $set: {
+          ...data,
+          status: 'UNDER_REVIEW',
+          photos: data.photos.map((photo) => ({ ...photo, status: 'PENDING' })),
+          documents: data.documents.map((document) => ({ ...document, status: 'PENDING' })),
+        },
+      },
+      { upsert: true, runValidators: true, setDefaultsOnInsert: true },
+    );
   }
 
   await removeDemoTrips();
