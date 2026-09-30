@@ -13,6 +13,8 @@ import {
 } from '../auth/mfa.service.js';
 import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
 import { acceptLatestAgreements, changePassword, requestEmailChange } from './account.service.js';
+import { lastSearchSchema } from './saved.schemas.js';
+import { listFavourites, removeFavourite, saveFavourite, saveLastSearch } from './saved.service.js';
 import { UserModel } from './user.model.js';
 import { toPublicUser } from './user.service.js';
 
@@ -70,6 +72,26 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
   router.post('/mfa/disable', ...limit(codeCheckRateLimit), async (req, res) => {
     const { code } = validate(codeSchema, req.body);
     res.json({ user: await disableMfa(req.auth!.userId, code, req.ip) });
+  });
+
+  // Saved cars: the heart on a car card (plan §12.6).
+  router.get('/favourites', async (req, res) => {
+    res.json({ vehicleIds: await listFavourites(req.auth!.userId) });
+  });
+
+  router.put('/favourites/:vehicleId', async (req, res) => {
+    await saveFavourite(req.auth!.userId, String(req.params.vehicleId));
+    res.status(204).end();
+  });
+
+  router.delete('/favourites/:vehicleId', async (req, res) => {
+    await removeFavourite(req.auth!.userId, String(req.params.vehicleId));
+    res.status(204).end();
+  });
+
+  router.put('/last-search', async (req, res) => {
+    await saveLastSearch(req.auth!.userId, validate(lastSearchSchema, req.body));
+    res.status(204).end();
   });
 
   return router;

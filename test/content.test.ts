@@ -172,3 +172,40 @@ describe('Contact form', () => {
     expect(Object.keys(response.body.error.fields).sort()).toEqual(['email', 'message']);
   });
 });
+
+describe('Saved cars and the last search', () => {
+  it('saves, lists and removes favourites, and remembers the last search', async () => {
+    const host = await createHost();
+    const car = await createVehicle(host._id);
+    const draft = await createVehicle(host._id, { status: 'DRAFT' });
+    const user = await createUser();
+    const agent = browserAgent();
+    await agent
+      .post('/api/v1/auth/login')
+      .send({ email: user.email, password: 'correct horse battery staple' });
+
+    expect((await agent.put(`/api/v1/me/favourites/${car.id}`)).status).toBe(204);
+    expect((await agent.put(`/api/v1/me/favourites/${car.id}`)).status).toBe(204);
+    expect((await agent.put(`/api/v1/me/favourites/${draft.id}`)).status).toBe(404);
+    expect((await agent.get('/api/v1/me/favourites')).body).toEqual({ vehicleIds: [car.id] });
+    expect((await agent.delete(`/api/v1/me/favourites/${car.id}`)).status).toBe(204);
+    expect((await agent.get('/api/v1/me/favourites')).body).toEqual({ vehicleIds: [] });
+
+    const saved = await agent
+      .put('/api/v1/me/last-search')
+      .send({
+        place: 'Auckland',
+        lat: -36.85,
+        lng: 174.76,
+        start: '2026-12-01T10:00',
+        end: '2026-12-04T10:00',
+      });
+    expect(saved.status).toBe(204);
+    const { UserModel } = await import('../src/modules/users/user.model.js');
+    const stored = await UserModel.findById(user._id).lean();
+    expect(stored!.lastSearch).toMatchObject({ place: 'Auckland', lat: -36.85, lng: 174.76 });
+    expect(stored!.lastSearch!.startAt!.toISOString()).toBe('2026-11-30T21:00:00.000Z');
+
+    expect((await request(app).get('/api/v1/me/favourites')).status).toBe(401);
+  });
+});

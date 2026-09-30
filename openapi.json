@@ -321,6 +321,49 @@
           "qrCode"
         ]
       },
+      "Favourites": {
+        "type": "object",
+        "properties": {
+          "vehicleIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Saved cars, most recent first"
+          }
+        },
+        "required": [
+          "vehicleIds"
+        ]
+      },
+      "LastSearch": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "lat": {
+            "type": "number",
+            "minimum": -48,
+            "maximum": -33
+          },
+          "lng": {
+            "type": "number",
+            "minimum": 165,
+            "maximum": 179.9
+          },
+          "start": {
+            "type": "string",
+            "maxLength": 40,
+            "description": "\"2026-10-12T10:00\" in NZ time"
+          },
+          "end": {
+            "type": "string",
+            "maxLength": 40
+          }
+        }
+      },
       "AdminOverview": {
         "type": "object",
         "properties": {
@@ -4296,6 +4339,191 @@
           },
           "429": {
             "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/favourites": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Saved cars",
+        "description": "The ids of the cars the user saved with the heart, most recent first.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved cars",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Favourites"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/favourites/{vehicleId}": {
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Save a car",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "vehicleId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Remove a saved car",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "vehicleId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/last-search": {
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Remember the last search",
+        "description": "The place and dates Saved cars will price each saved car for.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LastSearch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
             "content": {
               "application/json": {
                 "schema": {

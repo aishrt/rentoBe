@@ -9,6 +9,7 @@ import {
   mfaVerifySchema,
 } from '../auth/auth.schemas.js';
 import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
+import { favouritesResponseSchema, lastSearchSchema } from './saved.schemas.js';
 import { userResponseSchema } from './user.schemas.js';
 
 /** The contract for users.routes.ts (plan §2.3). */
@@ -135,5 +136,48 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
       200: jsonResponse('Two-factor sign-in is off', userResponseSchema),
       ...errorResponses(400, 401, 403, 409, 429),
     },
+  });
+
+  const vehicleParam = z.object({ vehicleId: z.string().meta({ description: 'The car’s id' }) });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/favourites',
+    tags: ['Account'],
+    summary: 'Saved cars',
+    description: 'The ids of the cars the user saved with the heart, most recent first.',
+    security: signedIn,
+    responses: { 200: jsonResponse('Saved cars', favouritesResponseSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'put',
+    path: '/me/favourites/{vehicleId}',
+    tags: ['Account'],
+    summary: 'Save a car',
+    security: signedIn,
+    request: { params: vehicleParam },
+    responses: { 204: { description: 'Saved' }, ...errorResponses(401, 404) },
+  });
+
+  registry.registerPath({
+    method: 'delete',
+    path: '/me/favourites/{vehicleId}',
+    tags: ['Account'],
+    summary: 'Remove a saved car',
+    security: signedIn,
+    request: { params: vehicleParam },
+    responses: { 204: { description: 'Removed' }, ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'put',
+    path: '/me/last-search',
+    tags: ['Account'],
+    summary: 'Remember the last search',
+    description: 'The place and dates Saved cars will price each saved car for.',
+    security: signedIn,
+    request: { body: jsonBody(lastSearchSchema) },
+    responses: { 204: { description: 'Saved' }, ...errorResponses(400, 401) },
   });
 }
