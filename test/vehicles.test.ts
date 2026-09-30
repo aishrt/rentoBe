@@ -213,7 +213,7 @@ describe('Quote', () => {
     });
 
     const response = await quote(vehicle.id, {
-      start: nzDay(0, '23:59'),
+      start: nzDay(1),
       end: nzDay(13),
       pickupOptionId: vehicle.deliveryOptions[1]!._id!.toString(),
       deliveryAddress: {
