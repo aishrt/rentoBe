@@ -248,13 +248,25 @@ const GROUP_FILTERS: Record<string, (now: Date) => Record<string, unknown>> = {
   requests: () => ({ status: 'PENDING' }),
 };
 
+/**
+ * A checkout the Guest never paid for expires without the Host ever hearing of it, so it stays out of
+ * the Host's lists. A request that ran out of time has its deadline, and belongs there.
+ */
+const REACHED_THE_HOST = {
+  $or: [
+    { status: mongoose.trusted({ $ne: 'EXPIRED' }) },
+    { requestExpiresAt: mongoose.trusted({ $exists: true }) },
+  ],
+};
+
 /** GET /bookings: a Guest's trips or a Host's bookings, grouped as in plan §8.2 (dashboard grouping). */
 export async function listBookings(userId: string, role: 'guest' | 'host', group?: string, now = new Date()) {
   const owner = role === 'guest' ? { guestId: userId } : { hostId: userId };
-  const filter =
+  const grouped =
     group && GROUP_FILTERS[group]
-      ? { ...owner, ...GROUP_FILTERS[group]!(now) }
-      : { ...owner, status: mongoose.trusted({ $ne: 'PAYMENT_PENDING' }) };
+      ? GROUP_FILTERS[group]!(now)
+      : { status: mongoose.trusted({ $ne: 'PAYMENT_PENDING' }) };
+  const filter = { ...owner, $and: role === 'host' ? [grouped, REACHED_THE_HOST] : [grouped] };
   const ascending = group === 'upcoming' || group === 'requests';
   const bookings = await BookingModel.find(filter)
     .sort({ startAt: ascending ? 1 : -1 })

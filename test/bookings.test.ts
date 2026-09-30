@@ -13,6 +13,7 @@ import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { expirePaymentHold, expireRequest } from '../src/modules/bookings/booking.service.js';
 import { guestCancellation, refundPctFor } from '../src/modules/bookings/policies.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
+import { smsSendTime } from '../src/modules/notifications/notify.js';
 import { PaymentModel } from '../src/modules/payments/payment.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { createHost, createVehicle, nzDay } from './fixtures.js';
@@ -360,6 +361,11 @@ describe('Booking an Instant Book car', () => {
         } as Stripe.Charge,
       }),
     );
+    // Run during NZ's quiet hours, the Host's text waits for the morning; bring it forward.
+    await JobModel.updateMany(
+      { type: 'notification.send', status: 'QUEUED' },
+      { $set: { runAt: new Date() } },
+    );
     await createJobRunner().drain();
     const receipt = await NotificationModel.findOne({ type: 'PAYMENT_RECEIPT', channel: 'EMAIL' }).lean();
     expect(receipt).toMatchObject({
@@ -405,12 +411,18 @@ describe('Booking an Instant Book car', () => {
 
   it('releases the dates when payment isn’t finished in 30 minutes, unless it went through', async () => {
     mockStripe();
-    const { id } = await paidBooking();
+    const { id, ref, agent, hostAgent } = await paidBooking();
     const later = new Date(Date.now() + 31 * 60_000);
     expect(await expirePaymentHold(id, later)).toBe('expired');
     expect((await BookingModel.findById(id).lean())!.status).toBe('EXPIRED');
     expect(await AvailabilityBlockModel.countDocuments({ bookingId: id })).toBe(0);
     expect((await PaymentModel.findOne({ bookingId: id }).lean())!.status).toBe('CANCELLED');
+    // The Guest can see what happened; the Host never heard of it, so it isn't in their bookings.
+    const guestList = await agent.get('/api/v1/bookings').query({ group: 'cancelled' });
+    expect(guestList.body.bookings).toEqual([expect.objectContaining({ ref, status: 'EXPIRED' })]);
+    for (const query of [{ role: 'host', group: 'cancelled' }, { role: 'host' }]) {
+      expect((await hostAgent.get('/api/v1/bookings').query(query)).body.bookings).toEqual([]);
+    }
 
     await BookingModel.deleteMany({});
     await PaymentModel.deleteMany({});
@@ -505,11 +517,14 @@ describe('Request to book', () => {
 
   it('expires after 24 hours without an answer', async () => {
     mockStripe();
-    const { id } = await requested();
+    const { id, ref, hostAgent } = await requested();
     expect(await expireRequest(id)).toBe(false);
     expect(await expireRequest(id, new Date(Date.now() + 25 * HOUR_MS))).toBe(true);
     expect((await BookingModel.findById(id).lean())!.status).toBe('EXPIRED');
     expect(await NotificationModel.countDocuments({ type: 'BOOKING_EXPIRED', channel: 'EMAIL' })).toBe(2);
+    // A request the Host let run out stays in their bookings.
+    const hostList = await hostAgent.get('/api/v1/bookings').query({ role: 'host', group: 'cancelled' });
+    expect(hostList.body.bookings).toEqual([expect.objectContaining({ ref, status: 'EXPIRED' })]);
   });
 
   it('lets the Guest withdraw before the Host answers', async () => {
@@ -658,6 +673,21 @@ describe('Cancellations', () => {
       feeCents: 5_500,
       hostShareCents: 4_000,
     });
+  });
+});
+
+describe('Text messages and quiet hours', () => {
+  const nz = (value: string) => parseNzDateTime(value)!;
+
+  it('sends straight away by day, and holds a night-time text until the morning', () => {
+    expect(smsSendTime(nz('2026-10-05T14:30'), '21:00', '07:00')).toEqual(nz('2026-10-05T14:30'));
+    expect(smsSendTime(nz('2026-10-05T07:00'), '21:00', '07:00')).toEqual(nz('2026-10-05T07:00'));
+    // After 9 pm it waits for the next morning; after midnight, for the same morning.
+    expect(smsSendTime(nz('2026-10-05T21:00'), '21:00', '07:00')).toEqual(nz('2026-10-06T07:00'));
+    expect(smsSendTime(nz('2026-10-05T23:45'), '21:00', '07:00')).toEqual(nz('2026-10-06T07:00'));
+    expect(smsSendTime(nz('2026-10-06T00:20'), '21:00', '07:00')).toEqual(nz('2026-10-06T07:00'));
+    // Quiet hours that don't cross midnight.
+    expect(smsSendTime(nz('2026-10-05T13:10'), '12:00', '14:00')).toEqual(nz('2026-10-05T14:00'));
   });
 });
 
