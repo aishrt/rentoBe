@@ -18,12 +18,9 @@ export const driverLicenceInputSchema = z
       .optional(),
     country: z.string().trim().min(2).max(60).default('New Zealand'),
     class: z.enum(LICENCE_CLASSES),
-    englishProof: z
-      .enum(ENGLISH_PROOFS)
-      .optional()
-      .meta({
-        description: 'For an overseas licence that isn’t in English: an IDP or an approved translation',
-      }),
+    englishProof: z.enum(ENGLISH_PROOFS).optional().meta({
+      description: 'For an overseas licence that isn’t in English: an IDP or an approved translation',
+    }),
     notInEnglish: z.boolean().default(false),
     issuedAt: date.meta({ description: 'When the licence was first issued' }),
     expiry: date,
@@ -87,11 +84,9 @@ export const checkoutReadinessSchema = z
       .nullable(),
     hasDateOfBirth: z.boolean(),
     identityStatus: z.enum(VERIFICATION_STATUSES),
-    problems: z
-      .array(z.object({ code: z.enum(ELIGIBILITY_CODES), message: z.string() }))
-      .meta({
-        description: 'Anything that stops this person booking; with `end`, checked against that trip end',
-      }),
+    problems: z.array(z.object({ code: z.enum(ELIGIBILITY_CODES), message: z.string() })).meta({
+      description: 'Anything that stops this person booking; with `end`, checked against that trip end',
+    }),
   })
   .meta({ id: 'CheckoutReadiness' });
 export type CheckoutReadiness = z.infer<typeof checkoutReadinessSchema>;

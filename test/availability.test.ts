@@ -192,3 +192,36 @@ describe('Availability service', () => {
     expect(busy).toHaveLength(1);
   });
 });
+
+describe('Monthly recurring top-up', () => {
+  it('runs at 3 am NZ on the 1st, queues the next one, and rebuilds every car with rules', async () => {
+    const { nextMonthlyRun, scheduleRecurringAvailability } =
+      await import('../src/jobs/handlers/recurring-availability.js');
+    const { createJobRunner } = await import('../src/jobs/runner.js');
+    const { JobModel } = await import('../src/jobs/job.model.js');
+    expect(toNzLocalDateTime(nextMonthlyRun(fromNzWallClock(2026, 12, 15, 9)))).toBe('2027-01-01T03:00');
+
+    const host = await createHost();
+    const withRules = await createVehicle(host._id, {
+      recurringRules: [{ daysOfWeek: [6], startTime: '00:00', endTime: '00:00' }],
+    });
+    await createVehicle(host._id);
+
+    await scheduleRecurringAvailability();
+    await scheduleRecurringAvailability();
+    expect(await JobModel.countDocuments({ type: 'availability.expandRecurring' })).toBe(1);
+
+    await JobModel.updateMany({}, { $set: { runAt: new Date(Date.now() - 1000) } });
+    await createJobRunner().drain();
+    expect(
+      await AvailabilityBlockModel.countDocuments({ vehicleId: withRules._id, reason: 'RECURRING' }),
+    ).toBeGreaterThan(50);
+    expect(
+      await AvailabilityBlockModel.countDocuments({
+        reason: 'RECURRING',
+        vehicleId: mongoose.trusted({ $ne: withRules._id }),
+      }),
+    ).toBe(0);
+    expect(await JobModel.countDocuments({ type: 'availability.expandRecurring', status: 'DONE' })).toBe(1);
+  });
+});

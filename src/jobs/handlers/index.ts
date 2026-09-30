@@ -9,6 +9,7 @@ import {
 import { sendEmailJob } from './email-send.js';
 import { refreshExchangeRatesJob } from './exchange-rates.js';
 import { sendNotificationJob } from './notification-send.js';
+import { expandRecurringJob } from './recurring-availability.js';
 
 export interface JobContext {
   job: JobDocument;
@@ -27,6 +28,7 @@ export const jobHandlers = {
   'booking.expireRequest': expireRequestJob,
   'payment.receipt': paymentReceiptJob,
   'payment.refundUnwanted': refundUnwantedJob,
+  'availability.expandRecurring': expandRecurringJob,
 } satisfies Record<string, (payload: never, context: JobContext) => Promise<void>>;
 
 export type JobType = keyof typeof jobHandlers;
