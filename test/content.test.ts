@@ -214,7 +214,9 @@ describe('Saved cars for older accounts', () => {
     const user = await createUser();
     await UserModel.collection.updateOne({ _id: user._id }, { $unset: { favouriteVehicleIds: '' } });
     const agent = browserAgent();
-    await agent.post('/api/v1/auth/login').send({ email: user.email, password: 'correct horse battery staple' });
+    await agent
+      .post('/api/v1/auth/login')
+      .send({ email: user.email, password: 'correct horse battery staple' });
     expect((await agent.get('/api/v1/me/favourites')).body).toEqual({ vehicleIds: [] });
   });
 });
