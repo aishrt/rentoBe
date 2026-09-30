@@ -30,18 +30,21 @@ npm run dev             # API on http://localhost:4000
 
 Demo accounts (password: your `SEED_DEMO_PASSWORD`):
 
-| Account                             | Roles        | Notes                  |
-| ----------------------------------- | ------------ | ---------------------- |
-| `admin@rentovroom.test`             | Admin        |                        |
-| `support@rentovroom.test`           | Support      |                        |
-| `host@rentovroom.test`              | Guest + Host | 4 cars in Auckland     |
-| `host.wellington@rentovroom.test`   | Guest + Host | 4 cars in Wellington   |
-| `host.christchurch@rentovroom.test` | Guest + Host | 4 cars in Christchurch |
-| `host.queenstown@rentovroom.test`   | Guest + Host | 4 cars in Queenstown   |
-| `host.rotorua@rentovroom.test`      | Guest + Host | 4 cars in Rotorua      |
-| `guest@rentovroom.test`             | Guest        | Past trips and reviews |
-| `visitor@rentovroom.test`           | Guest        | Past trips and reviews |
-| `guest2@rentovroom.test`            | Guest        | Past trips and reviews |
+| Account                             | Roles        | Notes                                     |
+| ----------------------------------- | ------------ | ----------------------------------------- |
+| `admin@rentovroom.test`             | Admin        |                                           |
+| `support@rentovroom.test`           | Support      |                                           |
+| `host@rentovroom.test`              | Guest + Host | 4 cars in Auckland                        |
+| `host.wellington@rentovroom.test`   | Guest + Host | 4 cars in Wellington                      |
+| `host.christchurch@rentovroom.test` | Guest + Host | 4 cars in Christchurch                    |
+| `host.queenstown@rentovroom.test`   | Guest + Host | 4 cars in Queenstown                      |
+| `host.rotorua@rentovroom.test`      | Guest + Host | 4 cars in Rotorua                         |
+| `host.applicant@rentovroom.test`    | Guest + Host | Applied to host; one listing under review |
+| `guest@rentovroom.test`             | Guest        | Past trips and reviews                    |
+| `visitor@rentovroom.test`           | Guest        | Overseas licence                          |
+| `guest2@rentovroom.test`            | Guest        | Past trips and reviews                    |
+
+Demo Guests have verified mobiles and approved licence details, so they can book straight away; demo Hosts have verified mobiles for booking texts. The applicant and their listing fill the staff portal's approval queues.
 
 ## Commands
 
@@ -103,13 +106,47 @@ The website is a single-page app, so vehicle and destination pages get their sea
 - What's indexable comes from the website's `seo-manifest.json`, written by its build. Until the website has built vehicle or destination pages, their tags say `noindex` and the sitemap leaves them out, so search engines never list an unfinished page.
 - If the website can't be reached, the answer is 502 and CloudFront serves the plain `index.html` instead.
 
+## Search and listings
+
+- `GET /search` runs one `$geoNear` aggregation with every filter in spec §5 (plan §3). With dates, cars that have a block in the range, need more notice, can't do that trip length, or whose rego or WOF expires first are left out, and each card gets an estimated total from the pricing engine. An airport search also finds cars up to 250 km away that deliver to that airport, with the delivery fee in the estimate. Unknown filter values are ignored.
+- `GET /places/suggest` suggests our own places (a prefix search on `searchName`, so "taupo" finds Taupō), then street addresses from Google Places once `PLACES_DRIVER=google` and `GOOGLE_MAPS_SERVER_KEY` are set.
+- `GET /vehicles/{slug}` is the public listing: approved photos only, the rego and WOF status by month, the suburb, and a 1 km circle around a point up to 400 m from the car. Never the plate or the address.
+- `src/modules/pricing/pricing.ts` is the only place prices are calculated (plan §5): trip days on NZ wall-clock time, weekly and monthly discounts, the service fee, protection, delivery, and GST per line (3/23 of each GST-inclusive amount). `POST /vehicles/{id}/quote` returns the breakdown and every problem in the way, and holds nothing.
+
+## Hosting
+
+- `POST /me/host-application` needs a verified mobile and the Host Agreement, and adds the HOST role. A Host can add a car at once; a listing goes live only when staff have approved both the application and the listing.
+- `/host/vehicles` saves the 6-step onboarding as a draft at every step (`PATCH` with any subset of fields). `POST …/submit` runs the missing-items check (required documents and photo angles come from settings) and puts the listing in the review queue.
+- Editing a live listing (plan §3): price, rules and delivery change at once; new photos and documents wait for staff; a new plate, VIN, chassis number, make, model or year sends it back to review.
+- The calendar: Host blocks, recurring rules expanded 12 months ahead (topped up monthly by `availability.expandRecurring`), and a staff override. Every calendar write goes through `src/modules/availability/availability.service.ts`, inside a transaction that first bumps the car's `bookingSeq`, so two writes for one car can never both pass the overlap check. A test sends 20 simultaneous bookings for one car and checks exactly one gets through.
+- Staff queues: `/admin/host-applications` (approve or reject) and `/admin/vehicles` (approve, request changes or reject a listing; approve or reject each photo and document).
+
+## Uploads
+
+Browsers upload straight to storage with a short-lived signed target from `POST /uploads/signature`, then attach the file to the listing. Photos are public; documents are private and open only through links that expire after 10 minutes.
+
+- `UPLOAD_DRIVER=local` (default): files go to `UPLOAD_DIR` (`backend/.uploads`, ignored by git) and this API serves them at `/api/v1/files`, with `API_PUBLIC_URL` in their links. Development only: it refuses uploads in production (503 `UPLOADS_UNAVAILABLE`).
+- `UPLOAD_DRIVER=cloudinary`: signed direct uploads to Cloudinary (`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`), which bypass the API and its WAF; documents are uploaded as private assets. Waiting for the client's account.
+
+## Bookings and payments
+
+- `POST /bookings` checks the Guest (verified mobile, licence details and the eligibility rules in settings) and the trip, then creates a `PAYMENT_PENDING` booking and holds its dates for 30 minutes (`booking.expirePaymentHold`).
+- `POST /bookings/{id}/payment` records the Guest Agreement and creates the PaymentIntent in NZD: charged at once for Instant Book, or authorised only (manual capture) for a request. The card is saved for post-trip charges, and a customer session shows saved cards.
+- Stripe's webhook and `POST /bookings/{id}/payment/sync` (called by the website after Stripe.js confirms) apply the same function, so a booking is confirmed once, whichever arrives first. Locally there are no webhooks unless you run `stripe listen`, so the sync call is what updates the booking.
+- A request waits 24 hours for the Host (`booking.expireRequest`); accepting captures the payment, declining releases it.
+- Cancellations use the booking's own copy of its cancellation tier (`src/modules/bookings/policies.ts`): Guest cancellations refund by the tier, Host cancellations refund in full and add the Host cancellation fee to what the Host owes, and withdrawn requests release the authorisation. `GET /bookings/{id}/cancellation-preview` shows the outcome first. Staff with `REFUNDS` cancel no-shows and platform cancellations at `/admin/bookings/{id}/cancel`.
+
+## Notifications
+
+`notify()` in `src/modules/notifications/notify.ts` writes the in-app notification (the header's bell, `GET /notifications`) and queues the email and, when asked, an SMS to a verified mobile (`notification.send`). It takes the caller's transaction, so a notification exists only if the change behind it commits, and a dedupe key, so a job that runs twice never notifies twice. Non-urgent SMS wait for the end of quiet hours (settings). SMS other than codes need `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM_NUMBER`; without one they're marked failed and logged.
+
 ## Roles and permissions
 
 `requireRole('ADMIN', 'SUPPORT')` checks the roles in the access token. `requirePermission('REFUNDS')` checks a support staff member's extra rights, read from the database on each request so a removed permission stops working at once; admins have every permission (plan §6.2). Both run after `requireAuth`, and the admin portal also runs `requireActiveAccount`, so a suspended staff member loses access at once.
 
-## API so far
+## API
 
-The full contract, with every request and response shape, is [openapi.json](openapi.json) (plan §2.3). Each module describes its routes in `*.openapi.ts`.
+The full contract, with every request and response shape, is [openapi.json](openapi.json) (plan §2.3). Each module describes its routes in `*.openapi.ts`. Phase 2 added search, places, vehicles, quotes, destinations, FAQs, legal pages, policies, featured reviews, the contact form, the Host application and onboarding, uploads, the calendar, bookings, checkout readiness, notifications and the staff approval queues (see the sections above). The table below covers accounts and sign-in.
 
 | Route                                           | Access         | Notes                                                                                                                                                                                                      |
 | ----------------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -152,14 +189,17 @@ src/
   models.ts         Every Mongoose model, for the index sync
   middleware/       auth (requireAuth, requireRole, requirePermission), CSRF origin check, rate limit (MongoDB store), error handler
   modules/          One folder per domain: *.model.ts, *.schemas.ts, *.service.ts, *.routes.ts, *.openapi.ts
-    auth/ users/ admin/ audit/                 routes and services so far
-    vehicles/ availability/ bookings/ payments/ payouts/ messages/ reviews/ inspections/
-    incidents/ moderation/ support/ help/ notifications/ cms/ search/   models only, until their features are built
+    auth/ users/ admin/ audit/ hosts/          accounts, staff, the Host application
+    search/ vehicles/ pricing/ availability/   search, listings, onboarding, the pricing engine, the calendar
+    bookings/ payments/ notifications/         the booking flow, Stripe, policies, notify()
+    cms/ support/ uploads/ currency/           public content, the contact form, uploads, exchange rates
+    payouts/ messages/ reviews/ inspections/ incidents/ moderation/ help/   models only, until Phase 3
   jobs/             Job queue: job.model.ts, queue.ts, runner.ts, handlers/ (one per job type)
   realtime/         Socket.IO server, auth and MongoDB adapter
   pages/            Page tags for vehicle and destination pages, and sitemap.xml (/pages)
   openapi/          Builds the API contract from each module's *.openapi.ts
-  integrations/     logger, mailer (Resend + console), SMS (Twilio Verify + console)
+  integrations/     logger, mailer (Resend + console), SMS (Twilio Verify and Messages + console), Stripe,
+                    places (Google Places + local), storage (Cloudinary + local)
   emails/           React Email templates, shared layout and brand theme
   lib/              HttpError, validation helper, lifecycle, shared model field types, NZD formatter
 scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, send-test-email.ts, email-preview.ts, openapi.ts
