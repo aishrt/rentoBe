@@ -46,21 +46,28 @@ function intent(overrides: Partial<Stripe.PaymentIntent> = {}): Stripe.Response<
 /** Stripe calls answered locally; the intent's status is whatever the test sets in `intentStatus`. */
 function mockStripe() {
   intentCount = 0;
+  // Each intent keeps the capture method it was created with, as Stripe's do.
+  const captureMethods = new Map<string, Stripe.PaymentIntent.CaptureMethod>();
   const spies = {
     customer: vi
       .spyOn(client.customers, 'create')
       .mockResolvedValue({ id: 'cus_1' } as Stripe.Response<Stripe.Customer>),
     create: vi.spyOn(client.paymentIntents, 'create').mockImplementation(async (params) => {
       intentCount += 1;
+      const captureMethod = params.capture_method ?? 'automatic';
+      captureMethods.set(`pi_${intentCount}`, captureMethod);
       return intent({
         id: `pi_${intentCount}`,
         client_secret: `pi_${intentCount}_secret`,
         amount: params.amount,
+        capture_method: captureMethod,
       });
     }),
     retrieve: vi
       .spyOn(client.paymentIntents, 'retrieve')
-      .mockImplementation(async (id) => intent({ id: String(id) })),
+      .mockImplementation(async (id) =>
+        intent({ id: String(id), capture_method: captureMethods.get(String(id)) ?? 'automatic' }),
+      ),
     capture: vi
       .spyOn(client.paymentIntents, 'capture')
       .mockImplementation(async (id) => intent({ id: String(id), status: 'succeeded' })),
@@ -295,6 +302,7 @@ describe('Booking an Instant Book car', () => {
       amountCents: 33_870,
       currency: 'nzd',
       captureMethod: 'automatic',
+      verificationInReview: false,
       holdExpiresAt: booking.holdExpiresAt,
     });
     expect(stripeSpies.create).toHaveBeenCalledWith(
@@ -542,6 +550,238 @@ describe('Request to book', () => {
       status: 'CANCELLED',
       cancellation: { reason: 'REQUEST_WITHDRAWN', by: 'GUEST' },
     });
+  });
+});
+
+describe('Verification in review', () => {
+  const authorised = (piId: string) => ({
+    id: piId,
+    object: 'payment_intent',
+    status: 'requires_capture',
+    amount: 33_870,
+  });
+
+  /** A Guest whose identity check is with support books and pays: the card is authorised only. */
+  async function bookedInReview(instantBook: boolean) {
+    const setup = await hostWithCar(instantBook);
+    const { guest, agent } = await readyGuest();
+    await UserModel.updateOne({ _id: guest._id }, { $set: { identityVerification: { status: 'PENDING' } } });
+    const created = await agent.post('/api/v1/bookings').send(trip(setup.vehicle.id));
+    expect(created.status).toBe(201);
+    const ref = created.body.booking.ref as string;
+    const id = created.body.booking.id as string;
+    const payment = await agent.post(`/api/v1/bookings/${ref}/payment`).send({ acceptGuestAgreement: true });
+    expect(payment.body).toMatchObject({ captureMethod: 'manual', verificationInReview: true });
+    const piId = (await PaymentModel.findOne({ bookingId: id }).lean())!.stripePaymentIntentId;
+    expect((await webhook('payment_intent.amount_capturable_updated', authorised(piId))).status).toBe(200);
+    await createStaff('mere@example.co.nz', 'SUPPORT');
+    const support = await staffAgent('mere@example.co.nz');
+    const review = (decision: 'APPROVE' | 'REJECT') =>
+      support.post(`/api/v1/admin/users/${guest.id}/identity-review`).send({ decision });
+    return { ...setup, guest, agent, ref, id, piId, review };
+  }
+
+  it('turns an Instant Book into a request that support confirms by approving the check', async () => {
+    const spies = mockStripe();
+    const { agent, hostAgent, vehicle, guest, ref, id, piId, review } = await bookedInReview(true);
+    expect(spies.create).toHaveBeenCalledWith(
+      expect.objectContaining({ capture_method: 'manual' }),
+      expect.anything(),
+    );
+
+    // Authorised, not charged: the Guest is told why, and the dates stay held for 24 hours.
+    const pending = await agent.get(`/api/v1/bookings/${ref}`);
+    expect(pending.body.booking).toMatchObject({
+      status: 'PENDING',
+      instantBook: true,
+      verificationReview: 'PENDING',
+      payment: { status: 'AUTHORISED' },
+      actions: { withdraw: true },
+    });
+    expect(await AvailabilityBlockModel.countDocuments({ bookingId: id, reason: 'HOLD' })).toBe(1);
+    const told = await NotificationModel.find({ type: 'BOOKING_VERIFICATION_REVIEW' }).lean();
+    expect(told.map((note) => note.channel).sort()).toEqual(['EMAIL', 'IN_APP']);
+    expect(told.find((note) => note.channel === 'EMAIL')!.payload).toMatchObject({
+      template: 'bookingVerificationReview',
+      props: { total: '$338.70' },
+    });
+
+    // Nothing for the Host to answer: no request arrives, and they can't accept or decline it.
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_REQUEST' })).toBe(0);
+    const hostView = await hostAgent.get(`/api/v1/bookings/${ref}`);
+    expect(hostView.body.booking.actions).toMatchObject({ accept: false, decline: false });
+    expect((await hostAgent.post(`/api/v1/bookings/${ref}/accept`)).body.error.code).toBe('NOT_A_REQUEST');
+    expect((await hostAgent.post(`/api/v1/bookings/${ref}/decline`)).body.error.code).toBe('NOT_A_REQUEST');
+    const hostLists = async (group: string) =>
+      (await hostAgent.get('/api/v1/bookings').query({ role: 'host', group })).body.bookings;
+    expect(await hostLists('requests')).toEqual([]);
+    expect(await hostLists('upcoming')).toEqual([
+      expect.objectContaining({ ref, status: 'PENDING', verificationReview: 'PENDING' }),
+    ]);
+    const calendar = await hostAgent
+      .get(`/api/v1/host/vehicles/${vehicle.id}/calendar`)
+      .query({ from: nzDay(9).slice(0, 10), to: nzDay(15).slice(0, 10) });
+    const held = calendar.body.blocks.find((block: { reason: string }) => block.reason === 'HOLD');
+    expect(held.booking).toMatchObject({ ref, status: 'PENDING', toAnswer: false });
+
+    // Support approves the check: the card is charged and the booking confirmed, for both parties.
+    const approved = await review('APPROVE');
+    expect(approved.status).toBe(200);
+    expect(approved.body).toEqual({
+      identityStatus: 'APPROVED',
+      confirmed: [ref],
+      waitingForHost: [],
+      released: [],
+    });
+    expect(spies.capture).toHaveBeenCalledWith(piId, {}, { idempotencyKey: `capture-${piId}` });
+    const booking = await BookingModel.findById(id).lean();
+    expect(booking).toMatchObject({ status: 'CONFIRMED', verificationReview: { status: 'APPROVED' } });
+    expect(booking!.verificationReview!.decidedBy).toBeDefined();
+    expect(await AvailabilityBlockModel.countDocuments({ bookingId: id, reason: 'BOOKED' })).toBe(1);
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_CONFIRMED', channel: 'EMAIL' })).toBe(2);
+    expect((await UserModel.findById(guest._id).lean())!.identityVerification).toMatchObject({
+      status: 'APPROVED',
+    });
+    // An Instant Book never counts towards the Host's response rate: it stays where it was.
+    expect((await UserModel.findById(booking!.hostId).lean())!.hostProfile!.responseRate).toBe(100);
+
+    // Decided once: a second decision has nothing to review.
+    expect((await review('REJECT')).body.error.code).toBe('NOT_IN_REVIEW');
+  });
+
+  it('releases the card when support rejects the check, and stops the Guest booking again', async () => {
+    const spies = mockStripe();
+    const { agent, vehicle, ref, id, review } = await bookedInReview(true);
+
+    const rejected = await review('REJECT');
+    expect(rejected.body).toEqual({
+      identityStatus: 'REJECTED',
+      confirmed: [],
+      waitingForHost: [],
+      released: [ref],
+    });
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+    expect(spies.capture).not.toHaveBeenCalled();
+    expect(await BookingModel.findById(id).lean()).toMatchObject({
+      status: 'EXPIRED',
+      verificationReview: { status: 'REJECTED' },
+    });
+    expect((await PaymentModel.findOne({ bookingId: id }).lean())!.status).toBe('CANCELLED');
+    expect(await AvailabilityBlockModel.countDocuments({ bookingId: id })).toBe(0);
+    const emails = await NotificationModel.find({ type: 'BOOKING_EXPIRED', channel: 'EMAIL' }).lean();
+    // Only the Guest: the Host of an Instant Book car never heard of it.
+    expect(emails).toHaveLength(1);
+    expect(emails[0]!.payload).toMatchObject({
+      template: 'bookingDeclined',
+      props: { outcome: 'VERIFICATION_REJECTED' },
+    });
+
+    const again = await agent.post('/api/v1/bookings').send(trip(vehicle.id, 20, 23));
+    expect(again.status).toBe(409);
+    expect(again.body.error).toMatchObject({
+      code: 'VERIFICATION_REQUIRED',
+      fields: { verification: 'IDENTITY_REJECTED' },
+    });
+  });
+
+  it('needs both the Host’s answer and the check for a request, in either order', async () => {
+    const spies = mockStripe();
+    const first = await bookedInReview(false);
+    // The Host is asked as usual, and the Guest hears about the check instead of "request sent".
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_REQUEST', channel: 'EMAIL' })).toBe(1);
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_REQUEST_SENT' })).toBe(0);
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_VERIFICATION_REVIEW' })).toBe(2);
+
+    // The Host accepts first: recorded, not charged yet.
+    const accepted = await first.hostAgent.post(`/api/v1/bookings/${first.ref}/accept`);
+    expect(accepted.body.booking).toMatchObject({
+      status: 'PENDING',
+      hostAccepted: true,
+      verificationReview: 'PENDING',
+      actions: { accept: false, decline: false },
+    });
+    expect(spies.capture).not.toHaveBeenCalled();
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_HOST_ACCEPTED' })).toBe(1);
+    expect(
+      (await first.hostAgent.get('/api/v1/bookings').query({ role: 'host', group: 'requests' })).body
+        .bookings,
+    ).toEqual([]);
+    // Then the check is approved: now it's confirmed.
+    expect((await first.review('APPROVE')).body.confirmed).toEqual([first.ref]);
+    expect((await BookingModel.findById(first.id).lean())!.status).toBe('CONFIRMED');
+    expect(spies.capture).toHaveBeenCalledTimes(1);
+    expect((await UserModel.findById(first.host._id).lean())!.hostProfile!.responseRate).toBe(100);
+
+    // The other order, for a second Guest and car: approved first, it waits for the Host.
+    await BookingModel.deleteMany({});
+    await PaymentModel.deleteMany({});
+    await AvailabilityBlockModel.deleteMany({});
+    await UserModel.updateOne(
+      { _id: first.guest._id },
+      { $set: { identityVerification: { status: 'PENDING' } } },
+    );
+    const created = await first.agent.post('/api/v1/bookings').send(trip(first.vehicle.id, 20, 23));
+    const ref = created.body.booking.ref as string;
+    await first.agent.post(`/api/v1/bookings/${ref}/payment`).send({ acceptGuestAgreement: true });
+    const piId = (await PaymentModel.findOne({ bookingId: created.body.booking.id }).lean())!
+      .stripePaymentIntentId;
+    await webhook('payment_intent.amount_capturable_updated', authorised(piId));
+    expect((await first.review('APPROVE')).body).toMatchObject({ confirmed: [], waitingForHost: [ref] });
+    expect((await BookingModel.findOne({ ref }).lean())!.status).toBe('PENDING');
+    const answered = await first.hostAgent.post(`/api/v1/bookings/${ref}/accept`);
+    expect(answered.body.booking.status).toBe('CONFIRMED');
+    expect(spies.capture).toHaveBeenCalledTimes(2);
+  });
+
+  it('expires after 24 hours without a decision, without blaming the Host', async () => {
+    const spies = mockStripe();
+    const { id, ref, host, hostAgent } = await bookedInReview(false);
+    // The Host did their part; the check never came back.
+    expect((await hostAgent.post(`/api/v1/bookings/${ref}/accept`)).status).toBe(200);
+    expect(await expireRequest(id, new Date(Date.now() + 25 * HOUR_MS))).toBe(true);
+    expect((await BookingModel.findById(id).lean())!.status).toBe('EXPIRED');
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+    expect(spies.capture).not.toHaveBeenCalled();
+
+    const emails = await NotificationModel.find({ type: 'BOOKING_EXPIRED', channel: 'EMAIL' }).lean();
+    const payloads = emails.map((email) => email.payload as { template: string; props: object });
+    expect(payloads.find((payload) => payload.template === 'bookingDeclined')!.props).toMatchObject({
+      outcome: 'VERIFICATION_EXPIRED',
+    });
+    expect(payloads.find((payload) => payload.template === 'requestExpiredHost')!.props).toMatchObject({
+      guestNotVerified: true,
+    });
+    // An accepted request counts as answered; counted as expired, the rate would have dropped to 0.
+    expect((await UserModel.findById(host._id).lean())!.hostProfile!.responseRate).toBe(100);
+  });
+
+  it('charges straight away once the check is approved before paying', async () => {
+    const spies = mockStripe();
+    const { vehicle } = await hostWithCar(true);
+    const { guest, agent } = await readyGuest();
+    await UserModel.updateOne({ _id: guest._id }, { $set: { identityVerification: { status: 'PENDING' } } });
+    const created = await agent.post('/api/v1/bookings').send(trip(vehicle.id));
+    const ref = created.body.booking.ref as string;
+    const waiting = await agent.post(`/api/v1/bookings/${ref}/payment`).send({ acceptGuestAgreement: true });
+    expect(waiting.body.captureMethod).toBe('manual');
+
+    // The check comes back approved while the Guest is still at the payment step.
+    await UserModel.updateOne({ _id: guest._id }, { $set: { identityVerification: { status: 'APPROVED' } } });
+    const ready = await agent.post(`/api/v1/bookings/${ref}/payment`).send({ acceptGuestAgreement: true });
+    expect(ready.body).toMatchObject({ captureMethod: 'automatic', verificationInReview: false });
+    // The authorise-only payment is dropped for one that charges.
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+    expect(spies.create).toHaveBeenCalledTimes(2);
+    expect(ready.body.clientSecret).not.toBe(waiting.body.clientSecret);
+    expect((await BookingModel.findOne({ ref }).lean())!.verificationReview).toBeUndefined();
+  });
+
+  it('is for staff only', async () => {
+    const { guest, agent } = await readyGuest();
+    const refused = await agent
+      .post(`/api/v1/admin/users/${guest.id}/identity-review`)
+      .send({ decision: 'APPROVE' });
+    expect(refused.status).toBe(403);
   });
 });
 

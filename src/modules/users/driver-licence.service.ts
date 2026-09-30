@@ -32,7 +32,14 @@ export function licenceNumberHash(number: string): string {
 
 export type EligibilityProblem = CheckoutReadiness['problems'][number];
 
-type EligibilityUser = Pick<User, 'phoneVerifiedAt' | 'dob' | 'driverLicence'>;
+type EligibilityUser = Pick<User, 'phoneVerifiedAt' | 'dob' | 'driverLicence' | 'identityVerification'>;
+
+/**
+ * Whether this person's identity check is waiting for support staff (plan §8.2). They can still book:
+ * the card is authorised, and the booking is confirmed once the check is approved.
+ */
+export const verificationInReview = (user: Pick<User, 'identityVerification'>) =>
+  user.identityVerification?.status === 'PENDING';
 
 /** What stops this person driving a trip that ends at `tripEnd` (without one, today). */
 export function eligibilityProblems(
@@ -45,6 +52,12 @@ export function eligibilityProblems(
   const rules = settings.eligibility;
   if (settings.verification.phoneAtCheckout && !user.phoneVerifiedAt) {
     problems.push({ code: 'PHONE_REQUIRED', message: 'Verify your mobile number.' });
+  }
+  if (user.identityVerification?.status === 'REJECTED') {
+    problems.push({
+      code: 'IDENTITY_REJECTED',
+      message: "We couldn't verify your identity. Please contact support.",
+    });
   }
   const licence = user.driverLicence;
   if (!licence || !user.dob) {

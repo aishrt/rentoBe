@@ -67,6 +67,16 @@ export const previewProps: { [Name in EmailTemplateName]: EmailTemplateProps<Nam
     expiresAt: 'Sun, 4 Oct 2026, 2:30 pm',
     url: 'https://www.rentovroom.com/trips/RV-7K2Q9M',
   },
+  bookingVerificationReview: {
+    firstName: 'Kiri',
+    ref: 'RV-7K2Q9M',
+    vehicleTitle: '2022 Toyota RAV4',
+    start: 'Mon, 12 Oct 2026, 10:00 am',
+    end: 'Thu, 15 Oct 2026, 10:00 am',
+    total: '$338.70',
+    expiresAt: 'Sun, 4 Oct 2026, 2:30 pm',
+    url: 'https://www.rentovroom.com/trips/RV-7K2Q9M',
+  },
   bookingConfirmedGuest: {
     firstName: 'Kiri',
     hostFirstName: 'Hana',

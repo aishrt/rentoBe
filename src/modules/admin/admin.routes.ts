@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import { auditStaffWrites } from '../../middleware/audit-log.js';
 import { requireActiveAccount, requireAuth, requirePermission, requireRole } from '../../middleware/auth.js';
 import { adminCancelBooking, bookingView, findBookingFor } from '../bookings/booking.service.js';
-import { adminCancelSchema } from '../bookings/bookings.schemas.js';
+import { adminCancelSchema, identityReviewSchema } from '../bookings/bookings.schemas.js';
 import { resetStaffMfa } from '../auth/mfa.service.js';
 import { createTestPayment, getTestPayment } from '../payments/test-payment.service.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -34,6 +34,7 @@ import {
   listReviewQueue,
 } from './admin-listings.service.js';
 import { getAdminOverview } from './admin.service.js';
+import { reviewIdentity } from './admin-verification.service.js';
 
 async function findVehicleForCalendar(id: string) {
   const vehicle = mongoose.isValidObjectId(id)
@@ -157,6 +158,13 @@ export function adminRouter() {
     );
     const cancelled = await adminCancelBooking(booking, req.auth!.userId, reason, note);
     res.json({ booking: await bookingView(cancelled, 'STAFF') });
+  });
+
+  // An identity check that needed a manual review: approving confirms the Guest's waiting bookings,
+  // rejecting releases them (plan §8.2).
+  router.post('/users/:id/identity-review', async (req, res) => {
+    const { decision, note } = validate(identityReviewSchema, req.body);
+    res.json(await reviewIdentity(String(req.params.id), decision, req.auth!.userId, note, req.ip));
   });
 
   // The calendar override (plan §9, Days 10–11): staff block or unblock dates, never over a booking.

@@ -73,7 +73,10 @@ export async function confirmBooking(
   return confirmed;
 }
 
-/** The card is authorised for a request (or a booking waiting for verification): the Host has 24 h. */
+/**
+ * The card is authorised for a request, or for a booking whose Guest's verification is in review:
+ * 24 h for the Host to answer, for support to approve the check, or both (plan §8.2).
+ */
 export async function markRequested(booking: BookingDocument, session: ClientSession, now = new Date()) {
   const requestExpiresAt = new Date(now.getTime() + REQUEST_HOURS * HOUR_MS);
   const pending = await transition(booking._id, ['PAYMENT_PENDING'], 'PENDING', session, {

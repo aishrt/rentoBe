@@ -1,9 +1,15 @@
 import type { ClientSession } from 'mongoose';
 import { env } from '../../env.js';
 import { formatNzDateTime, formatNzdExact } from '../../lib/format.js';
+import { requestOutcomeHeadings, type RequestOutcome } from '../../emails/templates/booking-emails.js';
 import { notify } from '../notifications/notify.js';
 import type { CancellationOutcome } from './policies.js';
-import { toBookingView, type BookingContext, type BookingRecord } from './booking-view.js';
+import {
+  awaitsVerification,
+  toBookingView,
+  type BookingContext,
+  type BookingRecord,
+} from './booking-view.js';
 
 /*
  * The booking notifications in plan §7: the Host hears about a booking by email, SMS and in-app;
@@ -29,7 +35,11 @@ const shortDates = (booking: BookingRecord) =>
 
 type Options = { session?: ClientSession };
 
-/** A request to book: the Host decides within 24 h; the Guest knows it's sent (plan §8.2). */
+/**
+ * A request to book: the Host decides within 24 h; the Guest knows it's sent (plan §8.2). When the
+ * Guest's verification is in review, the Guest is told that instead, and the Host of an Instant Book
+ * car hears nothing until the booking is confirmed: there is nothing for them to answer.
+ */
 export async function notifyRequestReceived(
   booking: BookingRecord,
   context: BookingContext,
@@ -39,6 +49,33 @@ export async function notifyRequestReceived(
   const hostName = context.host?.firstName ?? 'the host';
   const expiresAt = formatNzDateTime(booking.requestExpiresAt!);
   const hostView = toBookingView(booking, context, 'HOST');
+  const inReview = awaitsVerification(booking);
+
+  if (inReview) {
+    await notify(
+      {
+        userId: booking.guestId,
+        type: 'BOOKING_VERIFICATION_REVIEW',
+        title: "We're checking your details",
+        body: `Your ${booking.vehicleSnapshot.title} is held for you. Your card isn't charged until the check is approved.`,
+        link: `/trips/${booking.ref}`,
+        email: {
+          template: 'bookingVerificationReview',
+          props: {
+            ...basics(booking),
+            firstName: context.guest?.firstName ?? 'there',
+            total: formatNzdExact(booking.price.totalCents),
+            expiresAt,
+            url: tripUrl(booking),
+            ...(!booking.instantBook && { hostFirstName: hostName }),
+          },
+        },
+        dedupeKey: `BOOKING_VERIFICATION_REVIEW:${booking._id.toString()}`,
+      },
+      { session },
+    );
+    if (booking.instantBook) return;
+  }
 
   await notify(
     {
@@ -66,6 +103,7 @@ export async function notifyRequestReceived(
     },
     { session },
   );
+  if (inReview) return;
   await notify(
     {
       userId: booking.guestId,
@@ -159,18 +197,41 @@ export async function notifyConfirmed(
   );
 }
 
-/** A request the Host declined, or that expired unanswered (plan §8.2). */
-export async function notifyRequestEnded(
+/** The Host accepted while the Guest's verification is still in review: one thing left (plan §8.2). */
+export async function notifyHostAccepted(
   booking: BookingRecord,
   context: BookingContext,
-  outcome: 'DECLINED' | 'EXPIRED',
   { session }: Options = {},
 ) {
   await notify(
     {
       userId: booking.guestId,
+      type: 'BOOKING_HOST_ACCEPTED',
+      title: `${context.host?.firstName ?? 'Your host'} accepted your request`,
+      body: "We're finishing your identity check. Your booking is confirmed as soon as it's approved.",
+      link: `/trips/${booking.ref}`,
+      dedupeKey: `BOOKING_HOST_ACCEPTED:${booking._id.toString()}`,
+    },
+    { session },
+  );
+}
+
+/**
+ * A pending booking that ended without a trip (plan §8.2): the Host declined it, nobody answered in
+ * 24 h, or the Guest's verification was rejected or not finished in time.
+ */
+export async function notifyRequestEnded(
+  booking: BookingRecord,
+  context: BookingContext,
+  outcome: RequestOutcome,
+  { session }: Options = {},
+) {
+  const verification = outcome === 'VERIFICATION_REJECTED' || outcome === 'VERIFICATION_EXPIRED';
+  await notify(
+    {
+      userId: booking.guestId,
       type: outcome === 'DECLINED' ? 'BOOKING_DECLINED' : 'BOOKING_EXPIRED',
-      title: outcome === 'DECLINED' ? 'Your request was declined' : 'Your request expired',
+      title: requestOutcomeHeadings[outcome],
       body: `${booking.vehicleSnapshot.title}. Your card hasn't been charged.`,
       link: `/trips/${booking.ref}`,
       email: {
@@ -187,7 +248,8 @@ export async function notifyRequestEnded(
     },
     { session },
   );
-  if (outcome === 'EXPIRED') {
+  // The Host of an Instant Book car never heard of a booking that waited only for the Guest's check.
+  if (!booking.instantBook && (outcome === 'EXPIRED' || verification)) {
     await notify(
       {
         userId: booking.hostId,
@@ -202,6 +264,7 @@ export async function notifyRequestEnded(
             guestFirstName: context.guest?.firstName ?? 'A guest',
             vehicleTitle: booking.vehicleSnapshot.title,
             url: `${siteUrl()}/host/bookings`,
+            ...(verification && { guestNotVerified: true }),
           },
         },
         dedupeKey: `REQUEST_EXPIRED:${booking._id.toString()}:host`,
@@ -247,31 +310,34 @@ export async function notifyCancelled(
     },
     { session },
   );
-  await notify(
-    {
-      userId: booking.hostId,
-      type: withdrawn ? 'REQUEST_WITHDRAWN' : 'BOOKING_CANCELLED',
-      title: withdrawn
-        ? `${context.guest?.firstName ?? 'The guest'} withdrew their request`
-        : `Booking ${booking.ref} is cancelled`,
-      body: 'The dates are free again.',
-      link: `/host/bookings/${booking.ref}`,
-      email: {
-        template: 'bookingCancelled',
-        props: {
-          ...basics(booking),
-          firstName: context.host?.firstName ?? 'there',
-          audience: 'HOST',
-          cancelledBy,
-          ...(outcome.hostShareCents > 0 && { hostShare: formatNzdExact(outcome.hostShareCents) }),
-          ...(outcome.hostFeeCents > 0 && { hostFee: formatNzdExact(outcome.hostFeeCents) }),
-          url: hostBookingUrl(booking),
+  // An Instant Book withdrawn while it waited for the Guest's verification never reached the Host.
+  if (!(withdrawn && booking.instantBook)) {
+    await notify(
+      {
+        userId: booking.hostId,
+        type: withdrawn ? 'REQUEST_WITHDRAWN' : 'BOOKING_CANCELLED',
+        title: withdrawn
+          ? `${context.guest?.firstName ?? 'The guest'} withdrew their request`
+          : `Booking ${booking.ref} is cancelled`,
+        body: 'The dates are free again.',
+        link: `/host/bookings/${booking.ref}`,
+        email: {
+          template: 'bookingCancelled',
+          props: {
+            ...basics(booking),
+            firstName: context.host?.firstName ?? 'there',
+            audience: 'HOST',
+            cancelledBy,
+            ...(outcome.hostShareCents > 0 && { hostShare: formatNzdExact(outcome.hostShareCents) }),
+            ...(outcome.hostFeeCents > 0 && { hostFee: formatNzdExact(outcome.hostFeeCents) }),
+            url: hostBookingUrl(booking),
+          },
         },
+        dedupeKey: `BOOKING_CANCELLED:${id}:host`,
       },
-      dedupeKey: `BOOKING_CANCELLED:${id}:host`,
-    },
-    { session },
-  );
+      { session },
+    );
+  }
   if (outcome.refundCents > 0) {
     await notify(
       {

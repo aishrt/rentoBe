@@ -88,6 +88,37 @@ export function BookingRequestSentEmail(props: BookingRequestSentProps) {
   );
 }
 
+export interface BookingVerificationReviewProps extends TripBasics {
+  total: string;
+  /** When the booking expires if the check isn't finished. */
+  expiresAt: string;
+  /** Set for a car whose Host also has to accept the booking. */
+  hostFirstName?: string;
+}
+
+/** To a Guest who paid while their identity check was with support (plan §8.2). */
+export function BookingVerificationReviewEmail(props: BookingVerificationReviewProps) {
+  return (
+    <EmailLayout
+      preview={`We're finishing your identity check. Your ${props.vehicleTitle} is held for you in the meantime.`}
+    >
+      <EmailHeading>We're checking your details</EmailHeading>
+      <EmailText>
+        Kia ora {props.firstName}, your identity check needs a closer look from our team, so your booking of
+        the {props.vehicleTitle} isn't confirmed yet. The dates are held for you, and your card is authorised
+        for {props.total} but won't be charged until the check is approved
+        {props.hostFirstName ? ` and ${props.hostFirstName} accepts` : ''}.
+      </EmailText>
+      <EmailDetails rows={tripRows(props)} />
+      <EmailButton href={props.url}>View your booking</EmailButton>
+      <EmailNote>
+        We'll email you as soon as it's decided. If it isn't by {props.expiresAt}, the booking expires and the
+        authorisation is released.
+      </EmailNote>
+    </EmailLayout>
+  );
+}
+
 export interface BookingConfirmedGuestProps extends TripBasics {
   hostFirstName: string;
   hostPhone?: string;
@@ -163,7 +194,18 @@ export function BookingConfirmedHostEmail(props: BookingConfirmedHostProps) {
   );
 }
 
-export type RequestOutcome = 'DECLINED' | 'EXPIRED';
+/**
+ * DECLINED and EXPIRED: the Host's answer, or none. VERIFICATION_REJECTED and VERIFICATION_EXPIRED: the
+ * Guest's identity check wasn't approved, or wasn't finished in time (plan §8.2).
+ */
+export type RequestOutcome = 'DECLINED' | 'EXPIRED' | 'VERIFICATION_REJECTED' | 'VERIFICATION_EXPIRED';
+
+export const requestOutcomeHeadings: Record<RequestOutcome, string> = {
+  DECLINED: 'Your request was declined',
+  EXPIRED: 'Your request expired',
+  VERIFICATION_REJECTED: "We couldn't confirm your booking",
+  VERIFICATION_EXPIRED: 'Your booking expired',
+};
 
 export interface BookingDeclinedProps {
   firstName: string;
@@ -182,16 +224,18 @@ export function BookingDeclinedEmail({
 }: BookingDeclinedProps) {
   return (
     <EmailLayout
-      preview={`Your request for the ${vehicleTitle} wasn't accepted. Your card hasn't been charged.`}
+      preview={`Your booking of the ${vehicleTitle} didn't go ahead. Your card hasn't been charged.`}
     >
-      <EmailHeading>
-        {outcome === 'DECLINED' ? 'Your request was declined' : 'Your request expired'}
-      </EmailHeading>
+      <EmailHeading>{requestOutcomeHeadings[outcome]}</EmailHeading>
       <EmailText>
         Kia ora {firstName},{' '}
         {outcome === 'DECLINED'
           ? `the host can't take your booking of the ${vehicleTitle} from ${start}.`
-          : `the host didn't answer your request for the ${vehicleTitle} from ${start} in time.`}{' '}
+          : outcome === 'EXPIRED'
+            ? `the host didn't answer your request for the ${vehicleTitle} from ${start} in time.`
+            : outcome === 'VERIFICATION_REJECTED'
+              ? `we weren't able to verify your identity, so your booking of the ${vehicleTitle} from ${start} can't go ahead. Reply to this email if you think we've got it wrong.`
+              : `we couldn't finish your identity check within 24 hours, so your booking of the ${vehicleTitle} from ${start} has expired. You're welcome to book again once the check is done.`}{' '}
         Your card hasn't been charged, and the authorisation has been released (your bank may take a few days
         to show it).
       </EmailText>
@@ -205,6 +249,8 @@ export interface RequestExpiredHostProps {
   guestFirstName: string;
   vehicleTitle: string;
   url: string;
+  /** The Guest's identity check wasn't approved in time; nothing the Host did or didn't do. */
+  guestNotVerified?: boolean;
 }
 
 export function RequestExpiredHostEmail({
@@ -212,13 +258,16 @@ export function RequestExpiredHostEmail({
   guestFirstName,
   vehicleTitle,
   url,
+  guestNotVerified = false,
 }: RequestExpiredHostProps) {
   return (
     <EmailLayout preview={`${guestFirstName}'s request for your ${vehicleTitle} expired.`}>
       <EmailHeading>A booking request expired</EmailHeading>
       <EmailText>
-        Kia ora {firstName}, {guestFirstName}'s request to book your {vehicleTitle} expired after 24 hours
-        without an answer, so the dates are free again. Answering quickly keeps your response rate high.
+        Kia ora {firstName},{' '}
+        {guestNotVerified
+          ? `${guestFirstName}'s request to book your ${vehicleTitle} didn't go ahead because we couldn't verify them in time, so the dates are free again. It doesn't count against your response rate.`
+          : `${guestFirstName}'s request to book your ${vehicleTitle} expired after 24 hours without an answer, so the dates are free again. Answering quickly keeps your response rate high.`}
       </EmailText>
       <EmailButton href={url}>Review your bookings</EmailButton>
     </EmailLayout>

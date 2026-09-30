@@ -23,6 +23,17 @@ export type Viewer = 'GUEST' | 'HOST' | 'STAFF';
 const CONFIRMED: BookingStatus[] = ['CONFIRMED', 'ACTIVE', 'COMPLETED'];
 export const isConfirmed = (status: BookingStatus) => CONFIRMED.includes(status);
 
+/**
+ * Whether a pending booking is the Host's to answer. An Instant Book waiting for the Guest's
+ * verification isn't (support decides it), and a request the Host has accepted is already answered.
+ */
+export const hostAnswers = (booking: Pick<Booking, 'status' | 'instantBook' | 'hostAcceptedAt'>) =>
+  booking.status === 'PENDING' && !booking.instantBook && !booking.hostAcceptedAt;
+
+/** Whether a pending booking is waiting for support to review the Guest's verification (plan §8.2). */
+export const awaitsVerification = (booking: Pick<Booking, 'status' | 'verificationReview'>) =>
+  booking.status === 'PENDING' && booking.verificationReview?.status === 'PENDING';
+
 type PartyUser = Pick<
   User,
   | 'firstName'
@@ -203,6 +214,8 @@ export function toBookingView(
       booking.holdExpiresAt && { holdExpiresAt: booking.holdExpiresAt.toISOString() }),
     ...(booking.status === 'PENDING' &&
       booking.requestExpiresAt && { requestExpiresAt: booking.requestExpiresAt.toISOString() }),
+    ...(booking.verificationReview && { verificationReview: booking.verificationReview.status }),
+    ...(booking.status === 'PENDING' && booking.hostAcceptedAt && { hostAccepted: true }),
     guest: party(context.guest, context.guestStats, viewer !== 'GUEST' && confirmed),
     host: {
       ...party(
@@ -242,8 +255,8 @@ export function toBookingView(
       pay: viewer === 'GUEST' && booking.status === 'PAYMENT_PENDING' && holdLive,
       cancel: (viewer === 'GUEST' || viewer === 'HOST') && booking.status === 'CONFIRMED',
       withdraw: viewer === 'GUEST' && booking.status === 'PENDING',
-      accept: viewer === 'HOST' && booking.status === 'PENDING' && requestLive && !startedAlready,
-      decline: viewer === 'HOST' && booking.status === 'PENDING',
+      accept: viewer === 'HOST' && hostAnswers(booking) && requestLive && !startedAlready,
+      decline: viewer === 'HOST' && hostAnswers(booking),
     },
     createdAt: booking.createdAt.toISOString(),
   };

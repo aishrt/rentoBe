@@ -16,6 +16,7 @@ import {
   removeBlock,
 } from '../availability/availability.service.js';
 import { BookingModel } from '../bookings/booking.model.js';
+import { hostAnswers } from '../bookings/booking-view.js';
 import { notify } from '../notifications/notify.js';
 import { PlaceModel } from '../search/place.model.js';
 import { uploadFolder } from '../uploads/upload-folders.js';
@@ -640,7 +641,7 @@ export async function hostCalendar(vehicleId: Types.ObjectId, from: Date, to: Da
   ];
   const bookings = bookingIds.length
     ? await BookingModel.find({ _id: mongoose.trusted({ $in: bookingIds }) })
-        .select('ref status guestId')
+        .select('ref status guestId instantBook hostAcceptedAt')
         .lean()
     : [];
   const guests = bookings.length
@@ -665,6 +666,7 @@ export async function hostCalendar(vehicleId: Types.ObjectId, from: Date, to: Da
           id: booking._id.toString(),
           ref: booking.ref,
           status: booking.status,
+          toAnswer: hostAnswers(booking),
           guestFirstName: guests.find((guest) => guest._id.equals(booking.guestId))?.firstName ?? 'Guest',
         },
       }),

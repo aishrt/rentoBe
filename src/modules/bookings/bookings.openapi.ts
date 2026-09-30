@@ -11,6 +11,8 @@ import {
   cancellationPreviewSchema,
   createBookingSchema,
   declineBookingSchema,
+  identityReviewResponseSchema,
+  identityReviewSchema,
   paymentSessionSchema,
   preparePaymentSchema,
 } from './bookings.schemas.js';
@@ -183,6 +185,24 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     request: { params: idParam, body: jsonBody(adminCancelSchema) },
     responses: {
       200: jsonResponse('The booking', bookingResponseSchema),
+      ...errorResponses(400, 401, 403, 404, 409),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/admin/users/{id}/identity-review',
+    tags: ['Admin'],
+    summary: 'Staff: decide an identity check that needed a manual review',
+    description:
+      'Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2).',
+    security: signedIn,
+    request: {
+      params: z.object({ id: z.string().meta({ description: 'The user’s id' }) }),
+      body: jsonBody(identityReviewSchema),
+    },
+    responses: {
+      200: jsonResponse('The decision, and what it did to their bookings', identityReviewResponseSchema),
       ...errorResponses(400, 401, 403, 404, 409),
     },
   });

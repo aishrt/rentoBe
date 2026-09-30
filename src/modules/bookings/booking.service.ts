@@ -16,7 +16,7 @@ import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { findLiveVehicle } from '../vehicles/vehicles.service.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import { BookingModel, type BookingDocument } from './booking.model.js';
-import { notifyCancelled, notifyRequestEnded } from './booking-notifications.js';
+import { notifyCancelled, notifyHostAccepted, notifyRequestEnded } from './booking-notifications.js';
 import {
   applyPaymentIntent,
   cancelIntent,
@@ -26,7 +26,14 @@ import {
   type RefundRecord,
 } from './booking-payments.js';
 import { endBooking } from './booking-transitions.js';
-import { loadBookingContext, toBookingView, type BookingRecord, type Viewer } from './booking-view.js';
+import {
+  awaitsVerification,
+  hostAnswers,
+  loadBookingContext,
+  toBookingView,
+  type BookingRecord,
+  type Viewer,
+} from './booking-view.js';
 import type { BookingView, CancellationPreview, CreateBookingInput } from './bookings.schemas.js';
 import {
   guestCancellation,
@@ -245,7 +252,13 @@ const GROUP_FILTERS: Record<string, (now: Date) => Record<string, unknown>> = {
   }),
   completed: () => ({ status: 'COMPLETED' }),
   cancelled: () => ({ status: mongoose.trusted({ $in: ['CANCELLED', 'DECLINED', 'EXPIRED'] }) }),
-  requests: () => ({ status: 'PENDING' }),
+  // What the Host still has to answer: not an Instant Book waiting for the Guest's verification, nor
+  // a request they've already accepted (both show under Upcoming).
+  requests: () => ({
+    status: 'PENDING',
+    instantBook: false,
+    hostAcceptedAt: mongoose.trusted({ $exists: false }),
+  }),
 };
 
 /**
@@ -308,11 +321,17 @@ export async function listBookings(userId: string, role: 'guest' | 'host', group
       amountCents: role === 'guest' ? booking.price.totalCents : booking.price.hostPayoutCents,
       ...(booking.status === 'PENDING' &&
         booking.requestExpiresAt && { requestExpiresAt: booking.requestExpiresAt.toISOString() }),
+      ...(booking.verificationReview && { verificationReview: booking.verificationReview.status }),
+      ...(booking.status === 'PENDING' && booking.hostAcceptedAt && { hostAccepted: true }),
     };
   });
 }
 
-/** The share of requests a Host answered before they expired, shown to Guests (plan §6.2). */
+/**
+ * The share of requests a Host answered before they expired, shown to Guests (plan §6.2). A request
+ * the Host accepted counts as answered even if the Guest's verification then stopped it, and one that
+ * ended because the Guest wasn't verified, before the Host answered, isn't counted at all.
+ */
 export async function updateResponseRate(hostId: Types.ObjectId) {
   const [row] = await BookingModel.aggregate<{ total: number; expired: number }>([
     {
@@ -322,13 +341,24 @@ export async function updateResponseRate(hostId: Types.ObjectId) {
         'statusHistory.status': 'PENDING',
         status: { $nin: ['PENDING', 'PAYMENT_PENDING'] },
         cancellationReason: { $ne: 'REQUEST_WITHDRAWN' },
+        $or: [{ 'verificationReview.status': { $ne: 'REJECTED' } }, { hostAcceptedAt: { $exists: true } }],
       },
     },
     {
       $group: {
         _id: null,
         total: { $sum: 1 },
-        expired: { $sum: { $cond: [{ $eq: ['$status', 'EXPIRED'] }, 1, 0] } },
+        expired: {
+          $sum: {
+            $cond: [
+              {
+                $and: [{ $eq: ['$status', 'EXPIRED'] }, { $not: [{ $ifNull: ['$hostAcceptedAt', false] }] }],
+              },
+              1,
+              0,
+            ],
+          },
+        },
       },
     },
   ]);
@@ -339,7 +369,18 @@ export async function updateResponseRate(hostId: Types.ObjectId) {
   );
 }
 
-/** POST /bookings/{id}/accept: the Host accepts a request; the authorisation is captured (plan §8.1). */
+const notARequest = () =>
+  new HttpError(
+    409,
+    'NOT_A_REQUEST',
+    "This booking is waiting for the guest's identity check, not for your answer.",
+  );
+
+/**
+ * POST /bookings/{id}/accept: the Host accepts a request; the authorisation is captured (plan §8.1).
+ * While the Guest's verification is still in review, the acceptance is recorded and the booking is
+ * confirmed when support approves the check (plan §8.2).
+ */
 export async function acceptBooking(
   booking: BookingDocument,
   hostId: string,
@@ -347,9 +388,39 @@ export async function acceptBooking(
 ): Promise<BookingDocument> {
   if (booking.status !== 'PENDING')
     throw new HttpError(409, 'NOT_PENDING', 'This request has already been answered.');
+  if (booking.instantBook) throw notARequest();
+  if (booking.hostAcceptedAt) return booking;
   if (!booking.requestExpiresAt || booking.requestExpiresAt <= now) {
     throw new HttpError(409, 'REQUEST_EXPIRED', 'This request has expired.');
   }
+
+  if (booking.verificationReview?.status === 'PENDING') {
+    const accepted = await withTransaction(async (session) => {
+      const updated = await BookingModel.findOneAndUpdate(
+        { _id: booking._id, status: 'PENDING', hostAcceptedAt: mongoose.trusted({ $exists: false }) },
+        { $set: { hostAcceptedAt: now } },
+        { new: true, session },
+      );
+      // Support may have approved the check a moment ago: then nothing is left to wait for.
+      if (updated?.verificationReview?.status === 'PENDING') {
+        await notifyHostAccepted(record(updated), await loadBookingContext(record(updated)), { session });
+      }
+      return updated;
+    });
+    if (accepted && accepted.verificationReview?.status !== 'PENDING') await capturePending(accepted, now);
+  } else {
+    await capturePending(booking, now);
+  }
+  await recordAudit({ actorId: hostId, action: 'booking.accepted', entity: 'booking', entityId: booking.id });
+  await updateResponseRate(booking.hostId);
+  return (await BookingModel.findById(booking._id))!;
+}
+
+/**
+ * Captures a pending booking's authorisation, which confirms it. An authorisation that can no longer
+ * be captured ends the booking instead.
+ */
+async function capturePending(booking: BookingDocument, now: Date): Promise<void> {
   const payment = await PaymentModel.findOne({
     bookingId: booking._id,
     type: 'BOOKING',
@@ -378,9 +449,6 @@ export async function acceptBooking(
     );
   }
   await withTransaction((session) => applyPaymentIntent(intent, session, now));
-  await recordAudit({ actorId: hostId, action: 'booking.accepted', entity: 'booking', entityId: booking.id });
-  await updateResponseRate(booking.hostId);
-  return (await BookingModel.findById(booking._id))!;
 }
 
 /** POST /bookings/{id}/decline: the Host declines; the authorisation is released, with no fee (plan §8.2). */
@@ -389,8 +457,9 @@ export async function declineBooking(
   hostId: string,
   reason?: string,
 ): Promise<BookingDocument> {
-  if (booking.status !== 'PENDING')
+  if (booking.status !== 'PENDING' || booking.hostAcceptedAt)
     throw new HttpError(409, 'NOT_PENDING', 'This request has already been answered.');
+  if (booking.instantBook) throw notARequest();
   const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
     createdAt: -1,
   });
@@ -721,15 +790,31 @@ export async function expirePaymentHold(
   return 'expired';
 }
 
-/** `booking.expireRequest`: 24 h without an answer; the authorisation is released (plan §8.1, item 5). */
+const EXPIRY_REASONS = {
+  EXPIRED: 'The host did not answer in time',
+  VERIFICATION_EXPIRED: "The guest's verification was not approved in time",
+  VERIFICATION_REJECTED: "The guest's verification was rejected",
+} as const;
+
+/**
+ * `booking.expireRequest`: 24 h without an answer from the Host, or without the Guest's verification
+ * being approved; the authorisation is released (plan §8.1, item 5; §8.2). `rejected` ends it at once
+ * because support rejected the verification.
+ */
 export async function expireRequest(
   bookingId: string,
   now = new Date(),
-  { force = false } = {},
+  { force = false, rejected = false } = {},
 ): Promise<boolean> {
   const booking = await BookingModel.findById(bookingId);
   if (!booking || booking.status !== 'PENDING') return false;
   if (!force && booking.requestExpiresAt && booking.requestExpiresAt > now) return false;
+  // Whose answer was missing: support's, when the Host had nothing left to do; otherwise the Host's.
+  const outcome = rejected
+    ? 'VERIFICATION_REJECTED'
+    : booking.instantBook || (awaitsVerification(booking) && !hostAnswers(booking))
+      ? 'VERIFICATION_EXPIRED'
+      : 'EXPIRED';
   const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
     createdAt: -1,
   });
@@ -737,15 +822,71 @@ export async function expireRequest(
   const ended = await withTransaction(async (session) => {
     const done = await endBooking(
       booking,
-      { to: 'EXPIRED', from: ['PENDING'], reason: 'The host did not answer in time', now },
+      { to: 'EXPIRED', from: ['PENDING'], reason: EXPIRY_REASONS[outcome], now },
       session,
     );
     if (!done) return null;
     if (payment)
       await PaymentModel.updateOne({ _id: payment._id }, { $set: { status: 'CANCELLED' } }, { session });
-    await notifyRequestEnded(record(done), await loadBookingContext(record(done)), 'EXPIRED', { session });
+    await notifyRequestEnded(record(done), await loadBookingContext(record(done)), outcome, { session });
     return done;
   });
   if (ended) await updateResponseRate(booking.hostId);
   return Boolean(ended);
+}
+
+/**
+ * Support has decided a Guest's verification (plan §8.2). Approved: each booking that waited for it is
+ * confirmed by capturing its authorisation, unless its Host still has to accept the request. Rejected:
+ * each is ended and its authorisation released.
+ */
+export async function resolveVerificationReview(
+  guestId: string,
+  decision: 'APPROVE' | 'REJECT',
+  staffId: string,
+  now = new Date(),
+): Promise<{ confirmed: string[]; waitingForHost: string[]; released: string[] }> {
+  const result = { confirmed: [] as string[], waitingForHost: [] as string[], released: [] as string[] };
+  const waiting = await BookingModel.find({
+    guestId,
+    status: 'PENDING',
+    'verificationReview.status': 'PENDING',
+  }).sort({ createdAt: 1 });
+
+  for (const booking of waiting) {
+    const decided = await BookingModel.findOneAndUpdate(
+      { _id: booking._id, status: 'PENDING', 'verificationReview.status': 'PENDING' },
+      {
+        $set: {
+          verificationReview: {
+            status: decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',
+            decidedAt: now,
+            decidedBy: staffId,
+          },
+        },
+      },
+      { new: true },
+    );
+    if (!decided) continue;
+    if (decision === 'REJECT') {
+      if (await expireRequest(decided.id, now, { force: true, rejected: true })) {
+        result.released.push(decided.ref);
+      }
+      continue;
+    }
+    if (!decided.instantBook && !decided.hostAcceptedAt) {
+      result.waitingForHost.push(decided.ref);
+      continue;
+    }
+    try {
+      await capturePending(decided, now);
+      result.confirmed.push(decided.ref);
+    } catch (error) {
+      // The authorisation lapsed, so the booking was ended; the others still go ahead.
+      if (!(error instanceof HttpError) || error.code !== 'PAYMENT_EXPIRED') throw error;
+      result.released.push(decided.ref);
+    }
+  }
+  forget('vehicles:featured');
+  return result;
 }

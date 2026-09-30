@@ -4215,13 +4215,18 @@
               },
               "guestFirstName": {
                 "type": "string"
+              },
+              "toAnswer": {
+                "type": "boolean",
+                "description": "A request the Host still has to accept or decline. False while it only waits for the Guest’s verification"
               }
             },
             "required": [
               "id",
               "ref",
               "status",
-              "guestFirstName"
+              "guestFirstName",
+              "toAnswer"
             ],
             "description": "BOOKED and HOLD blocks: the booking (\"Request pending\" while it waits)"
           }
@@ -4886,7 +4891,8 @@
                     "NOT_LICENSED_LONG_ENOUGH",
                     "LICENCE_EXPIRES",
                     "ENGLISH_PROOF_REQUIRED",
-                    "LICENCE_REJECTED"
+                    "LICENCE_REJECTED",
+                    "IDENTITY_REJECTED"
                   ]
                 },
                 "message": {
@@ -5266,6 +5272,19 @@
             "type": "string",
             "format": "date-time",
             "description": "PENDING: when the request expires"
+          },
+          "verificationReview": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "description": "Set when the Guest paid while their verification was in review. PENDING: the booking waits for support to approve the check (plan §8.2)"
+          },
+          "hostAccepted": {
+            "type": "boolean",
+            "description": "PENDING: the Host has accepted, and the booking now waits only for the Guest’s verification"
           },
           "guest": {
             "type": "object",
@@ -5651,6 +5670,19 @@
           "requestExpiresAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "verificationReview": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "description": "Set when the Guest paid while their verification was in review. PENDING: the booking waits for support to approve the check (plan §8.2)"
+          },
+          "hostAccepted": {
+            "type": "boolean",
+            "description": "PENDING: the Host has accepted, and the booking now waits only for the Guest’s verification"
           }
         },
         "required": [
@@ -5691,7 +5723,11 @@
               "automatic",
               "manual"
             ],
-            "description": "manual: a request to book, authorised now and charged when the Host accepts"
+            "description": "manual: authorised now, and charged when the Host accepts or the Guest’s verification is approved"
+          },
+          "verificationInReview": {
+            "type": "boolean",
+            "description": "The Guest’s identity check is with support, so the booking waits for it (plan §8.2)"
           },
           "holdExpiresAt": {
             "type": "string",
@@ -5703,6 +5739,7 @@
           "amountCents",
           "currency",
           "captureMethod",
+          "verificationInReview",
           "holdExpiresAt"
         ]
       },
@@ -5814,6 +5851,64 @@
         "required": [
           "reason",
           "note"
+        ]
+      },
+      "IdentityReviewResponse": {
+        "type": "object",
+        "properties": {
+          "identityStatus": {
+            "type": "string",
+            "enum": [
+              "APPROVED",
+              "REJECTED"
+            ]
+          },
+          "confirmed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "References of the bookings this confirmed"
+          },
+          "waitingForHost": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requests the Host still has to answer"
+          },
+          "released": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bookings ended, with the card authorisation released"
+          }
+        },
+        "required": [
+          "identityStatus",
+          "confirmed",
+          "waitingForHost",
+          "released"
+        ]
+      },
+      "IdentityReviewRequest": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "REJECT"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "decision"
         ]
       }
     },
@@ -12457,6 +12552,107 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BookingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/identity-review": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: decide an identity check that needed a manual review",
+        "description": "Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The user’s id"
+            },
+            "required": true,
+            "description": "The user’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityReviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The decision, and what it did to their bookings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityReviewResponse"
                 }
               }
             }

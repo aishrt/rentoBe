@@ -8,6 +8,7 @@ import { enqueue } from '../../jobs/queue.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
 import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
 import { AGREEMENT_VERSIONS } from '../users/agreements.js';
+import { verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel } from '../users/user.model.js';
 import { BookingModel, type BookingDocument } from './booking.model.js';
 import { notifyPaymentFailed } from './booking-notifications.js';
@@ -80,9 +81,17 @@ export async function preparePayment(
     await user.save();
   }
 
+  // A check that needs a manual review turns even an Instant Book into a request (plan §8.2): the
+  // card is authorised now, and charged once support approves the check.
+  const inReview = verificationInReview(user);
+  if (inReview !== (booking.verificationReview?.status === 'PENDING')) {
+    booking.verificationReview = inReview ? { status: 'PENDING' } : undefined;
+    await booking.save();
+  }
+
   const client = stripe();
   const customer = await ensureCustomer(guestId);
-  const captureMethod = booking.instantBook ? 'automatic' : 'manual';
+  const captureMethod = booking.instantBook && !inReview ? 'automatic' : 'manual';
 
   let intent: Stripe.PaymentIntent | undefined;
   const existing = await PaymentModel.findOne({
@@ -92,7 +101,16 @@ export async function preparePayment(
   }).sort({ createdAt: -1 });
   if (existing) {
     const current = await client.paymentIntents.retrieve(existing.stripePaymentIntentId);
-    if (REUSABLE.includes(current.status)) intent = current;
+    if (REUSABLE.includes(current.status)) {
+      if (current.capture_method === captureMethod) {
+        intent = current;
+      } else {
+        // The check finished, or went to review, since this payment was started: start a new one.
+        await cancelIntent(existing).catch(() => undefined);
+        existing.status = 'CANCELLED';
+        await existing.save();
+      }
+    }
   }
   if (!intent) {
     const attempt = await PaymentModel.countDocuments({ bookingId: booking._id, type: 'BOOKING' });
@@ -146,6 +164,7 @@ export async function preparePayment(
     amountCents: intent.amount,
     currency: CHARGE_CURRENCY,
     captureMethod,
+    verificationInReview: inReview,
     holdExpiresAt: booking.holdExpiresAt.toISOString(),
   };
 }

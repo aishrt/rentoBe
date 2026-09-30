@@ -9,7 +9,7 @@ import {
   lineItemSchema,
   protectionPlanSummarySchema,
 } from '../vehicles/vehicles.schemas.js';
-import { BOOKING_STATUSES, CANCELLATION_REASONS } from './booking.model.js';
+import { BOOKING_STATUSES, CANCELLATION_REASONS, VERIFICATION_REVIEW_STATUSES } from './booking.model.js';
 
 /* The booking flow (plan §9, Days 11–14; spec §7) and the booking lifecycle (plan §8.2). */
 
@@ -42,7 +42,11 @@ export const paymentSessionSchema = z
     amountCents: z.number().int(),
     currency: z.literal('nzd'),
     captureMethod: z.enum(['automatic', 'manual']).meta({
-      description: 'manual: a request to book, authorised now and charged when the Host accepts',
+      description:
+        'manual: authorised now, and charged when the Host accepts or the Guest’s verification is approved',
+    }),
+    verificationInReview: z.boolean().meta({
+      description: 'The Guest’s identity check is with support, so the booking waits for it (plan §8.2)',
     }),
     holdExpiresAt: z.iso.datetime(),
   })
@@ -54,6 +58,25 @@ export const cancelBookingSchema = z
   .meta({ id: 'CancelBookingRequest' });
 
 export const declineBookingSchema = cancelBookingSchema.meta({ id: 'DeclineBookingRequest' });
+
+export const identityReviewSchema = z
+  .object({
+    decision: z.enum(['APPROVE', 'REJECT']),
+    note: z.string().trim().max(500).optional(),
+  })
+  .meta({ id: 'IdentityReviewRequest' });
+
+export const identityReviewResponseSchema = z
+  .object({
+    identityStatus: z.enum(['APPROVED', 'REJECTED']),
+    confirmed: z.array(z.string()).meta({ description: 'References of the bookings this confirmed' }),
+    waitingForHost: z.array(z.string()).meta({ description: 'Requests the Host still has to answer' }),
+    released: z
+      .array(z.string())
+      .meta({ description: 'Bookings ended, with the card authorisation released' }),
+  })
+  .meta({ id: 'IdentityReviewResponse' });
+export type IdentityReviewResult = z.infer<typeof identityReviewResponseSchema>;
 
 export const adminCancelSchema = z
   .object({
@@ -77,6 +100,15 @@ const tripPointSchema = deliveryOptionSummarySchema.extend({
       'The exact address: the Guest’s own delivery address, or the Host’s once the booking is confirmed',
   }),
   instructions: z.string().optional().meta({ description: 'Once the booking is confirmed' }),
+});
+
+const verificationReviewSchema = z.enum(VERIFICATION_REVIEW_STATUSES).optional().meta({
+  description:
+    'Set when the Guest paid while their verification was in review. PENDING: the booking waits for support to approve the check (plan §8.2)',
+});
+
+const hostAcceptedSchema = z.boolean().optional().meta({
+  description: 'PENDING: the Host has accepted, and the booking now waits only for the Guest’s verification',
 });
 
 export const bookingViewSchema = z
@@ -119,6 +151,8 @@ export const bookingViewSchema = z
       .optional()
       .meta({ description: 'PAYMENT_PENDING: when the dates are released' }),
     requestExpiresAt: z.iso.datetime().optional().meta({ description: 'PENDING: when the request expires' }),
+    verificationReview: verificationReviewSchema,
+    hostAccepted: hostAcceptedSchema,
     guest: partySchema,
     host: partySchema.extend({ responseRate: z.number().optional() }),
     payment: z.object({ status: z.enum(PAYMENT_STATUSES), failureReason: z.string().optional() }).nullable(),
@@ -161,6 +195,8 @@ export const bookingSummarySchema = z
     otherParty: z.object({ firstName: z.string(), avatarUrl: z.string().optional() }),
     amountCents: z.number().int().meta({ description: 'The Guest’s total, or the Host’s payout' }),
     requestExpiresAt: z.iso.datetime().optional(),
+    verificationReview: verificationReviewSchema,
+    hostAccepted: hostAcceptedSchema,
   })
   .meta({ id: 'BookingSummary' });
 

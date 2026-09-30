@@ -21,6 +21,7 @@ import {
   BookingDeclinedEmail,
   BookingRequestHostEmail,
   BookingRequestSentEmail,
+  BookingVerificationReviewEmail,
   PaymentFailedEmail,
   PaymentReceiptEmail,
   RefundIssuedEmail,
@@ -31,6 +32,7 @@ import {
   type BookingDeclinedProps,
   type BookingRequestHostProps,
   type BookingRequestSentProps,
+  type BookingVerificationReviewProps,
   type PaymentFailedProps,
   type PaymentReceiptProps,
   type RefundIssuedProps,
@@ -118,6 +120,10 @@ export const emailTemplates = {
     subject: ({ hostFirstName }) => `Your booking request is with ${hostFirstName}`,
     component: BookingRequestSentEmail,
   }),
+  bookingVerificationReview: defineTemplate<BookingVerificationReviewProps>({
+    subject: ({ vehicleTitle }) => `We're checking your details for the ${vehicleTitle}`,
+    component: BookingVerificationReviewEmail,
+  }),
   bookingConfirmedGuest: defineTemplate<BookingConfirmedGuestProps>({
     subject: ({ vehicleTitle, ref }) => `You're booked: ${vehicleTitle} (${ref})`,
     component: BookingConfirmedGuestEmail,
@@ -130,7 +136,9 @@ export const emailTemplates = {
     subject: ({ outcome, vehicleTitle }) =>
       outcome === 'DECLINED'
         ? `Your request for the ${vehicleTitle} was declined`
-        : `Your request for the ${vehicleTitle} expired`,
+        : outcome === 'EXPIRED'
+          ? `Your request for the ${vehicleTitle} expired`
+          : `Your booking of the ${vehicleTitle} didn't go ahead`,
     component: BookingDeclinedEmail,
   }),
   requestExpiredHost: defineTemplate<RequestExpiredHostProps>({

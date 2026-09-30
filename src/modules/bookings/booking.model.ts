@@ -94,6 +94,15 @@ export interface BookedCancellationTerms {
   refunds: { minHoursBefore: number; refundPct: number }[];
 }
 
+export const VERIFICATION_REVIEW_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'] as const;
+
+/** The manual review a booking waited for, and how support decided it. */
+export interface VerificationReview {
+  status: (typeof VERIFICATION_REVIEW_STATUSES)[number];
+  decidedAt?: Date;
+  decidedBy?: Types.ObjectId;
+}
+
 /** Every status change, including admin edits, with who made it and why. */
 export interface StatusChange {
   status: BookingStatus;
@@ -135,6 +144,13 @@ export interface Booking {
   /** PAYMENT_PENDING: when the 30-minute hold on the dates ends if payment isn't finished. */
   holdExpiresAt?: Date;
   requestExpiresAt?: Date;
+  /**
+   * Set when the Guest paid while their verification needed a manual review (plan §8.2): the card is
+   * authorised, not charged, and the booking is confirmed once support approves the check.
+   */
+  verificationReview?: VerificationReview;
+  /** A request the Host accepted while the Guest's verification was still in review. */
+  hostAcceptedAt?: Date;
   vehicleSnapshot: VehicleSnapshot;
   terms: BookedTerms;
   price: BookingPrice;
@@ -235,6 +251,18 @@ const bookingSchema = new Schema<Booking>(
     instantBook: { type: Boolean, default: false },
     holdExpiresAt: Date,
     requestExpiresAt: Date,
+    verificationReview: {
+      type: new Schema<VerificationReview>(
+        {
+          status: { type: String, enum: VERIFICATION_REVIEW_STATUSES, required: true },
+          decidedAt: Date,
+          decidedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    hostAcceptedAt: Date,
     vehicleSnapshot: {
       type: new Schema<VehicleSnapshot>(
         { title: { type: String, required: true }, photoUrl: String, regoPlate: String },
@@ -310,6 +338,11 @@ const bookingSchema = new Schema<Booking>(
 
 bookingSchema.index({ guestId: 1, startAt: -1 });
 bookingSchema.index({ hostId: 1, status: 1, startAt: -1 });
+// A Guest's bookings waiting for their verification, confirmed or released when support decides.
+bookingSchema.index(
+  { guestId: 1, 'verificationReview.status': 1 },
+  { partialFilterExpression: { 'verificationReview.status': 'PENDING' } },
+);
 // A car's upcoming bookings, for deactivation and suspension.
 bookingSchema.index({ vehicleId: 1, status: 1, startAt: 1 });
 

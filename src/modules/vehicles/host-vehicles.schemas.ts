@@ -329,7 +329,16 @@ export const calendarBlockSchema = z
     note: z.string().optional(),
     holdExpiresAt: z.iso.datetime().optional(),
     booking: z
-      .object({ id: z.string(), ref: z.string(), status: z.string(), guestFirstName: z.string() })
+      .object({
+        id: z.string(),
+        ref: z.string(),
+        status: z.string(),
+        guestFirstName: z.string(),
+        toAnswer: z.boolean().meta({
+          description:
+            'A request the Host still has to accept or decline. False while it only waits for the Guest’s verification',
+        }),
+      })
       .optional()
       .meta({ description: 'BOOKED and HOLD blocks: the booking ("Request pending" while it waits)' }),
   })

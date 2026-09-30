@@ -65,6 +65,7 @@ export const ELIGIBILITY_CODES = [
   'LICENCE_EXPIRES',
   'ENGLISH_PROOF_REQUIRED',
   'LICENCE_REJECTED',
+  'IDENTITY_REJECTED',
 ] as const;
 
 export const checkoutReadinessSchema = z
