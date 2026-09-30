@@ -14,7 +14,8 @@ import { UserModel } from './user.model.js';
 export async function listFavourites(userId: string): Promise<string[]> {
   const user = await UserModel.findById(userId).select('favouriteVehicleIds status').lean();
   if (!user || user.status !== 'ACTIVE') throw unauthenticated();
-  return [...user.favouriteVehicleIds].reverse().map((id) => id.toString());
+  // Accounts written by an upsert (the demo seed) may not have the list yet.
+  return [...(user.favouriteVehicleIds ?? [])].reverse().map((id) => id.toString());
 }
 
 export async function saveFavourite(userId: string, vehicleId: string): Promise<void> {

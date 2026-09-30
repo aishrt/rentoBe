@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { UserModel } from '../src/modules/users/user.model.js';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
@@ -205,5 +206,15 @@ describe('Saved cars and the last search', () => {
     expect(stored!.lastSearch!.startAt!.toISOString()).toBe('2026-11-30T21:00:00.000Z');
 
     expect((await request(app).get('/api/v1/me/favourites')).status).toBe(401);
+  });
+});
+
+describe('Saved cars for older accounts', () => {
+  it('lists none for an account written without the list', async () => {
+    const user = await createUser();
+    await UserModel.collection.updateOne({ _id: user._id }, { $unset: { favouriteVehicleIds: '' } });
+    const agent = browserAgent();
+    await agent.post('/api/v1/auth/login').send({ email: user.email, password: 'correct horse battery staple' });
+    expect((await agent.get('/api/v1/me/favourites')).body).toEqual({ vehicleIds: [] });
   });
 });
