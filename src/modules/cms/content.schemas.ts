@@ -81,6 +81,9 @@ export const publicPoliciesSchema = z
       hostCancellationFeeCents: z.number().int(),
     }),
     protectionPlans: z.array(protectionPlanSchema),
+    roadsideAssistance: z.object({
+      phone: z.string().meta({ description: "The insurance partner's number; empty until it's set" }),
+    }),
     eligibility: z.object({
       minAge: z.number().int(),
       minYearsLicensed: z.number(),

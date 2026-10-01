@@ -36,6 +36,38 @@ export const protectionPlanSchema = z.object({
 export type ProtectionPlan = z.infer<typeof protectionPlanSchema>;
 
 /**
+ * The client's decisions (plan §16), one per group of settings on the staff portal's Platform settings
+ * tab. Each is PENDING while the launch default stands in, and CONFIRMED once the client has decided; the
+ * values apply either way.
+ */
+export const DECISION_KEYS = [
+  'fees',
+  'cancellation',
+  'securityDeposit',
+  'eligibility',
+  'gst',
+  'protection',
+  'reviewsAndTrips',
+  'company',
+  'bookingRules',
+  'verificationServices',
+] as const;
+export type DecisionKey = (typeof DECISION_KEYS)[number];
+
+const decisionSchema = z.object({
+  status: z.enum(['PENDING', 'CONFIRMED']),
+  /** Who confirmed it and how, e.g. "Client's email, 3 October". */
+  note: z.string().trim().max(300, { error: 'Use 300 characters or fewer' }),
+});
+
+export const decisionsSchema = z.object(
+  Object.fromEntries(DECISION_KEYS.map((key) => [key, decisionSchema])) as Record<
+    DecisionKey,
+    typeof decisionSchema
+  >,
+);
+
+/**
  * Everything admins can change without a code change (plan §3 `platformSettings`). The launch defaults are
  * in default-settings.ts until the client's decisions arrive (plan §16).
  */
@@ -155,5 +187,58 @@ export const platformSettingsSchema = z.object({
     gstNumber: z.string().regex(/^(\d{2,3}-\d{3}-\d{3})?$/, { error: 'Use the format 123-456-789' }),
     supportEmail: z.email(),
   }),
+  /** Where the client's decisions stand (plan §16); see DECISION_KEYS. */
+  decisions: decisionsSchema,
+  /**
+   * A refundable security deposit held on the Guest's card (plan §16, item 4). 0 means none. Recorded
+   * only: the card hold is designed and built once the client decides to have one (plan §5).
+   */
+  securityDeposit: z.object({ amountCents: wholeCents }),
+  /** From the insurance partner (plan §16, item 9). Empty until it arrives; shown with the protection plans. */
+  roadsideAssistance: z.object({
+    phone: z
+      .string()
+      .trim()
+      .regex(/^(\+?[\d ()-]{6,20})?$/, { error: 'Enter a phone number, like 0800 123 456' }),
+  }),
+  /** The logo, trade mark and company name checks (plan §16, item 1). Recorded only. */
+  brandChecks: z.object({
+    finalLogoSupplied: z.boolean(),
+    trademarkSearchDone: z.boolean(),
+    companyNameCheckDone: z.boolean(),
+  }),
+  /**
+   * Items the spec leaves open (plan §16, item 13). Recorded only until the features exist: messaging
+   * opens with a booking or request, and a booking has one driver.
+   */
+  bookingRules: z.object({
+    enquiriesBeforeBooking: z.boolean(),
+    additionalDrivers: z.boolean(),
+  }),
+  /** The optional NZ services (plan §16, item 15). Recorded only: no provider is connected yet. */
+  verificationServices: z.object({
+    nzLicenceCheck: z.boolean(),
+    plateLookup: z.boolean(),
+  }),
 });
 export type PlatformSettings = z.infer<typeof platformSettingsSchema>;
+
+/**
+ * PATCH /admin/settings: the groups to change. Each group sent is complete and replaces the saved one;
+ * `decisions` can name only the decisions that change.
+ */
+export const platformSettingsUpdateSchema = platformSettingsSchema
+  .partial()
+  .extend({ decisions: decisionsSchema.partial().optional() })
+  .strict()
+  .meta({ id: 'PlatformSettingsUpdate' });
+export type PlatformSettingsUpdate = z.infer<typeof platformSettingsUpdateSchema>;
+
+export const platformSettingsResponseSchema = z
+  .object({
+    settings: platformSettingsSchema.meta({ id: 'PlatformSettings' }),
+    updatedAt: z.iso.datetime().optional().meta({ description: 'When an admin last saved them' }),
+    updatedBy: z.string().optional().meta({ description: 'The name of the admin who last saved them' }),
+  })
+  .meta({ id: 'PlatformSettingsResponse' });
+export type PlatformSettingsResponse = z.infer<typeof platformSettingsResponseSchema>;

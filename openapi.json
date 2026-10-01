@@ -443,6 +443,1733 @@
           "generatedAt"
         ]
       },
+      "PlatformSettingsResponse": {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "$ref": "#/components/schemas/PlatformSettings"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When an admin last saved them"
+          },
+          "updatedBy": {
+            "type": "string",
+            "description": "The name of the admin who last saved them"
+          }
+        },
+        "required": [
+          "settings"
+        ]
+      },
+      "PlatformSettings": {
+        "type": "object",
+        "properties": {
+          "fees": {
+            "type": "object",
+            "properties": {
+              "guestServiceFeePct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "hostCommissionPct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "gstRatePct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "platformPaysCardFees": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "guestServiceFeePct",
+              "hostCommissionPct",
+              "gstRatePct",
+              "platformPaysCardFees"
+            ]
+          },
+          "cancellation": {
+            "type": "object",
+            "properties": {
+              "tiers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z_]*$"
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "summary": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "refunds": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "minHoursBefore": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "refundPct": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          }
+                        },
+                        "required": [
+                          "minHoursBefore",
+                          "refundPct"
+                        ]
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "name",
+                    "summary",
+                    "refunds"
+                  ]
+                },
+                "minItems": 1
+              },
+              "hostSelectableTiers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "defaultTier": {
+                "type": "string"
+              },
+              "hostCancellationFeeCents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "guestCancellationHostSharePct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "refundUnusedDaysOnEarlyReturn": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "tiers",
+              "hostSelectableTiers",
+              "defaultTier",
+              "hostCancellationFeeCents",
+              "guestCancellationHostSharePct",
+              "refundUnusedDaysOnEarlyReturn"
+            ]
+          },
+          "protectionPlans": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z_]*$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "dailyPriceCents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "excessCents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "coverSummary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mandatory": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "code",
+                "name",
+                "dailyPriceCents",
+                "excessCents",
+                "coverSummary",
+                "mandatory"
+              ]
+            },
+            "minItems": 1
+          },
+          "eligibility": {
+            "type": "object",
+            "properties": {
+              "minAge": {
+                "type": "integer",
+                "minimum": 16,
+                "maximum": 99
+              },
+              "minYearsLicensed": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 20
+              },
+              "acceptedLicenceClasses": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "NZ_FULL",
+                    "NZ_RESTRICTED",
+                    "NZ_LEARNER",
+                    "OVERSEAS"
+                  ]
+                },
+                "minItems": 1
+              },
+              "overseasNeedsEnglishProof": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "minAge",
+              "minYearsLicensed",
+              "acceptedLicenceClasses",
+              "overseasNeedsEnglishProof"
+            ]
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "identityBeforeFirstBooking": {
+                "type": "boolean"
+              },
+              "identityForHosts": {
+                "type": "boolean"
+              },
+              "phoneAtCheckout": {
+                "type": "boolean"
+              },
+              "emailBeforeTripStart": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "identityBeforeFirstBooking",
+              "identityForHosts",
+              "phoneAtCheckout",
+              "emailBeforeTripStart"
+            ]
+          },
+          "vehicles": {
+            "type": "object",
+            "properties": {
+              "requiredDocuments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "REGO",
+                    "WOF",
+                    "COF",
+                    "RUC",
+                    "INSURANCE",
+                    "OWNER_CONSENT",
+                    "OTHER"
+                  ]
+                }
+              },
+              "requiredPhotoAngles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "FRONT",
+                    "REAR",
+                    "DRIVER",
+                    "PASSENGER",
+                    "INTERIOR",
+                    "DASH",
+                    "BOOT",
+                    "TYRES",
+                    "DAMAGE"
+                  ]
+                }
+              },
+              "vinOrChassisRequired": {
+                "type": "boolean"
+              },
+              "minPhotoWidthPx": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "minPhotoHeightPx": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "seats": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "doors": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "dailyPriceCents": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "max": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "maxDiscountPct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              }
+            },
+            "required": [
+              "requiredDocuments",
+              "requiredPhotoAngles",
+              "vinOrChassisRequired",
+              "minPhotoWidthPx",
+              "minPhotoHeightPx",
+              "seats",
+              "doors",
+              "dailyPriceCents",
+              "maxDiscountPct"
+            ]
+          },
+          "reviews": {
+            "type": "object",
+            "properties": {
+              "windowDays": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "revealTogether": {
+                "type": "boolean"
+              },
+              "homepageThreshold": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "windowDays",
+              "revealTogether",
+              "homepageThreshold"
+            ]
+          },
+          "trips": {
+            "type": "object",
+            "properties": {
+              "lateReturnGraceMinutes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "damageReportWindowHours": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "threadReadOnlyDays": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "lateReturnGraceMinutes",
+              "damageReportWindowHours",
+              "threadReadOnlyDays"
+            ]
+          },
+          "search": {
+            "type": "object",
+            "properties": {
+              "maxTripDays": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "radiusKm": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "default": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "max": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "min",
+                  "default",
+                  "max"
+                ]
+              }
+            },
+            "required": [
+              "maxTripDays",
+              "radiusKm"
+            ]
+          },
+          "retention": {
+            "type": "object",
+            "properties": {
+              "financialRecordsYears": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "idImagesDays": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tripRecordsYears": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "auditLogYears": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "financialRecordsYears",
+              "idImagesDays",
+              "tripRecordsYears",
+              "auditLogYears"
+            ]
+          },
+          "risk": {
+            "type": "object",
+            "properties": {
+              "failedPaymentsPerDay": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "bookingsPerDay": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reportsBeforeFlag": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "hostCancellationsPer90Days": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "failedPaymentsPerDay",
+              "bookingsPerDay",
+              "reportsBeforeFlag",
+              "hostCancellationsPer90Days"
+            ]
+          },
+          "sms": {
+            "type": "object",
+            "properties": {
+              "quietHoursStart": {
+                "type": "string",
+                "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+              },
+              "quietHoursEnd": {
+                "type": "string",
+                "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+              }
+            },
+            "required": [
+              "quietHoursStart",
+              "quietHoursEnd"
+            ]
+          },
+          "hostEstimator": {
+            "type": "object",
+            "properties": {
+              "bookedDaysPerMonth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 31
+              },
+              "dailyCentsByBodyType": {
+                "type": "object",
+                "properties": {
+                  "HATCHBACK": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "SEDAN": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "WAGON": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "SUV": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "UTE": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "VAN": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "PEOPLE_MOVER": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "COUPE": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "CONVERTIBLE": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "required": [
+              "bookedDaysPerMonth",
+              "dailyCentsByBodyType"
+            ]
+          },
+          "business": {
+            "type": "object",
+            "properties": {
+              "legalName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "gstNumber": {
+                "type": "string",
+                "pattern": "^(\\d{2,3}-\\d{3}-\\d{3})?$"
+              },
+              "supportEmail": {
+                "type": "string",
+                "format": "email"
+              }
+            },
+            "required": [
+              "legalName",
+              "gstNumber",
+              "supportEmail"
+            ]
+          },
+          "decisions": {
+            "type": "object",
+            "properties": {
+              "fees": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "cancellation": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "securityDeposit": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "eligibility": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "gst": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "protection": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "reviewsAndTrips": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "company": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "bookingRules": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "verificationServices": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              }
+            },
+            "required": [
+              "fees",
+              "cancellation",
+              "securityDeposit",
+              "eligibility",
+              "gst",
+              "protection",
+              "reviewsAndTrips",
+              "company",
+              "bookingRules",
+              "verificationServices"
+            ]
+          },
+          "securityDeposit": {
+            "type": "object",
+            "properties": {
+              "amountCents": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "amountCents"
+            ]
+          },
+          "roadsideAssistance": {
+            "type": "object",
+            "properties": {
+              "phone": {
+                "type": "string",
+                "pattern": "^(\\+?[\\d ()-]{6,20})?$"
+              }
+            },
+            "required": [
+              "phone"
+            ]
+          },
+          "brandChecks": {
+            "type": "object",
+            "properties": {
+              "finalLogoSupplied": {
+                "type": "boolean"
+              },
+              "trademarkSearchDone": {
+                "type": "boolean"
+              },
+              "companyNameCheckDone": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "finalLogoSupplied",
+              "trademarkSearchDone",
+              "companyNameCheckDone"
+            ]
+          },
+          "bookingRules": {
+            "type": "object",
+            "properties": {
+              "enquiriesBeforeBooking": {
+                "type": "boolean"
+              },
+              "additionalDrivers": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enquiriesBeforeBooking",
+              "additionalDrivers"
+            ]
+          },
+          "verificationServices": {
+            "type": "object",
+            "properties": {
+              "nzLicenceCheck": {
+                "type": "boolean"
+              },
+              "plateLookup": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "nzLicenceCheck",
+              "plateLookup"
+            ]
+          }
+        },
+        "required": [
+          "fees",
+          "cancellation",
+          "protectionPlans",
+          "eligibility",
+          "verification",
+          "vehicles",
+          "reviews",
+          "trips",
+          "search",
+          "retention",
+          "risk",
+          "sms",
+          "hostEstimator",
+          "business",
+          "decisions",
+          "securityDeposit",
+          "roadsideAssistance",
+          "brandChecks",
+          "bookingRules",
+          "verificationServices"
+        ]
+      },
+      "PlatformSettingsUpdate": {
+        "type": "object",
+        "properties": {
+          "fees": {
+            "type": "object",
+            "properties": {
+              "guestServiceFeePct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "hostCommissionPct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "gstRatePct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "platformPaysCardFees": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "guestServiceFeePct",
+              "hostCommissionPct",
+              "gstRatePct",
+              "platformPaysCardFees"
+            ]
+          },
+          "cancellation": {
+            "type": "object",
+            "properties": {
+              "tiers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Z_]*$"
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "summary": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "refunds": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "minHoursBefore": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "refundPct": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          }
+                        },
+                        "required": [
+                          "minHoursBefore",
+                          "refundPct"
+                        ]
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "name",
+                    "summary",
+                    "refunds"
+                  ]
+                },
+                "minItems": 1
+              },
+              "hostSelectableTiers": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "defaultTier": {
+                "type": "string"
+              },
+              "hostCancellationFeeCents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "guestCancellationHostSharePct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              "refundUnusedDaysOnEarlyReturn": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "tiers",
+              "hostSelectableTiers",
+              "defaultTier",
+              "hostCancellationFeeCents",
+              "guestCancellationHostSharePct",
+              "refundUnusedDaysOnEarlyReturn"
+            ]
+          },
+          "protectionPlans": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z_]*$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "dailyPriceCents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "excessCents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "coverSummary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mandatory": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "code",
+                "name",
+                "dailyPriceCents",
+                "excessCents",
+                "coverSummary",
+                "mandatory"
+              ]
+            },
+            "minItems": 1
+          },
+          "eligibility": {
+            "type": "object",
+            "properties": {
+              "minAge": {
+                "type": "integer",
+                "minimum": 16,
+                "maximum": 99
+              },
+              "minYearsLicensed": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 20
+              },
+              "acceptedLicenceClasses": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "NZ_FULL",
+                    "NZ_RESTRICTED",
+                    "NZ_LEARNER",
+                    "OVERSEAS"
+                  ]
+                },
+                "minItems": 1
+              },
+              "overseasNeedsEnglishProof": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "minAge",
+              "minYearsLicensed",
+              "acceptedLicenceClasses",
+              "overseasNeedsEnglishProof"
+            ]
+          },
+          "verification": {
+            "type": "object",
+            "properties": {
+              "identityBeforeFirstBooking": {
+                "type": "boolean"
+              },
+              "identityForHosts": {
+                "type": "boolean"
+              },
+              "phoneAtCheckout": {
+                "type": "boolean"
+              },
+              "emailBeforeTripStart": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "identityBeforeFirstBooking",
+              "identityForHosts",
+              "phoneAtCheckout",
+              "emailBeforeTripStart"
+            ]
+          },
+          "vehicles": {
+            "type": "object",
+            "properties": {
+              "requiredDocuments": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "REGO",
+                    "WOF",
+                    "COF",
+                    "RUC",
+                    "INSURANCE",
+                    "OWNER_CONSENT",
+                    "OTHER"
+                  ]
+                }
+              },
+              "requiredPhotoAngles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "FRONT",
+                    "REAR",
+                    "DRIVER",
+                    "PASSENGER",
+                    "INTERIOR",
+                    "DASH",
+                    "BOOT",
+                    "TYRES",
+                    "DAMAGE"
+                  ]
+                }
+              },
+              "vinOrChassisRequired": {
+                "type": "boolean"
+              },
+              "minPhotoWidthPx": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "minPhotoHeightPx": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "seats": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "doors": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "max": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "dailyPriceCents": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "max": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "maxDiscountPct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              }
+            },
+            "required": [
+              "requiredDocuments",
+              "requiredPhotoAngles",
+              "vinOrChassisRequired",
+              "minPhotoWidthPx",
+              "minPhotoHeightPx",
+              "seats",
+              "doors",
+              "dailyPriceCents",
+              "maxDiscountPct"
+            ]
+          },
+          "reviews": {
+            "type": "object",
+            "properties": {
+              "windowDays": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "revealTogether": {
+                "type": "boolean"
+              },
+              "homepageThreshold": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "windowDays",
+              "revealTogether",
+              "homepageThreshold"
+            ]
+          },
+          "trips": {
+            "type": "object",
+            "properties": {
+              "lateReturnGraceMinutes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "damageReportWindowHours": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "threadReadOnlyDays": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "lateReturnGraceMinutes",
+              "damageReportWindowHours",
+              "threadReadOnlyDays"
+            ]
+          },
+          "search": {
+            "type": "object",
+            "properties": {
+              "maxTripDays": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "radiusKm": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "default": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "max": {
+                    "type": "number",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "min",
+                  "default",
+                  "max"
+                ]
+              }
+            },
+            "required": [
+              "maxTripDays",
+              "radiusKm"
+            ]
+          },
+          "retention": {
+            "type": "object",
+            "properties": {
+              "financialRecordsYears": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "idImagesDays": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tripRecordsYears": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "auditLogYears": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "financialRecordsYears",
+              "idImagesDays",
+              "tripRecordsYears",
+              "auditLogYears"
+            ]
+          },
+          "risk": {
+            "type": "object",
+            "properties": {
+              "failedPaymentsPerDay": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "bookingsPerDay": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reportsBeforeFlag": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "hostCancellationsPer90Days": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "failedPaymentsPerDay",
+              "bookingsPerDay",
+              "reportsBeforeFlag",
+              "hostCancellationsPer90Days"
+            ]
+          },
+          "sms": {
+            "type": "object",
+            "properties": {
+              "quietHoursStart": {
+                "type": "string",
+                "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+              },
+              "quietHoursEnd": {
+                "type": "string",
+                "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+              }
+            },
+            "required": [
+              "quietHoursStart",
+              "quietHoursEnd"
+            ]
+          },
+          "hostEstimator": {
+            "type": "object",
+            "properties": {
+              "bookedDaysPerMonth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 31
+              },
+              "dailyCentsByBodyType": {
+                "type": "object",
+                "properties": {
+                  "HATCHBACK": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "SEDAN": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "WAGON": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "SUV": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "UTE": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "VAN": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "PEOPLE_MOVER": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "COUPE": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "CONVERTIBLE": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "required": [
+              "bookedDaysPerMonth",
+              "dailyCentsByBodyType"
+            ]
+          },
+          "business": {
+            "type": "object",
+            "properties": {
+              "legalName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "gstNumber": {
+                "type": "string",
+                "pattern": "^(\\d{2,3}-\\d{3}-\\d{3})?$"
+              },
+              "supportEmail": {
+                "type": "string",
+                "format": "email"
+              }
+            },
+            "required": [
+              "legalName",
+              "gstNumber",
+              "supportEmail"
+            ]
+          },
+          "decisions": {
+            "type": "object",
+            "properties": {
+              "fees": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "cancellation": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "securityDeposit": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "eligibility": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "gst": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "protection": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "reviewsAndTrips": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "company": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "bookingRules": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "verificationServices": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              }
+            }
+          },
+          "securityDeposit": {
+            "type": "object",
+            "properties": {
+              "amountCents": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "amountCents"
+            ]
+          },
+          "roadsideAssistance": {
+            "type": "object",
+            "properties": {
+              "phone": {
+                "type": "string",
+                "pattern": "^(\\+?[\\d ()-]{6,20})?$"
+              }
+            },
+            "required": [
+              "phone"
+            ]
+          },
+          "brandChecks": {
+            "type": "object",
+            "properties": {
+              "finalLogoSupplied": {
+                "type": "boolean"
+              },
+              "trademarkSearchDone": {
+                "type": "boolean"
+              },
+              "companyNameCheckDone": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "finalLogoSupplied",
+              "trademarkSearchDone",
+              "companyNameCheckDone"
+            ]
+          },
+          "bookingRules": {
+            "type": "object",
+            "properties": {
+              "enquiriesBeforeBooking": {
+                "type": "boolean"
+              },
+              "additionalDrivers": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enquiriesBeforeBooking",
+              "additionalDrivers"
+            ]
+          },
+          "verificationServices": {
+            "type": "object",
+            "properties": {
+              "nzLicenceCheck": {
+                "type": "boolean"
+              },
+              "plateLookup": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "nzLicenceCheck",
+              "plateLookup"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "TestPayment": {
         "type": "object",
         "properties": {
@@ -2647,6 +4374,18 @@
               ]
             }
           },
+          "roadsideAssistance": {
+            "type": "object",
+            "properties": {
+              "phone": {
+                "type": "string",
+                "description": "The insurance partner's number; empty until it's set"
+              }
+            },
+            "required": [
+              "phone"
+            ]
+          },
           "eligibility": {
             "type": "object",
             "properties": {
@@ -2886,6 +4625,7 @@
           "fees",
           "cancellation",
           "protectionPlans",
+          "roadsideAssistance",
           "eligibility",
           "vehicles",
           "search",
@@ -7783,6 +9523,122 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/settings": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "The platform settings in force",
+        "description": "Admin only. Fees, cancellation tiers, protection plans, eligibility and the other values that wait for the client’s decisions (plan §16), with where each decision stands.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformSettingsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Change some platform settings",
+        "description": "Admin only. Each group sent is complete and replaces the saved one; `decisions` can name just the decisions that change. The result is checked as a whole (400 with `error.fields` keyed by path, e.g. `cancellation.defaultTier`). Cancellation tiers and protection plans keep their codes. Applies to the next request; bookings already made keep their terms. Written to the audit log.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformSettingsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The settings now in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformSettingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
