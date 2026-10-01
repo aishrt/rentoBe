@@ -102,14 +102,16 @@ const envSchema = z
       .optional(),
 
     // SMS notifications such as new booking requests (plan §7), sent with Twilio when SMS_DRIVER=twilio.
-    // One of the two: a Messaging Service (MG…) or a Twilio number that can text NZ mobiles.
+    // One of the two: a Messaging Service (MG…) or a Twilio number. Twilio has no NZ numbers for SMS: an
+    // overseas number works, and NZ phones see the text from a random short code (no replies).
+    // Verification codes don't need either; Twilio Verify sends them from its own numbers.
     TWILIO_MESSAGING_SERVICE_SID: z
       .string()
       .regex(/^MG[0-9a-f]{32}$/, 'TWILIO_MESSAGING_SERVICE_SID starts with MG')
       .optional(),
     TWILIO_FROM_NUMBER: z
       .string()
-      .regex(/^\+\d{8,15}$/, 'TWILIO_FROM_NUMBER is a number in E.164, e.g. +6421…')
+      .regex(/^\+\d{8,15}$/, 'TWILIO_FROM_NUMBER is a number in E.164, e.g. +614…')
       .optional(),
 
     // Location search (plan §1.2): "local" suggests our own NZ places only; "google" adds street
