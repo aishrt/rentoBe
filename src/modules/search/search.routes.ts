@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { HttpError } from '../../lib/http-error.js';
 import { validate } from '../../lib/validate.js';
-import { placeDetails, suggestPlaces } from './places.service.js';
+import { placeDetails, suggestOurPlaces, suggestPlaces } from './places.service.js';
 import { searchQuerySchema, suggestQuerySchema } from './search.schemas.js';
 import { listMakes, searchVehicles } from './search.service.js';
 
@@ -27,8 +27,8 @@ export function placesRouter() {
   const router = Router();
 
   router.get('/suggest', async (req, res) => {
-    const { q, sessionToken } = validate(suggestQuerySchema, req.query);
-    res.json({ suggestions: await suggestPlaces(q, sessionToken) });
+    const { q, sessionToken, oursOnly } = validate(suggestQuerySchema, req.query);
+    res.json({ suggestions: oursOnly ? await suggestOurPlaces(q) : await suggestPlaces(q, sessionToken) });
   });
 
   router.get('/:id', async (req, res) => {

@@ -61,11 +61,6 @@ export const placeDetailsSchema = placeSuggestionSchema
   .meta({ id: 'PlaceDetails' });
 export type PlaceDetails = z.infer<typeof placeDetailsSchema>;
 
-export const suggestQuerySchema = z.object({
-  q: z.string().max(100).default(''),
-  sessionToken: z.string().max(100).optional(),
-});
-
 export const SORTS = ['recommended', 'price_asc', 'price_desc', 'rating', 'distance', 'newest'] as const;
 export type SearchSort = (typeof SORTS)[number];
 
@@ -87,6 +82,13 @@ const flag = z
   .catch(undefined);
 const number = (schema: z.ZodNumber) => z.coerce.number().pipe(schema).optional().catch(undefined);
 const text = (max: number) => z.string().trim().min(1).max(max).optional().catch(undefined);
+
+export const suggestQuerySchema = z.object({
+  q: z.string().max(100).default(''),
+  sessionToken: z.string().max(100).optional(),
+  /** Our places without Google's street addresses: the Host's place picker types the street itself. */
+  oursOnly: flag,
+});
 
 /** GET /search. Every filter is optional; with no place the search covers all of NZ. */
 export const searchQuerySchema = z.object({

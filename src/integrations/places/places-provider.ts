@@ -44,6 +44,8 @@ export interface PlacesProvider {
 
 const GOOGLE_PLACES = 'https://places.googleapis.com/v1';
 const TIMEOUT_MS = 4_000;
+/** Google's supported languages have no en-NZ, and an unsupported code is an INVALID_ARGUMENT error. */
+const LANGUAGE = 'en-GB';
 
 interface GoogleComponent {
   longText?: string;
@@ -59,10 +61,13 @@ const plain = (value: string) =>
     .replace(/[^a-z]/gi, '')
     .toLowerCase();
 
+/** Names from before the 2019 renaming that Google's data may still use. */
+const OLD_REGION_NAMES: Record<string, NzRegion> = { manawatuwanganui: 'Manawatū-Whanganui' };
+
 function toRegion(value: string | undefined): NzRegion | undefined {
   if (!value) return undefined;
   const wanted = plain(value.replace(/\s+Region$/i, ''));
-  return NZ_REGIONS.find((region) => plain(region) === wanted);
+  return NZ_REGIONS.find((region) => plain(region) === wanted) ?? OLD_REGION_NAMES[wanted];
 }
 
 export function createGooglePlaces(apiKey: string, fetchImpl: typeof fetch = fetch): PlacesProvider {
@@ -78,7 +83,7 @@ export function createGooglePlaces(apiKey: string, fetchImpl: typeof fetch = fet
         body: JSON.stringify({
           input: query,
           includedRegionCodes: ['nz'],
-          languageCode: 'en-NZ',
+          languageCode: LANGUAGE,
           sessionToken,
         }),
         signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -108,7 +113,7 @@ export function createGooglePlaces(apiKey: string, fetchImpl: typeof fetch = fet
 
     async details(placeId, sessionToken) {
       const url = new URL(`${GOOGLE_PLACES}/places/${encodeURIComponent(placeId)}`);
-      url.searchParams.set('languageCode', 'en-NZ');
+      url.searchParams.set('languageCode', LANGUAGE);
       if (sessionToken) url.searchParams.set('sessionToken', sessionToken);
       const response = await fetchImpl(url, {
         headers: { ...headers, 'X-Goog-FieldMask': 'id,formattedAddress,location,addressComponents' },
