@@ -24,6 +24,9 @@ async function main() {
 
   server.listen(env.PORT, () => {
     logger.info(`Rento Vroom API listening on http://localhost:${env.PORT}`);
+    if (env.SMS_DRIVER === 'dummy') {
+      logger.warn('SMS_DRIVER=dummy: no texts are sent, and the stand-in code verifies any mobile number');
+    }
     jobRunner?.start();
   });
 

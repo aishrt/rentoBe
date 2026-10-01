@@ -53,6 +53,15 @@ describe('environment', () => {
     ).toMatchObject({ UPLOAD_DRIVER: 's3', S3_BUCKET: 'rento-vroom-media-prod' });
   });
 
+  it('needs a 6-digit stand-in code for the dummy SMS driver', () => {
+    expect(() => parseEnv({ ...baseEnv, SMS_DRIVER: 'dummy' })).toThrow(/SMS_DUMMY_CODE/);
+    expect(() => parseEnv({ ...baseEnv, SMS_DRIVER: 'dummy', SMS_DUMMY_CODE: '1234' })).toThrow(/6 digits/);
+    expect(parseEnv({ ...baseEnv, SMS_DRIVER: 'dummy', SMS_DUMMY_CODE: '482913' })).toMatchObject({
+      SMS_DRIVER: 'dummy',
+      SMS_DUMMY_CODE: '482913',
+    });
+  });
+
   it('names every missing required variable', () => {
     expect(() => parseEnv({})).toThrow(/MONGODB_URI[\s\S]*JWT_ACCESS_SECRET/);
   });

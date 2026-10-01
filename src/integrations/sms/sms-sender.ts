@@ -1,14 +1,17 @@
+import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import { env } from '../../env.js';
+import { maskPhone } from '../../lib/phone.js';
 import { logger } from '../logger.js';
 
 /**
  * Text messages other than verification codes (plan §7): new booking requests for Hosts now, and
  * pickup and return reminders with Phase 3. Twilio's Messages API in production, from a Messaging
- * Service or a Twilio number; the console driver logs them locally.
+ * Service or a Twilio number; the console driver logs them locally, and the dummy driver logs them on a
+ * deployed API until Twilio has a sender.
  */
 export interface SmsSender {
-  readonly provider: 'twilio' | 'console';
+  readonly provider: 'twilio' | 'console' | 'dummy';
   /** Sends one message and returns the provider's message id. */
   send(to: string, body: string): Promise<string>;
 }
@@ -79,6 +82,21 @@ export function consoleSmsOutbox(): { to: string; body: string }[] {
   return sentByConsole;
 }
 
+/**
+ * Stand-in for Twilio on a deployed API (SMS_DRIVER=dummy): logs the message with the number half
+ * hidden, and the notification is recorded as sent with a `dummy-` reference instead of Twilio's id.
+ */
+export function createDummySender(log: Logger = logger): SmsSender {
+  return {
+    provider: 'dummy',
+    async send(to, body) {
+      const id = `dummy-${randomUUID()}`;
+      log.info({ to: maskPhone(to), body, id }, 'SMS not sent (dummy driver)');
+      return id;
+    },
+  };
+}
+
 let sender: SmsSender | undefined;
 
 export function getSmsSender(): SmsSender {
@@ -90,6 +108,8 @@ export function getSmsSender(): SmsSender {
           messagingServiceSid: env.TWILIO_MESSAGING_SERVICE_SID,
           from: env.TWILIO_FROM_NUMBER,
         })
-      : createConsoleSender();
+      : env.SMS_DRIVER === 'dummy'
+        ? createDummySender()
+        : createConsoleSender();
   return sender;
 }

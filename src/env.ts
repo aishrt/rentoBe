@@ -63,7 +63,14 @@ const envSchema = z
     EMAIL_REPLY_TO: z.email().optional(),
 
     // Phone verification codes (plan §6.1): "console" logs them locally; "twilio" sends them with Twilio Verify.
-    SMS_DRIVER: z.enum(['console', 'twilio']).default('console'),
+    // "dummy" stands in for Twilio on a deployed API until the account is upgraded and has a sender: no
+    // texts are sent, the one code that verifies any number is SMS_DUMMY_CODE (keep it in Secrets
+    // Manager, never in the repository), and other texts are only logged.
+    SMS_DRIVER: z.enum(['console', 'twilio', 'dummy']).default('console'),
+    SMS_DUMMY_CODE: z
+      .string()
+      .regex(/^\d{6}$/, 'SMS_DUMMY_CODE is 6 digits')
+      .optional(),
     TWILIO_ACCOUNT_SID: z
       .string()
       .regex(/^AC[0-9a-f]{32}$/, 'TWILIO_ACCOUNT_SID starts with AC')
@@ -128,6 +135,13 @@ const envSchema = z
           ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required when SMS_DRIVER=twilio` });
         }
       }
+    }
+    if (env.SMS_DRIVER === 'dummy' && !env.SMS_DUMMY_CODE) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SMS_DUMMY_CODE'],
+        message: 'SMS_DUMMY_CODE is required when SMS_DRIVER=dummy',
+      });
     }
     if (env.PLACES_DRIVER === 'google' && !env.GOOGLE_MAPS_SERVER_KEY) {
       ctx.addIssue({
