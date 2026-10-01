@@ -13,3 +13,8 @@ export function toMobileE164(input: string): string | null {
   if (type && !TEXTABLE.has(type)) return null;
   return phone.number;
 }
+
+/** A number for logs, with the middle hidden: +64211234567 → +642…567. */
+export function maskPhone(phone: string): string {
+  return phone.length > 7 ? `${phone.slice(0, 4)}…${phone.slice(-3)}` : '…';
+}

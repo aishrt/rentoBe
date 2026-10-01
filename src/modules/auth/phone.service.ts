@@ -63,7 +63,8 @@ export async function verifyPhoneCode(userId: string, code: string, ip?: string)
     });
   }
 
-  if (!(await getPhoneVerifier().checkCode(phone, code))) {
+  const verifier = getPhoneVerifier();
+  if (!(await verifier.checkCode(phone, code))) {
     throw new HttpError(400, 'CODE_INVALID', "That code isn't right, or it has expired.", {
       code: "That code isn't right, or it has expired. Check it, or send a new one.",
     });
@@ -89,7 +90,8 @@ export async function verifyPhoneCode(userId: string, code: string, ip?: string)
     entity: 'user',
     entityId: user.id,
     before: { phone: user.phone ?? null },
-    after: { phone },
+    // "dummy": verified with the stand-in code, never texted (SMS_DRIVER=dummy).
+    after: { phone, via: verifier.provider },
     ip,
   });
   return toPublicUser(updated);

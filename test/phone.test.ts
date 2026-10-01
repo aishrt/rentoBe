@@ -1,9 +1,13 @@
+import { pino, type Logger } from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import {
   PhoneVerifierError,
   consoleCodeFor,
+  createDummyVerifier,
+  createPhoneVerifier,
   createTwilioVerifier,
 } from '../src/integrations/sms/phone-verifier.js';
+import { createDummySender } from '../src/integrations/sms/sms-sender.js';
 import { toMobileE164 } from '../src/lib/phone.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
@@ -46,7 +50,8 @@ describe('phone verification', () => {
     expect(verified.body.user).toMatchObject({ phone: '+64211234567', phoneVerified: true });
     const saved = await UserModel.findById(user._id);
     expect(saved?.pendingPhone).toBeUndefined();
-    expect(await AuditLogModel.countDocuments({ action: 'phone.verified', entityId: user.id })).toBe(1);
+    const audits = await AuditLogModel.find({ action: 'phone.verified', entityId: user.id }).lean();
+    expect(audits.map((audit) => audit.after)).toEqual([{ phone: '+64211234567', via: 'console' }]);
   });
 
   it('keeps the old number until a new one is verified', async () => {
@@ -89,6 +94,32 @@ describe('phone verification', () => {
 
     const noCode = await agent.post('/api/v1/auth/phone/verify').send({ code: '123456' });
     expect(noCode.body.error.code).toBe('NO_CODE_SENT');
+  });
+});
+
+describe('dummy SMS driver (a stand-in while Twilio is a trial)', () => {
+  const silentLogger = pino({ level: 'silent' });
+
+  it('texts nothing, and only the stand-in code verifies a number', async () => {
+    const verifier = createPhoneVerifier({ SMS_DRIVER: 'dummy', SMS_DUMMY_CODE: '482913' });
+    expect(verifier.provider).toBe('dummy');
+
+    await verifier.sendCode('+64211234567');
+    expect(await verifier.checkCode('+64211234567', '482913')).toBe(true);
+    expect(await verifier.checkCode('+61412345678', '482913')).toBe(true);
+    expect(await verifier.checkCode('+64211234567', '000000')).toBe(false);
+    expect(await verifier.checkCode('+64211234567', '48291')).toBe(false);
+  });
+
+  it('logs the number half hidden', async () => {
+    const info = vi.fn();
+    await createDummyVerifier('482913', { info } as unknown as Logger).sendCode('+64211234567');
+    expect(info).toHaveBeenCalledWith({ phone: '+642…567' }, expect.stringMatching(/not sent/));
+  });
+
+  it('logs other texts instead of sending them, with a dummy reference', async () => {
+    const id = await createDummySender(silentLogger).send('+64211234567', 'New booking request');
+    expect(id).toMatch(/^dummy-[0-9a-f-]{36}$/);
   });
 });
 

@@ -1,6 +1,7 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, timingSafeEqual } from 'node:crypto';
 import type { Logger } from 'pino';
 import { env, type Env } from '../../env.js';
+import { maskPhone } from '../../lib/phone.js';
 import { logger } from '../logger.js';
 
 export type PhoneVerifierErrorCode =
@@ -18,7 +19,7 @@ export class PhoneVerifierError extends Error {
 
 /** Texts a one-time code to a mobile number and checks it (plan §6.1). Twilio Verify in production. */
 export interface PhoneVerifier {
-  readonly provider: 'twilio' | 'console';
+  readonly provider: 'twilio' | 'console' | 'dummy';
   sendCode(phone: string): Promise<void>;
   /** Whether the code is right and still valid for this number. */
   checkCode(phone: string, code: string): Promise<boolean>;
@@ -116,9 +117,31 @@ export function consoleCodeFor(phone: string): string | undefined {
   return consoleCodes.get(phone)?.code;
 }
 
+/**
+ * Stand-in for Twilio Verify on a deployed API while the Twilio account is a trial (SMS_DRIVER=dummy):
+ * nothing is texted, and the one stand-in code verifies any number. It keeps no state, so it works on
+ * every backend task. Numbers verified this way were never texted (the audit log records the driver).
+ */
+export function createDummyVerifier(stubCode: string, log: Logger = logger): PhoneVerifier {
+  const expected = Buffer.from(stubCode);
+  return {
+    provider: 'dummy',
+    async sendCode(phone) {
+      log.info(
+        { phone: maskPhone(phone) },
+        'SMS code not sent (dummy driver: the stand-in code verifies it)',
+      );
+    },
+    async checkCode(_phone, code) {
+      const typed = Buffer.from(code);
+      return typed.length === expected.length && timingSafeEqual(typed, expected);
+    },
+  };
+}
+
 type VerifierConfig = Pick<
   Env,
-  'SMS_DRIVER' | 'TWILIO_ACCOUNT_SID' | 'TWILIO_AUTH_TOKEN' | 'TWILIO_VERIFY_SERVICE_SID'
+  'SMS_DRIVER' | 'SMS_DUMMY_CODE' | 'TWILIO_ACCOUNT_SID' | 'TWILIO_AUTH_TOKEN' | 'TWILIO_VERIFY_SERVICE_SID'
 >;
 
 export function createPhoneVerifier(config: VerifierConfig): PhoneVerifier {
@@ -129,6 +152,7 @@ export function createPhoneVerifier(config: VerifierConfig): PhoneVerifier {
       serviceSid: config.TWILIO_VERIFY_SERVICE_SID!,
     });
   }
+  if (config.SMS_DRIVER === 'dummy') return createDummyVerifier(config.SMS_DUMMY_CODE!);
   return createConsoleVerifier();
 }
 
