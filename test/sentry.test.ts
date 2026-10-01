@@ -91,6 +91,7 @@ describe('Sentry setup', () => {
       MONGODB_URI: 'mongodb://localhost/test',
       JWT_ACCESS_SECRET: 'x'.repeat(32),
       ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
+      ADMIN_EMAIL: 'aroha@example.co.nz',
     };
     expect(() => parseEnv({ ...base, SENTRY_DSN: 'not-a-dsn' })).toThrow(/SENTRY_DSN/);
     expect(parseEnv({ ...base, SENTRY_DSN: dsn }).SENTRY_DSN).toBe(dsn);

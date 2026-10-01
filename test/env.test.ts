@@ -5,9 +5,18 @@ const baseEnv = {
   MONGODB_URI: 'mongodb+srv://user:pass@cluster0.example.mongodb.net/rento-vroom-dev',
   JWT_ACCESS_SECRET: 'x'.repeat(32),
   ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
+  ADMIN_EMAIL: 'admin@example.co.nz',
 };
 
 describe('environment', () => {
+  it('needs the admin email, compared in lower case', () => {
+    expect(parseEnv({ ...baseEnv, ADMIN_EMAIL: ' Aroha@Example.co.NZ ' }).ADMIN_EMAIL).toBe(
+      'aroha@example.co.nz',
+    );
+    expect(() => parseEnv({ ...baseEnv, ADMIN_EMAIL: undefined })).toThrow(/ADMIN_EMAIL is required/);
+    expect(() => parseEnv({ ...baseEnv, ADMIN_EMAIL: 'not-an-email' })).toThrow(/ADMIN_EMAIL/);
+  });
+
   it('uses the system DNS servers unless DNS_SERVERS is set', () => {
     expect(parseEnv(baseEnv).DNS_SERVERS).toEqual([]);
     expect(

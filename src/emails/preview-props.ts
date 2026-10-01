@@ -25,6 +25,12 @@ export const previewProps: { [Name in EmailTemplateName]: EmailTemplateProps<Nam
     deviceName: 'Work phone',
     resetUrl: 'https://www.rentovroom.com/forgot-password',
   },
+  staffInvite: {
+    firstName: 'Kiri',
+    invitedBy: 'Aroha',
+    acceptUrl: 'https://www.rentovroom.com/admin/invite?token=preview',
+    validDays: 7,
+  },
   supportTicketReceived: { name: 'Kiri', ref: 'ST-4HX8PA', subject: 'Changing my pick-up time' },
   hostApplicationReceived: { firstName: 'Kiri', listUrl: 'https://www.rentovroom.com/host/vehicles/new' },
   hostApplicationDecision: {

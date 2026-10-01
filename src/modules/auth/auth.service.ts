@@ -6,7 +6,7 @@ import { HttpError, unauthenticated } from '../../lib/http-error.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { acceptAgreements } from '../users/agreements.js';
 import { UserModel, type UserDocument } from '../users/user.model.js';
-import { isStaff, toPublicUser, type PublicUser } from '../users/user.service.js';
+import { effectiveRoles, isStaff, toPublicUser, type PublicUser } from '../users/user.service.js';
 import { consumeAuthLink, createAuthLink, findAuthLink } from './auth-links.js';
 import { AuthTokenModel } from './auth-token.model.js';
 import type { LoginInput, SignupInput } from './auth.schemas.js';
@@ -187,13 +187,14 @@ export async function login(input: LoginInput, context: RequestContext): Promise
       'This account is suspended. Please contact support for help.',
     );
   }
-  if (input.portal === 'admin' && !isStaff(user.roles)) {
+  const staff = isStaff(effectiveRoles(user));
+  if (input.portal === 'admin' && !staff) {
     throw new HttpError(403, 'NOT_STAFF', "This account doesn't have access to the staff portal.");
   }
 
   await UserModel.updateOne({ _id: user._id }, { $set: { loginFailures: 0 }, $unset: { lockedUntil: 1 } });
 
-  if (isStaff(user.roles) && user.mfa?.enabledAt) {
+  if (staff && user.mfa?.enabledAt) {
     return { mfaChallenge: await createAuthLink(user._id, 'MFA_CHALLENGE', MFA_CHALLENGE_VALID_MS) };
   }
 
@@ -323,7 +324,7 @@ export async function startSession(user: UserDocument, context: RequestContext):
   });
 
   return {
-    accessToken: signAccessToken({ userId: user.id, roles: user.roles, sessionId: session.id }),
+    accessToken: signAccessToken({ userId: user.id, roles: effectiveRoles(user), sessionId: session.id }),
     refreshToken,
   };
 }
@@ -367,7 +368,7 @@ export async function refreshSession(
   return {
     user: toPublicUser(user),
     tokens: {
-      accessToken: signAccessToken({ userId: user.id, roles: user.roles, sessionId: rotated.id }),
+      accessToken: signAccessToken({ userId: user.id, roles: effectiveRoles(user), sessionId: rotated.id }),
       refreshToken: nextRefreshToken,
     },
   };

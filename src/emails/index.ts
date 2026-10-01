@@ -49,6 +49,7 @@ import {
   type ListingDecisionProps,
   type ListingSubmittedProps,
 } from './templates/host-emails.js';
+import { StaffInviteEmail, type StaffInviteProps } from './templates/staff-emails.js';
 import { SupportTicketReceivedEmail, type SupportTicketReceivedProps } from './templates/support-emails.js';
 import { VerifyEmail, type VerifyEmailProps } from './templates/verify-email.js';
 import { WelcomeEmail, type WelcomeEmailProps } from './templates/welcome-email.js';
@@ -89,6 +90,10 @@ export const emailTemplates = {
   mfaChanged: defineTemplate<MfaChangedProps>({
     subject: ({ change }) => mfaChangedSubjects[change],
     component: MfaChangedEmail,
+  }),
+  staffInvite: defineTemplate<StaffInviteProps>({
+    subject: () => "You're invited to the Rento Vroom support team",
+    component: StaffInviteEmail,
   }),
   supportTicketReceived: defineTemplate<SupportTicketReceivedProps>({
     subject: ({ ref }) => `We've got your message (${ref})`,

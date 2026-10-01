@@ -6,6 +6,7 @@ import { registerBookingPaths } from '../modules/bookings/bookings.openapi.js';
 import { registerContentPaths } from '../modules/cms/content.openapi.js';
 import { registerCurrencyPaths } from '../modules/currency/currency.openapi.js';
 import { registerSearchPaths } from '../modules/search/search.openapi.js';
+import { registerStaffPaths } from '../modules/staff/staff.openapi.js';
 import { registerUserPaths } from '../modules/users/users.openapi.js';
 import { registerHostPaths } from '../modules/vehicles/host-vehicles.openapi.js';
 import { registerVehiclePaths } from '../modules/vehicles/vehicles.openapi.js';
@@ -35,6 +36,7 @@ export function buildOpenApiDocument() {
   registerAuthPaths(registry);
   registerUserPaths(registry);
   registerAdminPaths(registry);
+  registerStaffPaths(registry);
   registerCurrencyPaths(registry);
   registerSearchPaths(registry);
   registerVehiclePaths(registry);
