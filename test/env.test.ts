@@ -5,9 +5,18 @@ const baseEnv = {
   MONGODB_URI: 'mongodb+srv://user:pass@cluster0.example.mongodb.net/rento-vroom-dev',
   JWT_ACCESS_SECRET: 'x'.repeat(32),
   ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
+  ADMIN_EMAIL: 'admin@example.co.nz',
 };
 
 describe('environment', () => {
+  it('needs the admin email, compared in lower case', () => {
+    expect(parseEnv({ ...baseEnv, ADMIN_EMAIL: ' Aroha@Example.co.NZ ' }).ADMIN_EMAIL).toBe(
+      'aroha@example.co.nz',
+    );
+    expect(() => parseEnv({ ...baseEnv, ADMIN_EMAIL: undefined })).toThrow(/ADMIN_EMAIL is required/);
+    expect(() => parseEnv({ ...baseEnv, ADMIN_EMAIL: 'not-an-email' })).toThrow(/ADMIN_EMAIL/);
+  });
+
   it('uses the system DNS servers unless DNS_SERVERS is set', () => {
     expect(parseEnv(baseEnv).DNS_SERVERS).toEqual([]);
     expect(
@@ -38,6 +47,28 @@ describe('environment', () => {
     );
     expect(() => parseEnv({ ...baseEnv, STRIPE_SECRET_KEY: 'pk_test_51Abc' })).toThrow(/sk_test_/);
     expect(() => parseEnv({ ...baseEnv, STRIPE_WEBHOOK_SECRET: 'sk_test_51Abc' })).toThrow(/whsec_/);
+  });
+
+  it('needs the bucket and the media address for S3 uploads', () => {
+    expect(parseEnv(baseEnv)).toMatchObject({ UPLOAD_DRIVER: 'local', S3_REGION: 'ap-southeast-2' });
+    expect(() => parseEnv({ ...baseEnv, UPLOAD_DRIVER: 's3' })).toThrow(/S3_BUCKET[\s\S]*MEDIA_PUBLIC_URL/);
+    expect(
+      parseEnv({
+        ...baseEnv,
+        UPLOAD_DRIVER: 's3',
+        S3_BUCKET: 'rento-vroom-media-prod',
+        MEDIA_PUBLIC_URL: 'https://media.rentovroom.com',
+      }),
+    ).toMatchObject({ UPLOAD_DRIVER: 's3', S3_BUCKET: 'rento-vroom-media-prod' });
+  });
+
+  it('needs a 6-digit stand-in code for the dummy SMS driver', () => {
+    expect(() => parseEnv({ ...baseEnv, SMS_DRIVER: 'dummy' })).toThrow(/SMS_DUMMY_CODE/);
+    expect(() => parseEnv({ ...baseEnv, SMS_DRIVER: 'dummy', SMS_DUMMY_CODE: '1234' })).toThrow(/6 digits/);
+    expect(parseEnv({ ...baseEnv, SMS_DRIVER: 'dummy', SMS_DUMMY_CODE: '482913' })).toMatchObject({
+      SMS_DRIVER: 'dummy',
+      SMS_DUMMY_CODE: '482913',
+    });
   });
 
   it('names every missing required variable', () => {

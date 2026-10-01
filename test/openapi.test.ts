@@ -31,7 +31,7 @@ describe('API contract (openapi.json)', () => {
   });
 
   it('describes what the API really returns', async () => {
-    await createStaff('kiri@example.co.nz');
+    await createStaff('kiri@example.co.nz', 'SUPPORT');
     const agent = browserAgent();
 
     expect(sessionResponseSchema.parse((await agent.post('/api/v1/auth/session')).body)).toEqual({

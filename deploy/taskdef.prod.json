@@ -6,6 +6,7 @@
   "memory": "1024",
   "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
   "executionRoleArn": "arn:aws:iam::935937182366:role/rento-vroom-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::935937182366:role/rento-vroom-ecs-task",
   "containerDefinitions": [
     {
       "name": "api",
@@ -19,10 +20,16 @@
         { "name": "TRUST_PROXY", "value": "2" },
         { "name": "LOG_LEVEL", "value": "info" },
         { "name": "FRONTEND_URL", "value": "https://www.rentovroom.com" },
-        { "name": "FRONTEND_ORIGINS", "value": "https://www.rentovroom.com" },
+        { "name": "FRONTEND_ORIGINS", "value": "https://www.rentovroom.com,https://staging.rentovroom.com" },
+        { "name": "ADMIN_EMAIL", "value": "rentovroom@gmail.com" },
         { "name": "SENTRY_ENVIRONMENT", "value": "production" },
         { "name": "MAIL_DRIVER", "value": "resend" },
-        { "name": "SMS_DRIVER", "value": "twilio" }
+        { "name": "SMS_DRIVER", "value": "dummy" },
+        { "name": "API_PUBLIC_URL", "value": "https://api.rentovroom.com" },
+        { "name": "UPLOAD_DRIVER", "value": "s3" },
+        { "name": "S3_BUCKET", "value": "rento-vroom-media-prod-935937182366" },
+        { "name": "S3_REGION", "value": "ap-southeast-2" },
+        { "name": "MEDIA_PUBLIC_URL", "value": "https://media.rentovroom.com" }
       ],
       "secrets": [
         {
@@ -60,6 +67,10 @@
         {
           "name": "TWILIO_VERIFY_SERVICE_SID",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:TWILIO_VERIFY_SERVICE_SID::"
+        },
+        {
+          "name": "SMS_DUMMY_CODE",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:SMS_DUMMY_CODE::"
         },
         {
           "name": "STRIPE_SECRET_KEY",

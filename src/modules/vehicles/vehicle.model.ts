@@ -182,6 +182,10 @@ export interface Vehicle {
   unlimitedKm: boolean;
   petFriendly: boolean;
   childSeat: boolean;
+  /** Existing damage the Host declares; flagged to support when there's no damage photo (plan §9, Days 8–11). */
+  damageNotes?: string;
+  /** False when someone else is the registered owner: their written consent is then required (plan §3). */
+  ownerIsHost: boolean;
   pricing?: VehiclePricing;
   rules: TripRules;
   status: VehicleStatus;
@@ -295,6 +299,8 @@ const vehicleSchema = new Schema<Vehicle>(
     unlimitedKm: { type: Boolean, default: false },
     petFriendly: { type: Boolean, default: false },
     childSeat: { type: Boolean, default: false },
+    damageNotes: { type: String, trim: true, maxlength: 1000 },
+    ownerIsHost: { type: Boolean, default: true },
     pricing: {
       type: new Schema<VehiclePricing>(
         {

@@ -549,6 +549,32 @@ export const DEMO_VEHICLES: DemoVehicleSpec[] = [
   },
 ];
 
+/** The demo applicant's first listing, waiting for review (not live, so not in the 20). */
+export const REVIEW_VEHICLE: DemoVehicleSpec = {
+  city: 'Auckland',
+  suburb: 'Parnell',
+  street: 'Parnell Road',
+  postcode: '1052',
+  make: 'Toyota',
+  model: 'Highlander',
+  year: 2019,
+  variant: 'Limited',
+  bodyType: 'SUV',
+  fuelType: 'PETROL',
+  transmission: 'AUTOMATIC',
+  seats: 7,
+  doors: 5,
+  powertrain: { engineCc: 3456, cylinders: 6, description: '3.5L V6 petrol' },
+  features: ['Third-row seats', 'Roof rails', 'Reversing camera'],
+  dailyDollars: 119,
+  weeklyDiscountPct: 10,
+  monthlyDiscountPct: 20,
+  extraKmCents: 45,
+  kmPerDay: 250,
+  tier: 'MODERATE',
+  childSeat: true,
+};
+
 export type DemoVehicle = Omit<Vehicle, 'createdAt' | 'updatedAt'>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -568,7 +594,7 @@ function slugify(text: string): string {
     .replace(/^-|-$/g, '');
 }
 
-/** Placeholder images until uploads go through Cloudinary (plan §9, Days 8–11). Demo data only. */
+/** Placeholder images for the demo cars, which have no uploaded photos. Demo data only. */
 function placeholderImage(width: number, height: number, text: string): string {
   return `https://placehold.co/${width}x${height}/0254C2/FFFFFF/webp?text=${encodeURIComponent(text)}`;
 }
@@ -652,6 +678,7 @@ export function buildDemoVehicle(
     unlimitedKm: spec.kmPerDay === undefined,
     petFriendly: spec.petFriendly ?? false,
     childSeat: spec.childSeat ?? false,
+    ownerIsHost: true,
     pricing: {
       dailyCents: spec.dailyDollars * 100,
       weeklyDiscountPct: spec.weeklyDiscountPct,

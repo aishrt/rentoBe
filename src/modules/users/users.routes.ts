@@ -1,5 +1,6 @@
 import { Router, type RequestHandler } from 'express';
 import { unauthenticated } from '../../lib/http-error.js';
+import { parseNzDateTime } from '../../lib/nz-time.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { accountChangeRateLimit, codeCheckRateLimit } from '../../middleware/rate-limit.js';
@@ -13,6 +14,12 @@ import {
 } from '../auth/mfa.service.js';
 import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
 import { acceptLatestAgreements, changePassword, requestEmailChange } from './account.service.js';
+import { hostApplicationSchema, hostProfilePatchSchema } from '../hosts/hosts.schemas.js';
+import { applyToHost, getHostProfile, updateHostProfile } from '../hosts/hosts.service.js';
+import { driverLicenceInputSchema } from './driver-licence.schemas.js';
+import { checkoutReadiness, saveDriverLicence } from './driver-licence.service.js';
+import { lastSearchSchema } from './saved.schemas.js';
+import { listFavourites, removeFavourite, saveFavourite, saveLastSearch } from './saved.service.js';
 import { UserModel } from './user.model.js';
 import { toPublicUser } from './user.service.js';
 
@@ -70,6 +77,51 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
   router.post('/mfa/disable', ...limit(codeCheckRateLimit), async (req, res) => {
     const { code } = validate(codeSchema, req.body);
     res.json({ user: await disableMfa(req.auth!.userId, code, req.ip) });
+  });
+
+  // Saved cars: the heart on a car card (plan §12.6).
+  router.get('/favourites', async (req, res) => {
+    res.json({ vehicleIds: await listFavourites(req.auth!.userId) });
+  });
+
+  router.put('/favourites/:vehicleId', async (req, res) => {
+    await saveFavourite(req.auth!.userId, String(req.params.vehicleId));
+    res.status(204).end();
+  });
+
+  router.delete('/favourites/:vehicleId', async (req, res) => {
+    await removeFavourite(req.auth!.userId, String(req.params.vehicleId));
+    res.status(204).end();
+  });
+
+  // Becoming a Host (plan §9, Days 8–11).
+  router.post('/host-application', async (req, res) => {
+    const input = validate(hostApplicationSchema, req.body);
+    res.json({ host: await applyToHost(req.auth!.userId, input, req.ip) });
+  });
+
+  router.get('/host-profile', async (req, res) => {
+    res.json({ host: await getHostProfile(req.auth!.userId) });
+  });
+
+  router.patch('/host-profile', async (req, res) => {
+    res.json({ host: await updateHostProfile(req.auth!.userId, validate(hostProfilePatchSchema, req.body)) });
+  });
+
+  // Checkout's verification step (plan §9, Days 11–13): what's still needed, and the licence details.
+  router.get('/checkout', async (req, res) => {
+    const end = typeof req.query.end === 'string' ? parseNzDateTime(req.query.end) : null;
+    res.json(await checkoutReadiness(req.auth!.userId, end ?? undefined));
+  });
+
+  router.put('/driver-licence', async (req, res) => {
+    const input = validate(driverLicenceInputSchema, req.body);
+    res.json(await saveDriverLicence(req.auth!.userId, input, req.ip));
+  });
+
+  router.put('/last-search', async (req, res) => {
+    await saveLastSearch(req.auth!.userId, validate(lastSearchSchema, req.body));
+    res.status(204).end();
   });
 
   return router;

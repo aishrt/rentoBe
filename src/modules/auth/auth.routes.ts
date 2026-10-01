@@ -11,6 +11,8 @@ import {
   resendEmailRateLimit,
   signupRateLimit,
 } from '../../middleware/rate-limit.js';
+import { acceptStaffInviteSchema, staffInviteTokenSchema } from '../staff/staff.schemas.js';
+import { acceptStaffInvite, checkStaffInvite } from '../staff/staff.service.js';
 import { confirmEmailChange } from '../users/account.service.js';
 import { REFRESH_COOKIE, clearAuthCookies, setAuthCookies } from './auth.cookies.js';
 import {
@@ -133,6 +135,18 @@ export function authRouter(options: { rateLimit: boolean }) {
   router.post('/confirm-email-change', ...limit(emailLinkRateLimit), async (req, res) => {
     const { token } = validate(emailLinkSchema, req.body);
     res.json(await confirmEmailChange(token, req.ip));
+  });
+
+  // The link in a support team invitation (plan §6.2): who it's for, then accepting it with a password.
+  // Staff can't sign up any other way.
+  router.post('/staff-invite', ...limit(emailLinkRateLimit), async (req, res) => {
+    const { token } = validate(staffInviteTokenSchema, req.body);
+    res.json(await checkStaffInvite(token));
+  });
+
+  router.post('/staff-invite/accept', ...limit(emailLinkRateLimit), async (req, res) => {
+    const { token, password } = validate(acceptStaffInviteSchema, req.body);
+    res.json(await acceptStaffInvite(token, password, req.ip));
   });
 
   router.post('/phone/otp', requireAuth, ...limit(phoneCodeRateLimit), async (req, res) => {

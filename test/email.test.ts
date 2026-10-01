@@ -104,6 +104,7 @@ describe('mail configuration', () => {
     MONGODB_URI: 'mongodb://localhost/test',
     JWT_ACCESS_SECRET: 'x'.repeat(32),
     ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
+    ADMIN_EMAIL: 'aroha@example.co.nz',
   };
 
   it('uses the console mailer by default', () => {

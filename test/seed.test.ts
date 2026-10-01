@@ -96,3 +96,25 @@ describe('demo data', () => {
     expect(guest?.agreements.map((agreement) => agreement.type)).toEqual(['TERMS', 'PRIVACY', 'GUEST']);
   });
 });
+
+describe('demo data for Phase 2', () => {
+  it('lets demo Guests book straight away, and fills the staff queues', async () => {
+    await seedReferenceData();
+    await seedDemoData(PASSWORD);
+    const kiri = await UserModel.findOne({ email: 'guest@rentovroom.test' })
+      .select('+driverLicence.number')
+      .lean();
+    expect(kiri).toMatchObject({
+      phone: '+6421000201',
+      driverLicence: { class: 'NZ_FULL', status: 'APPROVED', numberEnding: '456' },
+    });
+    expect(kiri!.driverLicence!.number).not.toBe('DK123456');
+    expect(kiri!.phoneVerifiedAt).toBeInstanceOf(Date);
+
+    const applicant = await UserModel.findOne({ email: 'host.applicant@rentovroom.test' }).lean();
+    expect(applicant!.hostProfile!.status).toBe('APPLIED');
+    const listing = await VehicleModel.findOne({ hostId: applicant!._id }).lean();
+    expect(listing).toMatchObject({ status: 'UNDER_REVIEW', make: 'Toyota', model: 'Highlander' });
+    expect(listing!.photos.every((photo) => photo.status === 'PENDING')).toBe(true);
+  });
+});

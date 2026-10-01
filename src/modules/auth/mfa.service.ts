@@ -8,7 +8,7 @@ import { decrypt, encrypt } from '../../lib/encryption.js';
 import { HttpError, forbidden, unauthenticated } from '../../lib/http-error.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { MAX_MFA_DEVICES, UserModel, type UserDocument } from '../users/user.model.js';
-import { isStaff, toPublicUser, type PublicUser } from '../users/user.service.js';
+import { effectiveRoles, isStaff, toPublicUser, type PublicUser } from '../users/user.service.js';
 import { SessionModel } from './session.model.js';
 
 /*
@@ -87,7 +87,7 @@ export async function findUserWithMfaSecrets(userId: unknown): Promise<UserDocum
 async function findStaff(userId: string): Promise<UserDocument> {
   const user = await findUserWithMfaSecrets(userId);
   if (!user || user.status !== 'ACTIVE') throw unauthenticated();
-  if (!isStaff(user.roles)) throw forbidden('Two-factor sign-in is for staff accounts.');
+  if (!isStaff(effectiveRoles(user))) throw forbidden('Two-factor sign-in is for staff accounts.');
   return user;
 }
 
@@ -326,10 +326,10 @@ async function sendMfaChangedEmail(user: UserDocument, change: MfaChange, device
  */
 export async function resetStaffMfa(adminId: string, staffId: string, ip?: string): Promise<void> {
   if (adminId === staffId) {
-    throw forbidden('Ask another admin to reset your authenticator, or use the create-admin script.');
+    throw forbidden('Reset your own authenticator with the create-admin script.');
   }
   const staff = mongoose.isValidObjectId(staffId) ? await UserModel.findById(staffId) : null;
-  if (!staff || !isStaff(staff.roles)) {
+  if (!staff || !isStaff(effectiveRoles(staff))) {
     throw new HttpError(404, 'NOT_FOUND', 'No staff member with that id.');
   }
 

@@ -50,6 +50,14 @@ const envSchema = z
       }),
     // Optional parent domain for the auth cookies, e.g. ".rentovroom.co.nz" so www. and api. share them.
     COOKIE_DOMAIN: z.string().optional(),
+    // The one administrator (plan §6.2). The ADMIN role only counts on the account with this email, so
+    // no other account can act as an admin even if the role is set on it. The create-admin script sets
+    // the account up; support staff join by the admin's invitation.
+    ADMIN_EMAIL: z
+      .string({ error: 'ADMIN_EMAIL is required' })
+      .trim()
+      .toLowerCase()
+      .pipe(z.email({ error: 'ADMIN_EMAIL must be an email address' })),
 
     // Error monitoring (plan §1.2). Only used when NODE_ENV=production, so development never reports.
     SENTRY_DSN: z.url().optional(),
@@ -63,7 +71,14 @@ const envSchema = z
     EMAIL_REPLY_TO: z.email().optional(),
 
     // Phone verification codes (plan §6.1): "console" logs them locally; "twilio" sends them with Twilio Verify.
-    SMS_DRIVER: z.enum(['console', 'twilio']).default('console'),
+    // "dummy" stands in for Twilio on a deployed API until the account is upgraded and has a sender: no
+    // texts are sent, the one code that verifies any number is SMS_DUMMY_CODE (keep it in Secrets
+    // Manager, never in the repository), and other texts are only logged.
+    SMS_DRIVER: z.enum(['console', 'twilio', 'dummy']).default('console'),
+    SMS_DUMMY_CODE: z
+      .string()
+      .regex(/^\d{6}$/, 'SMS_DUMMY_CODE is 6 digits')
+      .optional(),
     TWILIO_ACCOUNT_SID: z
       .string()
       .regex(/^AC[0-9a-f]{32}$/, 'TWILIO_ACCOUNT_SID starts with AC')
@@ -85,6 +100,36 @@ const envSchema = z
       .string()
       .regex(/^whsec_\w+$/, 'STRIPE_WEBHOOK_SECRET starts with whsec_')
       .optional(),
+
+    // SMS notifications such as new booking requests (plan §7), sent with Twilio when SMS_DRIVER=twilio.
+    // One of the two: a Messaging Service (MG…) or a Twilio number. Twilio has no NZ numbers for SMS: an
+    // overseas number works, and NZ phones see the text from a random short code (no replies).
+    // Verification codes don't need either; Twilio Verify sends them from its own numbers.
+    TWILIO_MESSAGING_SERVICE_SID: z
+      .string()
+      .regex(/^MG[0-9a-f]{32}$/, 'TWILIO_MESSAGING_SERVICE_SID starts with MG')
+      .optional(),
+    TWILIO_FROM_NUMBER: z
+      .string()
+      .regex(/^\+\d{8,15}$/, 'TWILIO_FROM_NUMBER is a number in E.164, e.g. +614…')
+      .optional(),
+
+    // Location search (plan §1.2): "local" suggests our own NZ places only; "google" adds street
+    // addresses from Google Places, with the server key restricted to the Places API.
+    PLACES_DRIVER: z.enum(['local', 'google']).default('local'),
+    GOOGLE_MAPS_SERVER_KEY: z.string().min(20).optional(),
+
+    // Vehicle photos and documents (plan §1.2). "local" keeps files in UPLOAD_DIR and serves them from
+    // this API, for development only; "s3" uploads straight from the browser to S3_BUCKET, and listing
+    // photos are served from MEDIA_PUBLIC_URL (CloudFront in front of the bucket's public/ folder).
+    // S3 credentials come from the ECS task role in production, or the usual AWS settings elsewhere.
+    UPLOAD_DRIVER: z.enum(['local', 's3']).default('local'),
+    UPLOAD_DIR: z.string().default('.uploads'),
+    S3_BUCKET: z.string().optional(),
+    S3_REGION: z.string().default('ap-southeast-2'),
+    MEDIA_PUBLIC_URL: z.url().optional(),
+    // This API's own address as browsers reach it, for links to files the local driver serves.
+    API_PUBLIC_URL: z.url().default('http://localhost:4000'),
   })
   .superRefine((env, ctx) => {
     if (env.MAIL_DRIVER === 'resend' && !env.RESEND_API_KEY) {
@@ -98,6 +143,27 @@ const envSchema = z
       for (const key of ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_VERIFY_SERVICE_SID'] as const) {
         if (!env[key]) {
           ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required when SMS_DRIVER=twilio` });
+        }
+      }
+    }
+    if (env.SMS_DRIVER === 'dummy' && !env.SMS_DUMMY_CODE) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SMS_DUMMY_CODE'],
+        message: 'SMS_DUMMY_CODE is required when SMS_DRIVER=dummy',
+      });
+    }
+    if (env.PLACES_DRIVER === 'google' && !env.GOOGLE_MAPS_SERVER_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GOOGLE_MAPS_SERVER_KEY'],
+        message: 'GOOGLE_MAPS_SERVER_KEY is required when PLACES_DRIVER=google',
+      });
+    }
+    if (env.UPLOAD_DRIVER === 's3') {
+      for (const key of ['S3_BUCKET', 'MEDIA_PUBLIC_URL'] as const) {
+        if (!env[key]) {
+          ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required when UPLOAD_DRIVER=s3` });
         }
       }
     }

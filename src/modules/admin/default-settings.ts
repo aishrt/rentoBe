@@ -1,11 +1,12 @@
-import type { PlatformSettings } from './platform-settings.schemas.js';
+import { DECISION_KEYS, type PlatformSettings } from './platform-settings.schemas.js';
 
 /**
  * Launch defaults for platformSettings (plan §9, Day 1). They're placeholders until the client decides
  * (plan §16): fees (item 2), cancellation tiers and fees (item 3), eligibility and verification (item 5),
- * protection plans (item 9), review rules and windows (item 10) and retention periods (item 11).
- * Admins change the live values in platformSettings; changing a default here only affects settings that
- * were never saved.
+ * protection plans (item 9), review rules and windows (item 10) and retention periods (item 11), and
+ * the security deposit (item 4), brand checks (item 1), open booking rules (item 13) and the optional NZ
+ * services (item 15). Admins change the live values in platformSettings, on the staff portal's Platform
+ * settings tab; changing a default here only affects settings that were never saved.
  */
 export const DEFAULT_SETTINGS: PlatformSettings = {
   fees: {
@@ -135,4 +136,36 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
     quietHoursStart: '21:00',
     quietHoursEnd: '07:00',
   },
+  // Placeholders until the client supplies typical prices and booked days (plan §16, item 18).
+  hostEstimator: {
+    bookedDaysPerMonth: 10,
+    dailyCentsByBodyType: {
+      HATCHBACK: 6_000,
+      SEDAN: 7_000,
+      WAGON: 7_500,
+      SUV: 9_500,
+      UTE: 10_000,
+      VAN: 11_000,
+      PEOPLE_MOVER: 11_000,
+      COUPE: 12_000,
+      CONVERTIBLE: 13_000,
+    },
+  },
+  business: {
+    legalName: 'Rento Vroom',
+    // Shown on receipts once the client is GST-registered (plan §16, item 7).
+    gstNumber: '',
+    supportEmail: 'rentovroom@gmail.com',
+  },
+  // Every decision waits for the client until an admin marks it confirmed (plan §16).
+  decisions: Object.fromEntries(
+    DECISION_KEYS.map((key) => [key, { status: 'PENDING', note: '' }]),
+  ) as PlatformSettings['decisions'],
+  // None (plan §16, item 4).
+  securityDeposit: { amountCents: 0 },
+  roadsideAssistance: { phone: '' },
+  brandChecks: { finalLogoSupplied: false, trademarkSearchDone: false, companyNameCheckDone: false },
+  bookingRules: { enquiriesBeforeBooking: false, additionalDrivers: false },
+  // Support staff check licences and documents by hand (plan §16, item 15).
+  verificationServices: { nzLicenceCheck: false, plateLookup: false },
 };

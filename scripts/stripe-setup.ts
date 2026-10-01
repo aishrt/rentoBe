@@ -1,6 +1,6 @@
 /**
  * Sets up the Stripe account for the website (plan §8.1): turns on cards, Apple Pay and Google Pay,
- * registers the website's domain so the wallet buttons appear, and creates the webhook endpoint.
+ * registers the website's domains so the wallet buttons appear, and creates the webhook endpoint.
  * Safe to run again: it only changes what's missing. Run it once with sandbox keys now, and again
  * with live keys at launch.
  *

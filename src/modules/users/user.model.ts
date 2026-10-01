@@ -87,9 +87,13 @@ export interface DriverLicence {
   number: string;
   /** Keyed HMAC of the number, to find the same licence on another account (plan §3, Key rules). */
   numberHash: string;
+  /** The last 3 characters, so the person can recognise the licence without the full number. */
+  numberEnding?: string;
   version?: string;
   country: string;
   class: LicenceClass;
+  /** False for an overseas licence that isn't in English, which then needs English proof. */
+  inEnglish?: boolean;
   englishProof?: (typeof ENGLISH_PROOFS)[number];
   issuedAt?: Date;
   expiry: Date;
@@ -287,9 +291,11 @@ const userSchema = new Schema<User>(
         {
           number: { type: String, required: true, select: false },
           numberHash: { type: String, required: true },
+          numberEnding: String,
           version: { type: String, match: [/^\d{3}$/, 'version must be 3 digits'] },
           country: { type: String, required: true },
           class: { type: String, enum: LICENCE_CLASSES, required: true },
+          inEnglish: Boolean,
           englishProof: { type: String, enum: ENGLISH_PROOFS },
           issuedAt: Date,
           expiry: { type: Date, required: true },

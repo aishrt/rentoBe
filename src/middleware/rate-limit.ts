@@ -103,6 +103,26 @@ export const codeCheckRateLimit = () =>
     message: 'Too many codes tried. Please wait a few minutes and try again.',
   });
 
+/** New bookings per user: each holds a car's dates for 30 minutes (plan §14, risk). */
+export const bookingCreateRateLimit = () =>
+  limitRequests({
+    name: 'booking-create',
+    windowMs: 60 * MINUTE,
+    limit: 20,
+    perUser: true,
+    message: "You've started a lot of bookings in a short time. Please try again in an hour.",
+  });
+
+/** Contact form messages per IP, against spam (plan §4.1). */
+export const contactRateLimit = () =>
+  limitRequests({
+    name: 'contact',
+    windowMs: 60 * MINUTE,
+    limit: 5,
+    message:
+      "You've sent a few messages already. We'll reply soon; please try again in an hour if it's urgent.",
+  });
+
 /** Emails a user can ask us to send again, per user. */
 export const resendEmailRateLimit = () =>
   limitRequests({

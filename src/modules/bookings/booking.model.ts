@@ -86,6 +86,23 @@ export interface LineItem {
   mandatory: boolean;
 }
 
+/** The cancellation tier as it was when booked (plan §3, terms fixed at booking). */
+export interface BookedCancellationTerms {
+  code: string;
+  name: string;
+  summary: string;
+  refunds: { minHoursBefore: number; refundPct: number }[];
+}
+
+export const VERIFICATION_REVIEW_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'] as const;
+
+/** The manual review a booking waited for, and how support decided it. */
+export interface VerificationReview {
+  status: (typeof VERIFICATION_REVIEW_STATUSES)[number];
+  decidedAt?: Date;
+  decidedBy?: Types.ObjectId;
+}
+
 /** Every status change, including admin edits, with who made it and why. */
 export interface StatusChange {
   status: BookingStatus;
@@ -119,16 +136,39 @@ export interface Booking {
   returnAddress?: NzAddress;
   protectionPlan?: BookedProtectionPlan;
   status: BookingStatus;
+  /**
+   * Whether it was booked instantly (paid now) or as a request the Host accepts (card authorised now,
+   * charged on acceptance). Set when the booking is created (plan §8.2).
+   */
+  instantBook: boolean;
+  /** PAYMENT_PENDING: when the 30-minute hold on the dates ends if payment isn't finished. */
+  holdExpiresAt?: Date;
   requestExpiresAt?: Date;
+  /**
+   * Set when the Guest paid while their verification needed a manual review (plan §8.2): the card is
+   * authorised, not charged, and the booking is confirmed once support approves the check.
+   */
+  verificationReview?: VerificationReview;
+  /** A request the Host accepted while the Guest's verification was still in review. */
+  hostAcceptedAt?: Date;
   vehicleSnapshot: VehicleSnapshot;
   terms: BookedTerms;
   price: BookingPrice;
   /** The cancellation tier code, copied from the listing. */
   cancellationPolicy?: string;
+  /** The tier's refund rules, copied when booked, so later changes to the tiers don't apply. */
+  cancellationTerms?: BookedCancellationTerms;
   cancelledBy?: Types.ObjectId;
   cancelledAt?: Date;
   cancellationReason?: CancellationReason;
+  /** What the Guest paid and doesn't get back (plan §5, Guest cancellation fees). */
   cancellationFeeCents?: number;
+  /** What was refunded to the Guest when the booking was cancelled. */
+  refundCents?: number;
+  /** The Host's share of a kept cancellation fee, after commission; paid with their next payout. */
+  hostShareCents?: number;
+  /** A Host cancellation fee added to the Host's fees owed (plan §8.1, item 10). */
+  hostCancellationFeeCents?: number;
   lineItems: LineItem[];
   statusHistory: StatusChange[];
   extraCharges: ExtraCharge[];
@@ -208,7 +248,21 @@ const bookingSchema = new Schema<Booking>(
       default: undefined,
     },
     status: { type: String, enum: BOOKING_STATUSES, default: 'PAYMENT_PENDING' },
+    instantBook: { type: Boolean, default: false },
+    holdExpiresAt: Date,
     requestExpiresAt: Date,
+    verificationReview: {
+      type: new Schema<VerificationReview>(
+        {
+          status: { type: String, enum: VERIFICATION_REVIEW_STATUSES, required: true },
+          decidedAt: Date,
+          decidedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    hostAcceptedAt: Date,
     vehicleSnapshot: {
       type: new Schema<VehicleSnapshot>(
         { title: { type: String, required: true }, photoUrl: String, regoPlate: String },
@@ -245,10 +299,36 @@ const bookingSchema = new Schema<Booking>(
       required: true,
     },
     cancellationPolicy: String,
+    cancellationTerms: {
+      type: new Schema<BookedCancellationTerms>(
+        {
+          code: { type: String, required: true },
+          name: { type: String, required: true },
+          summary: { type: String, required: true },
+          refunds: {
+            type: [
+              new Schema(
+                {
+                  minHoursBefore: { type: Number, required: true, min: 0 },
+                  refundPct: { type: Number, required: true, min: 0, max: 100 },
+                },
+                { _id: false },
+              ),
+            ],
+            default: [],
+          },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     cancelledBy: { type: Schema.Types.ObjectId, ref: 'User' },
     cancelledAt: Date,
     cancellationReason: { type: String, enum: CANCELLATION_REASONS },
     cancellationFeeCents: cents(),
+    refundCents: cents(),
+    hostShareCents: cents(),
+    hostCancellationFeeCents: cents(),
     lineItems: { type: [lineItemSchema], default: [] },
     statusHistory: { type: [statusChangeSchema], default: [] },
     extraCharges: { type: [extraChargeSchema], default: [] },
@@ -258,6 +338,11 @@ const bookingSchema = new Schema<Booking>(
 
 bookingSchema.index({ guestId: 1, startAt: -1 });
 bookingSchema.index({ hostId: 1, status: 1, startAt: -1 });
+// A Guest's bookings waiting for their verification, confirmed or released when support decides.
+bookingSchema.index(
+  { guestId: 1, 'verificationReview.status': 1 },
+  { partialFilterExpression: { 'verificationReview.status': 'PENDING' } },
+);
 // A car's upcoming bookings, for deactivation and suspension.
 bookingSchema.index({ vehicleId: 1, status: 1, startAt: 1 });
 
