@@ -36,6 +36,8 @@ import {
   listReviewQueue,
 } from './admin-listings.service.js';
 import { getAdminOverview } from './admin.service.js';
+import { platformSettingsUpdateSchema } from './platform-settings.schemas.js';
+import { getPlatformSettingsForAdmin, updatePlatformSettings } from './platform-settings.service.js';
 import { reviewIdentity } from './admin-verification.service.js';
 
 async function findVehicleForCalendar(id: string) {
@@ -79,6 +81,18 @@ export function adminRouter() {
   router.delete('/staff/:id', requireRole('ADMIN'), async (req, res) => {
     await removeSupport(req.auth!.userId, String(req.params.id), req.ip);
     res.status(204).end();
+  });
+
+  // Platform settings (plan §3 `platformSettings`, §16): fees, cancellation tiers, protection plans and the
+  // other values that wait for the client's decisions. Admin only; everything that uses them reads them
+  // from the database, so a change applies at once.
+  router.get('/settings', requireRole('ADMIN'), async (_req, res) => {
+    res.json(await getPlatformSettingsForAdmin());
+  });
+
+  router.patch('/settings', requireRole('ADMIN'), async (req, res) => {
+    const update = validate(platformSettingsUpdateSchema, req.body);
+    res.json(await updatePlatformSettings(req.auth!.userId, update, req.ip));
   });
 
   // A staff member lost their authenticator apps: they sign in with their password and can set up a new one.

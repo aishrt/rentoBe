@@ -1,8 +1,9 @@
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
-import { errorResponses, jsonResponse, signedIn } from '../../openapi/shared.js';
+import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { testPaymentSchema, testPaymentStatusSchema } from '../payments/payments.schemas.js';
 import { adminOverviewSchema } from './admin.schemas.js';
+import { platformSettingsResponseSchema, platformSettingsUpdateSchema } from './platform-settings.schemas.js';
 
 /** The contract for admin.routes.ts (plan §2.3). Every admin route needs an active staff account. */
 export function registerAdminPaths(registry: OpenAPIRegistry) {
@@ -16,6 +17,35 @@ export function registerAdminPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The overview figures', adminOverviewSchema),
       ...errorResponses(401, 403),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/settings',
+    tags: ['Admin'],
+    summary: 'The platform settings in force',
+    description:
+      'Admin only. Fees, cancellation tiers, protection plans, eligibility and the other values that wait for the client’s decisions (plan §16), with where each decision stands.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('The settings', platformSettingsResponseSchema),
+      ...errorResponses(401, 403),
+    },
+  });
+
+  registry.registerPath({
+    method: 'patch',
+    path: '/admin/settings',
+    tags: ['Admin'],
+    summary: 'Change some platform settings',
+    description:
+      'Admin only. Each group sent is complete and replaces the saved one; `decisions` can name just the decisions that change. The result is checked as a whole (400 with `error.fields` keyed by path, e.g. `cancellation.defaultTier`). Cancellation tiers and protection plans keep their codes. Applies to the next request; bookings already made keep their terms. Written to the audit log.',
+    security: signedIn,
+    request: { body: jsonBody(platformSettingsUpdateSchema) },
+    responses: {
+      200: jsonResponse('The settings now in force', platformSettingsResponseSchema),
+      ...errorResponses(400, 401, 403),
     },
   });
 

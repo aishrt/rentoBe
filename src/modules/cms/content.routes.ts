@@ -127,6 +127,7 @@ export function policiesRouter() {
         hostCancellationFeeCents: settings.cancellation.hostCancellationFeeCents,
       },
       protectionPlans: settings.protectionPlans,
+      roadsideAssistance: settings.roadsideAssistance,
       eligibility: settings.eligibility,
       vehicles: settings.vehicles,
       search: settings.search,
