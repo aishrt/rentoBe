@@ -6,6 +6,7 @@
   "memory": "1024",
   "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
   "executionRoleArn": "arn:aws:iam::935937182366:role/rento-vroom-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::935937182366:role/rento-vroom-ecs-task",
   "containerDefinitions": [
     {
       "name": "api",
@@ -22,7 +23,12 @@
         { "name": "FRONTEND_ORIGINS", "value": "https://www.rentovroom.com" },
         { "name": "SENTRY_ENVIRONMENT", "value": "production" },
         { "name": "MAIL_DRIVER", "value": "resend" },
-        { "name": "SMS_DRIVER", "value": "twilio" }
+        { "name": "SMS_DRIVER", "value": "twilio" },
+        { "name": "API_PUBLIC_URL", "value": "https://api.rentovroom.com" },
+        { "name": "UPLOAD_DRIVER", "value": "s3" },
+        { "name": "S3_BUCKET", "value": "rento-vroom-media-prod-935937182366" },
+        { "name": "S3_REGION", "value": "ap-southeast-2" },
+        { "name": "MEDIA_PUBLIC_URL", "value": "https://media.rentovroom.com" }
       ],
       "secrets": [
         {

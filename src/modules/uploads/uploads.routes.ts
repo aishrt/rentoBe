@@ -65,7 +65,7 @@ export function uploadsRouter() {
 
     const { folder, isPrivate } = uploadFolder(input.purpose, input.vehicleId);
     res.json(
-      getStorage().createUpload({
+      await getStorage().createUpload({
         folder,
         isPrivate,
         contentType: input.contentType,
@@ -101,16 +101,25 @@ export function uploadsRouter() {
   return router;
 }
 
-/** Mounted at /api/v1/files: files the local driver keeps (development only). */
+/**
+ * Mounted at /api/v1/files: the signed links to private documents (either driver), and the files the
+ * local driver keeps (development only).
+ */
 export function filesRouter() {
   const router = Router();
 
-  // Private documents open only through a signed link that expires.
+  // Private documents open only through a signed link that expires. In S3, the file itself is behind a
+  // one-minute S3 link made when the signed link is opened.
   router.get('/private/*key', async (req, res) => {
     const key = (req.params.key as unknown as string[]).join('/');
     const { e, s } = req.query;
     if (typeof e !== 'string' || typeof s !== 'string' || !verifyPrivateLink(key, e, s)) {
       throw new HttpError(403, 'LINK_EXPIRED', 'This link has expired. Open the document again.');
+    }
+    const download = await getStorage().downloadUrl(key);
+    if (download) {
+      res.set('Cache-Control', 'private, no-store').redirect(302, download);
+      return;
     }
     await sendLocalFile(res, key, 'private, no-store');
   });

@@ -140,7 +140,7 @@ export type VehiclePatch = z.infer<typeof vehiclePatchSchema>;
 export const photoAttachSchema = z
   .object({
     type: z.enum(PHOTO_TYPES),
-    /** The local upload's `key`, or Cloudinary's `public_id`. */
+    /** The upload target's `key`. */
     upload: z.string().min(1).max(300),
     width: z.number().int().min(1).optional(),
     height: z.number().int().min(1).optional(),

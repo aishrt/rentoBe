@@ -40,6 +40,19 @@ describe('environment', () => {
     expect(() => parseEnv({ ...baseEnv, STRIPE_WEBHOOK_SECRET: 'sk_test_51Abc' })).toThrow(/whsec_/);
   });
 
+  it('needs the bucket and the media address for S3 uploads', () => {
+    expect(parseEnv(baseEnv)).toMatchObject({ UPLOAD_DRIVER: 'local', S3_REGION: 'ap-southeast-2' });
+    expect(() => parseEnv({ ...baseEnv, UPLOAD_DRIVER: 's3' })).toThrow(/S3_BUCKET[\s\S]*MEDIA_PUBLIC_URL/);
+    expect(
+      parseEnv({
+        ...baseEnv,
+        UPLOAD_DRIVER: 's3',
+        S3_BUCKET: 'rento-vroom-media-prod',
+        MEDIA_PUBLIC_URL: 'https://media.rentovroom.com',
+      }),
+    ).toMatchObject({ UPLOAD_DRIVER: 's3', S3_BUCKET: 'rento-vroom-media-prod' });
+  });
+
   it('names every missing required variable', () => {
     expect(() => parseEnv({})).toThrow(/MONGODB_URI[\s\S]*JWT_ACCESS_SECRET/);
   });

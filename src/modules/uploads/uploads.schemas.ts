@@ -29,7 +29,7 @@ export type UploadRequest = z.infer<typeof uploadRequestSchema>;
 
 export const uploadTargetSchema = z
   .object({
-    driver: z.enum(['local', 'cloudinary']),
+    driver: z.enum(['local', 's3']),
     method: z.enum(['PUT', 'POST']),
     url: z.string(),
     headers: z
@@ -39,11 +39,12 @@ export const uploadTargetSchema = z
     fields: z
       .record(z.string(), z.string())
       .optional()
-      .meta({ description: 'POST: a multipart form with these fields and the file as `file`' }),
+      .meta({ description: 'POST: a multipart form with these fields, then the file as `file`' }),
+    key: z.string().meta({ description: 'Attach the file to the car with this once it is sent' }),
     maxBytes: z.number().int(),
   })
   .meta({
     id: 'UploadTarget',
     description:
-      'Where to send one file. Afterwards, attach it with the key the upload returned: local uploads answer `{ key }`, Cloudinary answers `{ public_id }`.',
+      'Where to send one file: the API itself in development (`local`), or the S3 bucket (`s3`, a presigned POST with no cookies).',
   });

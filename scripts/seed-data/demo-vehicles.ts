@@ -594,7 +594,7 @@ function slugify(text: string): string {
     .replace(/^-|-$/g, '');
 }
 
-/** Placeholder images until uploads go through Cloudinary (plan §9, Days 8–11). Demo data only. */
+/** Placeholder images for the demo cars, which have no uploaded photos. Demo data only. */
 function placeholderImage(width: number, height: number, text: string): string {
   return `https://placehold.co/${width}x${height}/0254C2/FFFFFF/webp?text=${encodeURIComponent(text)}`;
 }

@@ -103,12 +103,14 @@ const envSchema = z
     GOOGLE_MAPS_SERVER_KEY: z.string().min(20).optional(),
 
     // Vehicle photos and documents (plan §1.2). "local" keeps files in UPLOAD_DIR and serves them from
-    // this API, for development only; "cloudinary" uploads straight from the browser to Cloudinary.
-    UPLOAD_DRIVER: z.enum(['local', 'cloudinary']).default('local'),
+    // this API, for development only; "s3" uploads straight from the browser to S3_BUCKET, and listing
+    // photos are served from MEDIA_PUBLIC_URL (CloudFront in front of the bucket's public/ folder).
+    // S3 credentials come from the ECS task role in production, or the usual AWS settings elsewhere.
+    UPLOAD_DRIVER: z.enum(['local', 's3']).default('local'),
     UPLOAD_DIR: z.string().default('.uploads'),
-    CLOUDINARY_CLOUD_NAME: z.string().optional(),
-    CLOUDINARY_API_KEY: z.string().optional(),
-    CLOUDINARY_API_SECRET: z.string().optional(),
+    S3_BUCKET: z.string().optional(),
+    S3_REGION: z.string().default('ap-southeast-2'),
+    MEDIA_PUBLIC_URL: z.url().optional(),
     // This API's own address as browsers reach it, for links to files the local driver serves.
     API_PUBLIC_URL: z.url().default('http://localhost:4000'),
   })
@@ -134,14 +136,10 @@ const envSchema = z
         message: 'GOOGLE_MAPS_SERVER_KEY is required when PLACES_DRIVER=google',
       });
     }
-    if (env.UPLOAD_DRIVER === 'cloudinary') {
-      for (const key of ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const) {
+    if (env.UPLOAD_DRIVER === 's3') {
+      for (const key of ['S3_BUCKET', 'MEDIA_PUBLIC_URL'] as const) {
         if (!env[key]) {
-          ctx.addIssue({
-            code: 'custom',
-            path: [key],
-            message: `${key} is required when UPLOAD_DRIVER=cloudinary`,
-          });
+          ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required when UPLOAD_DRIVER=s3` });
         }
       }
     }

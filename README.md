@@ -126,7 +126,10 @@ The website is a single-page app, so vehicle and destination pages get their sea
 Browsers upload straight to storage with a short-lived signed target from `POST /uploads/signature`, then attach the file to the listing. Photos are public; documents are private and open only through links that expire after 10 minutes.
 
 - `UPLOAD_DRIVER=local` (default): files go to `UPLOAD_DIR` (`backend/.uploads`, ignored by git) and this API serves them at `/api/v1/files`, with `API_PUBLIC_URL` in their links. Development only: it refuses uploads in production (503 `UPLOADS_UNAVAILABLE`).
-- `UPLOAD_DRIVER=cloudinary`: signed direct uploads to Cloudinary (`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`), which bypass the API and its WAF; documents are uploaded as private assets. Waiting for the client's account.
+- `UPLOAD_DRIVER=s3` (production): the browser sends the file straight to the S3 bucket `S3_BUCKET` (in `S3_REGION`, Sydney by default) with a presigned POST that fixes its key, type and size limit, so it never passes through the API or its WAF. In production, the API's credentials come from the ECS task role `rento-vroom-ecs-task`; locally, from the usual AWS settings (for example `aws configure export-credentials --format env`).
+  - A photo lands in `incoming/`. Attaching it stores upright WebP copies, 800 and 1600 px wide and without the photo's metadata, in `public/`, and deletes the original. CloudFront serves `public/` at `MEDIA_PUBLIC_URL` (`https://media.rentovroom.com`). HEIC photos are decoded with `heic-decode`, as sharp's standard build can't read them.
+  - A document goes to `private/`; a HEIC one is turned into a JPEG so staff can open it in any browser. Its link leads to `/api/v1/files/private/…`, which checks the link and redirects to an S3 link that works for one minute.
+  - The bucket and CloudFront setup is in `DEPLOYMENT.md`, section "Media bucket".
 
 ## Bookings and payments
 
@@ -199,7 +202,7 @@ src/
   pages/            Page tags for vehicle and destination pages, and sitemap.xml (/pages)
   openapi/          Builds the API contract from each module's *.openapi.ts
   integrations/     logger, mailer (Resend + console), SMS (Twilio Verify and Messages + console), Stripe,
-                    places (Google Places + local), storage (Cloudinary + local)
+                    places (Google Places + local), storage (S3 + local, and photo resizing)
   emails/           React Email templates, shared layout and brand theme
   lib/              HttpError, validation helper, lifecycle, shared model field types, NZD formatter
 scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, send-test-email.ts, email-preview.ts, openapi.ts

@@ -2,7 +2,6 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
 import { forget } from '../src/lib/memo.js';
-import { cloudinarySignature, createCloudinaryStorage } from '../src/integrations/storage/storage.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
@@ -50,7 +49,8 @@ async function upload(
   const path = new URL(target.body.url).pathname;
   const put = await agent.put(path).set('Content-Type', contentType).send(body);
   expect(put.status).toBe(201);
-  return put.body.key as string;
+  expect(put.body.key).toBe(target.body.key);
+  return target.body.key as string;
 }
 
 const details = {
@@ -404,60 +404,5 @@ describe('Vehicle onboarding', () => {
       qualityFlag: 'ADMIN_FLAGGED',
     });
     expect(await NotificationModel.countDocuments({ type: 'LISTING_PHOTO_REJECTED' })).toBe(1);
-  });
-});
-
-describe('Cloudinary uploads', () => {
-  it('signs parameters the way Cloudinary documents', () => {
-    // Cloudinary's own worked example ("Generating authentication signatures").
-    expect(
-      cloudinarySignature(
-        { eager: 'w_400,h_300,c_pad|w_260,h_200,c_crop', public_id: 'sample_image', timestamp: 1315060510 },
-        'abcd',
-      ),
-    ).toBe('bfd09f95f331f558cbd1320e67aa8d488770583e');
-  });
-
-  it('uploads photos publicly and documents privately, in the car’s folder only', async () => {
-    const storage = createCloudinaryStorage({ cloudName: 'demo', apiKey: '1234', apiSecret: 'secret' });
-    const photo = storage.createUpload({
-      folder: 'vehicles/abc/photos',
-      isPrivate: false,
-      contentType: 'image/jpeg',
-      userId: 'u',
-    });
-    expect(photo).toMatchObject({ method: 'POST', url: 'https://api.cloudinary.com/v1_1/demo/image/upload' });
-    expect(photo.fields).toMatchObject({
-      folder: 'rento-vroom/vehicles/abc/photos',
-      type: 'upload',
-      api_key: '1234',
-    });
-    expect(
-      await storage.confirmUpload({
-        folder: 'vehicles/abc/photos',
-        isPrivate: false,
-        ref: 'rento-vroom/vehicles/abc/photos/x1',
-      }),
-    ).toBe('https://res.cloudinary.com/demo/image/upload/f_auto,q_auto/rento-vroom/vehicles/abc/photos/x1');
-    await expect(
-      storage.confirmUpload({
-        folder: 'vehicles/abc/photos',
-        isPrivate: false,
-        ref: 'rento-vroom/vehicles/zzz/photos/x1',
-      }),
-    ).rejects.toMatchObject({
-      code: 'UPLOAD_NOT_FOUND',
-    });
-
-    const document = await storage.confirmUpload({
-      folder: 'vehicles/abc/documents',
-      isPrivate: true,
-      ref: 'rento-vroom/vehicles/abc/documents/d1',
-    });
-    expect(document).toBe('cloudinary:rento-vroom/vehicles/abc/documents/d1');
-    const link = new URL(storage.privateLink(document));
-    expect(link.pathname).toBe('/v1_1/demo/image/download');
-    expect(link.searchParams.get('type')).toBe('private');
-    expect(Number(link.searchParams.get('expires_at'))).toBeGreaterThan(Date.now() / 1000);
   });
 });
