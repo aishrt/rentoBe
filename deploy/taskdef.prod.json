@@ -20,7 +20,7 @@
         { "name": "TRUST_PROXY", "value": "2" },
         { "name": "LOG_LEVEL", "value": "info" },
         { "name": "FRONTEND_URL", "value": "https://www.rentovroom.com" },
-        { "name": "FRONTEND_ORIGINS", "value": "https://www.rentovroom.com" },
+        { "name": "FRONTEND_ORIGINS", "value": "https://www.rentovroom.com,https://staging.rentovroom.com" },
         { "name": "SENTRY_ENVIRONMENT", "value": "production" },
         { "name": "MAIL_DRIVER", "value": "resend" },
         { "name": "SMS_DRIVER", "value": "twilio" },
