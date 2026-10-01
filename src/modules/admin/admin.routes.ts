@@ -6,6 +6,8 @@ import { adminCancelBooking, bookingView, findBookingFor } from '../bookings/boo
 import { adminCancelSchema, identityReviewSchema } from '../bookings/bookings.schemas.js';
 import { resetStaffMfa } from '../auth/mfa.service.js';
 import { createTestPayment, getTestPayment } from '../payments/test-payment.service.js';
+import { staffInviteInputSchema } from '../staff/staff.schemas.js';
+import { inviteSupport, listStaff, removeSupport, revokeInvite } from '../staff/staff.service.js';
 import { HttpError } from '../../lib/http-error.js';
 import { addNzDays } from '../../lib/nz-time.js';
 import { validate } from '../../lib/validate.js';
@@ -46,14 +48,37 @@ async function findVehicleForCalendar(id: string) {
 
 /**
  * Mounted at /api/v1/admin. Every route needs an active staff account, and every write is recorded
- * in the audit log (plan §6.2).
+ * in the audit log (plan §6.2). requireActiveAccount runs first because it reads the account's current
+ * roles, so a support member removed from the team, or an ADMIN role on an account that isn't
+ * ADMIN_EMAIL, is refused at once.
  */
 export function adminRouter() {
   const router = Router();
-  router.use(requireAuth, requireRole('ADMIN', 'SUPPORT'), requireActiveAccount, auditStaffWrites);
+  router.use(requireAuth, requireActiveAccount, requireRole('ADMIN', 'SUPPORT'), auditStaffWrites);
 
   router.get('/overview', async (_req, res) => {
     res.json(await getAdminOverview());
+  });
+
+  // The staff (plan §6.2): the one admin, set by ADMIN_EMAIL, and the support team, who join only by
+  // accepting the admin's invitation.
+  router.get('/staff', requireRole('ADMIN'), async (_req, res) => {
+    res.json(await listStaff());
+  });
+
+  router.post('/staff/invites', requireRole('ADMIN'), async (req, res) => {
+    const input = validate(staffInviteInputSchema, req.body);
+    res.status(201).json({ invite: await inviteSupport(req.auth!.userId, input, req.ip) });
+  });
+
+  router.delete('/staff/invites/:id', requireRole('ADMIN'), async (req, res) => {
+    await revokeInvite(req.auth!.userId, String(req.params.id), req.ip);
+    res.status(204).end();
+  });
+
+  router.delete('/staff/:id', requireRole('ADMIN'), async (req, res) => {
+    await removeSupport(req.auth!.userId, String(req.params.id), req.ip);
+    res.status(204).end();
   });
 
   // A staff member lost their authenticator apps: they sign in with their password and can set up a new one.

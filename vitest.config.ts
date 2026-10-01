@@ -14,6 +14,8 @@ export default defineConfig({
       NODE_ENV: 'test',
       MONGODB_URI: 'mongodb://127.0.0.1:27017/rento-vroom-test-placeholder',
       JWT_ACCESS_SECRET: 'test-only-secret-that-is-at-least-32-characters-long',
+      // The one admin: the default account of createStaff() in test/helpers.ts.
+      ADMIN_EMAIL: 'aroha@example.co.nz',
       ENCRYPTION_KEY: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
       FRONTEND_URL: 'http://localhost:5173',
       FRONTEND_ORIGINS: 'http://localhost:5173',

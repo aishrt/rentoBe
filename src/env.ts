@@ -50,6 +50,14 @@ const envSchema = z
       }),
     // Optional parent domain for the auth cookies, e.g. ".rentovroom.co.nz" so www. and api. share them.
     COOKIE_DOMAIN: z.string().optional(),
+    // The one administrator (plan §6.2). The ADMIN role only counts on the account with this email, so
+    // no other account can act as an admin even if the role is set on it. The create-admin script sets
+    // the account up; support staff join by the admin's invitation.
+    ADMIN_EMAIL: z
+      .string({ error: 'ADMIN_EMAIL is required' })
+      .trim()
+      .toLowerCase()
+      .pipe(z.email({ error: 'ADMIN_EMAIL must be an email address' })),
 
     // Error monitoring (plan §1.2). Only used when NODE_ENV=production, so development never reports.
     SENTRY_DSN: z.url().optional(),

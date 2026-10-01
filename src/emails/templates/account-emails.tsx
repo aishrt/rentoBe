@@ -90,7 +90,7 @@ export function MfaChangedEmail({ firstName, change, deviceName, resetUrl }: Mfa
       <EmailText>
         Kia ora {firstName}, {mfaChangeDetail(change, deviceName)}
       </EmailText>
-      <EmailText>If this wasn't you, reset your password straight away and let an admin know.</EmailText>
+      <EmailText>If this wasn't you, reset your password straight away and let the admin know.</EmailText>
       <EmailButton href={resetUrl}>Reset my password</EmailButton>
     </EmailLayout>
   );

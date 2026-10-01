@@ -1,12 +1,17 @@
 import mongoose from 'mongoose';
-import { STAFF_ROLES, UserModel } from '../users/user.model.js';
+import { env } from '../../env.js';
+import { UserModel } from '../users/user.model.js';
 import type { AdminOverview } from './admin.schemas.js';
 
 export async function getAdminOverview(): Promise<AdminOverview> {
   const [totalUsers, activeHosts, staffMembers, suspendedUsers] = await Promise.all([
     UserModel.countDocuments({ roles: mongoose.trusted({ $in: ['GUEST', 'HOST'] }) }),
     UserModel.countDocuments({ roles: 'HOST', status: 'ACTIVE' }),
-    UserModel.countDocuments({ roles: mongoose.trusted({ $in: STAFF_ROLES }), status: 'ACTIVE' }),
+    // The admin is only the ADMIN_EMAIL account (plan §6.2), plus the support team.
+    UserModel.countDocuments({
+      status: 'ACTIVE',
+      $or: [{ roles: 'SUPPORT' }, { roles: 'ADMIN', email: env.ADMIN_EMAIL }],
+    }),
     UserModel.countDocuments({ status: 'SUSPENDED' }),
   ]);
 

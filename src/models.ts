@@ -22,6 +22,7 @@ import { StripeEventModel } from './modules/payments/stripe-event.model.js';
 import { PayoutModel } from './modules/payouts/payout.model.js';
 import { ReviewModel } from './modules/reviews/review.model.js';
 import { PlaceModel } from './modules/search/place.model.js';
+import { StaffInviteModel } from './modules/staff/staff-invite.model.js';
 import { SupportTicketModel } from './modules/support/support-ticket.model.js';
 import { UserModel } from './modules/users/user.model.js';
 import { VehicleModel } from './modules/vehicles/vehicle.model.js';
@@ -58,4 +59,5 @@ export const allModels = [
   PlatformSettingsModel,
   RateLimitModel,
   ExchangeRateModel,
+  StaffInviteModel,
 ] as const;

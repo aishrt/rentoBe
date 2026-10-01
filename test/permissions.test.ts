@@ -14,8 +14,14 @@ const app = express()
   })
   .use(errorHandler);
 
-async function tokenFor(roles: Role[], permissions: string[] = []) {
-  const user = await createUser({ email: `${roles.join('-').toLowerCase()}@example.co.nz`, roles });
+// The one admin is ADMIN_EMAIL's account (vitest.config.ts); other emails get their roles' names.
+async function tokenFor(roles: Role[], permissions: string[] = [], email?: string) {
+  const user = await createUser({
+    email:
+      email ??
+      (roles.includes('ADMIN') ? 'aroha@example.co.nz' : `${roles.join('-').toLowerCase()}@example.co.nz`),
+    roles,
+  });
   await UserModel.updateOne({ _id: user._id }, { $set: { permissions } });
   return { user, token: signAccessToken({ userId: user.id, roles, sessionId: 'session' }) };
 }
@@ -29,6 +35,11 @@ describe('requirePermission', () => {
   it('lets admins through without the permission on their account', async () => {
     const { token } = await tokenFor(['ADMIN']);
     expect((await refund(token)).status).toBe(200);
+  });
+
+  it('ignores the ADMIN role on an account that is not ADMIN_EMAIL, even in a signed token', async () => {
+    const { token } = await tokenFor(['ADMIN'], [], 'mallory@example.co.nz');
+    expect((await refund(token)).status).toBe(403);
   });
 
   it('refuses support staff without it, and lets them through once they have it', async () => {
