@@ -93,6 +93,10 @@ export function registerSearchPaths(registry: OpenAPIRegistry) {
           .string()
           .optional()
           .meta({ description: 'One per search, passed again to GET /places/{id}, so Google bills it once' }),
+        oursOnly: z
+          .boolean()
+          .optional()
+          .meta({ description: 'Only our places, without Google street addresses (the Host place picker)' }),
       }),
     },
     responses: { 200: jsonResponse('Suggestions', placeSuggestionsResponseSchema), ...errorResponses(400) },

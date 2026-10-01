@@ -10695,6 +10695,16 @@
             "description": "One per search, passed again to GET /places/{id}, so Google bills it once",
             "name": "sessionToken",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "boolean",
+              "description": "Only our places, without Google street addresses (the Host place picker)"
+            },
+            "required": false,
+            "description": "Only our places, without Google street addresses (the Host place picker)",
+            "name": "oursOnly",
+            "in": "query"
           }
         ],
         "responses": {
