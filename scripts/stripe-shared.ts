@@ -1,8 +1,11 @@
 /** What `npm run stripe:check` and `npm run stripe:setup` both need (plan §8.1). */
 import type Stripe from 'stripe';
 
-/** The website domain that shows Apple Pay and Google Pay. The bare domain redirects here. */
-export const DEFAULT_DOMAINS = ['www.rentovroom.com'];
+/**
+ * The website domains that show Apple Pay and Google Pay. The bare domain redirects to www; the
+ * staging website uses the same API and Stripe account (plan §13.3), so its wallets work too.
+ */
+export const DEFAULT_DOMAINS = ['www.rentovroom.com', 'staging.rentovroom.com'];
 export const WEBHOOK_PATH = '/api/v1/payments/webhook';
 export const DEFAULT_WEBHOOK_URL = `https://api.rentovroom.com${WEBHOOK_PATH}`;
 

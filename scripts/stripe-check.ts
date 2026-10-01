@@ -1,6 +1,6 @@
 /**
  * Checks the Stripe account against what the website needs (plan §8): a New Zealand account that
- * settles in NZD, cards, Apple Pay and Google Pay turned on, the website's domain registered for the
+ * settles in NZD, cards, Apple Pay and Google Pay turned on, the website's domains registered for the
  * wallets, and a webhook endpoint for every event the API handles. Changes nothing.
  *
  *   npm run stripe:check
