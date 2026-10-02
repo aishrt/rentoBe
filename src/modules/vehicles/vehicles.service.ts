@@ -131,6 +131,16 @@ export async function getVehicleDetail(slug: string, now = new Date()): Promise<
 export const FEATURED_BLOCK_KEY = 'home.featured-vehicles';
 const FEATURED_COUNT = 8;
 
+/** Live cars whose rego and WOF (or CoF) are still current: search leaves the others out, so must this. */
+function bookableToday() {
+  const now = new Date();
+  return {
+    status: 'ACTIVE',
+    regoExpiry: mongoose.trusted({ $gte: now }),
+    $or: [{ wofExpiry: mongoose.trusted({ $gte: now }) }, { cofExpiry: mongoose.trusted({ $gte: now }) }],
+  };
+}
+
 /**
  * GET /vehicles/featured: the cars admins picked, or else the best-rated live cars, newest first
  * among equals. Cached for 60 s (plan §4.1).
@@ -144,11 +154,11 @@ export function featuredVehicles() {
     );
 
     let vehicles = picked.length
-      ? await VehicleModel.find({ _id: mongoose.trusted({ $in: picked }), status: 'ACTIVE' }).lean()
+      ? await VehicleModel.find({ _id: mongoose.trusted({ $in: picked }), ...bookableToday() }).lean()
       : [];
     vehicles.sort((a, b) => picked.indexOf(a._id.toString()) - picked.indexOf(b._id.toString()));
     if (vehicles.length === 0) {
-      vehicles = await VehicleModel.find({ status: 'ACTIVE' })
+      vehicles = await VehicleModel.find(bookableToday())
         .sort({ 'rating.avg': -1, tripCount: -1, createdAt: -1 })
         .limit(FEATURED_COUNT)
         .lean();

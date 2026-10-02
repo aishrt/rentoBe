@@ -93,6 +93,17 @@ describe('Vehicle listing', () => {
     await createVehicle(host._id, { model: 'Aqua', rating: { avg: 4.2, count: 4 } });
     await createVehicle(host._id, { model: 'Prius', rating: { avg: 4.9, count: 8 } });
     await createVehicle(host._id, { model: 'Hidden', status: 'INACTIVE', rating: { avg: 5, count: 9 } });
+    // Search leaves out cars whose WOF or rego has run out, so the homepage does too.
+    await createVehicle(host._id, {
+      model: 'Lapsed',
+      wofExpiry: new Date(Date.now() - DAY_MS),
+      rating: { avg: 5, count: 9 },
+    });
+    await createVehicle(host._id, {
+      model: 'Unregistered',
+      regoExpiry: new Date(Date.now() - DAY_MS),
+      rating: { avg: 5, count: 9 },
+    });
     const response = await request(app).get('/api/v1/vehicles/featured');
     expect(response.body.vehicles.map((card: { model: string }) => card.model)).toEqual(['Prius', 'Aqua']);
   });
