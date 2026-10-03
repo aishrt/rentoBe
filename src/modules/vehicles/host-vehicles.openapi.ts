@@ -6,7 +6,6 @@ import {
   hostProfilePatchSchema,
   hostProfileResponseSchema,
 } from '../hosts/hosts.schemas.js';
-import { markReadSchema, notificationsResponseSchema } from '../notifications/notifications.routes.js';
 import { uploadRequestSchema, uploadTargetSchema } from '../uploads/uploads.schemas.js';
 import {
   blockInputSchema,
@@ -23,7 +22,7 @@ import {
 
 const idParam = z.object({ id: z.string().meta({ description: 'The car’s id' }) });
 
-/** The contract for hosting: the application, vehicle onboarding, uploads, the calendar and notifications. */
+/** The contract for hosting: the application, vehicle onboarding, uploads and the calendar. */
 export function registerHostPaths(registry: OpenAPIRegistry) {
   registry.registerPath({
     method: 'post',
@@ -264,32 +263,6 @@ export function registerHostPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The upload target', uploadTargetSchema),
       ...errorResponses(400, 401, 403, 404, 503),
-    },
-  });
-
-  registry.registerPath({
-    method: 'get',
-    path: '/notifications',
-    tags: ['Notifications'],
-    summary: 'The notification bell',
-    description: 'The latest 30 in-app notifications and the unread count.',
-    security: signedIn,
-    responses: { 200: jsonResponse('Notifications', notificationsResponseSchema), ...errorResponses(401) },
-  });
-
-  registry.registerPath({
-    method: 'post',
-    path: '/notifications/read',
-    tags: ['Notifications'],
-    summary: 'Mark notifications read',
-    security: signedIn,
-    request: { body: jsonBody(markReadSchema) },
-    responses: {
-      200: jsonResponse(
-        'The unread count',
-        z.object({ unreadCount: z.number().int() }).meta({ id: 'UnreadCount' }),
-      ),
-      ...errorResponses(400, 401),
     },
   });
 }
