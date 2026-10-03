@@ -6310,12 +6310,22 @@
             }
           },
           "unreadCount": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Unread notifications in all, not just on this page"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Every notification the user has, whatever the filter"
+          },
+          "nextCursor": {
+            "type": "string",
+            "description": "Pass as `cursor` for the next page. Left out on the last page"
           }
         },
         "required": [
           "notifications",
-          "unreadCount"
+          "unreadCount",
+          "total"
         ]
       },
       "NotificationItem": {
@@ -6353,15 +6363,21 @@
           "read"
         ]
       },
-      "UnreadCount": {
+      "NotificationCounts": {
         "type": "object",
         "properties": {
           "unreadCount": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Unread notifications in all, not just on this page"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Every notification the user has, whatever the filter"
           }
         },
         "required": [
-          "unreadCount"
+          "unreadCount",
+          "total"
         ]
       },
       "MarkNotificationsRead": {
@@ -6377,6 +6393,81 @@
             "description": "Left out: marks every notification read"
           }
         }
+      },
+      "MarkNotificationsUnread": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "ids"
+        ]
+      },
+      "NotificationsDeleted": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "description": "How many were deleted"
+          },
+          "unreadCount": {
+            "type": "integer",
+            "description": "Unread notifications in all, not just on this page"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Every notification the user has, whatever the filter"
+          }
+        },
+        "required": [
+          "deleted",
+          "unreadCount",
+          "total"
+        ]
+      },
+      "DeleteNotifications": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{24}$"
+                },
+                "minItems": 1,
+                "maxItems": 100
+              }
+            },
+            "required": [
+              "ids"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "read": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ],
+                "description": "Deletes every notification already read"
+              }
+            },
+            "required": [
+              "read"
+            ]
+          }
+        ]
       },
       "HostApplications": {
         "type": "object",
@@ -12836,8 +12927,8 @@
         "tags": [
           "Notifications"
         ],
-        "summary": "The notification bell",
-        "description": "The latest 30 in-app notifications and the unread count.",
+        "summary": "The bell and the Notifications page",
+        "description": "The signed-in user’s in-app notifications, newest first, a page at a time, with the unread count and the total. Deleted ones are left out.",
         "security": [
           {
             "cookieAuth": []
@@ -12846,13 +12937,63 @@
             "bearerAuth": []
           }
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 30,
+              "description": "How many to return, newest first: 1 to 50"
+            },
+            "required": false,
+            "description": "How many to return, newest first: 1 to 50",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "The `nextCursor` of the page before, for the next page"
+            },
+            "required": false,
+            "description": "The `nextCursor` of the page before, for the next page",
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "`true`: unread ones only"
+            },
+            "required": false,
+            "description": "`true`: unread ones only",
+            "name": "unread",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Notifications",
+            "description": "One page of notifications",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Notifications"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -12896,11 +13037,11 @@
         },
         "responses": {
           "200": {
-            "description": "The unread count",
+            "description": "The counts afterwards",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UnreadCount"
+                  "$ref": "#/components/schemas/NotificationCounts"
                 }
               }
             }
@@ -12917,6 +13058,177 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/unread": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Mark notifications unread again",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkNotificationsUnread"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The counts afterwards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationCounts"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/delete": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Delete some notifications, or every one already read",
+        "description": "Ids that aren’t the user’s own notifications are ignored.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteNotifications"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "How many were deleted, and the counts afterwards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationsDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/{id}": {
+      "delete": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Delete a notification",
+        "description": "Deleting one again is fine. Someone else’s notification is a 404.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The notification’s id"
+            },
+            "required": true,
+            "description": "The notification’s id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {

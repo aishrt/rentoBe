@@ -24,6 +24,11 @@ export interface Notification {
    * job that runs again never notifies twice.
    */
   dedupeKey?: string;
+  /**
+   * When the user deleted this in-app notification. It stays in the database, hidden from them, so
+   * notify() still finds its dedupeKey and a job that runs again can't bring it back.
+   */
+  deletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -40,6 +45,7 @@ const notificationSchema = new Schema<Notification>(
     sentAt: Date,
     readAt: Date,
     dedupeKey: String,
+    deletedAt: Date,
   },
   { timestamps: true, minimize: false },
 );
@@ -50,8 +56,10 @@ notificationSchema.index(
   { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } },
 );
 
-// The notification centre: unread first, newest first.
-notificationSchema.index({ userId: 1, readAt: 1, createdAt: -1 });
+// The notification centre, newest first, a page at a time; deleted ones fall outside the index bounds.
+notificationSchema.index({ userId: 1, channel: 1, deletedAt: 1, createdAt: -1, _id: -1 });
+// The same for unread ones only, and the bell's unread count.
+notificationSchema.index({ userId: 1, channel: 1, deletedAt: 1, readAt: 1, createdAt: -1, _id: -1 });
 // Delivery status webhooks find the notification by the provider's message ID.
 notificationSchema.index(
   { providerRef: 1 },
