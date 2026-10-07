@@ -109,12 +109,18 @@ export async function paymentReceiptJob({ paymentId }: { paymentId: string }, { 
   });
 }
 
-/** `payment.refundUnwanted`: a payment that went through after its booking had ended is refunded in full. */
+/**
+ * `payment.refundUnwanted`: a payment that went through after its booking had ended is refunded in full,
+ * and the Guest is told why.
+ */
 export async function refundUnwantedJob({ paymentId }: { paymentId: string }, { log }: JobContext) {
   const payment = await PaymentModel.findById(paymentId);
   if (!payment || payment.status !== 'SUCCEEDED' || payment.refunds.length > 0) return;
-  const booking = await BookingModel.findById(payment.bookingId).select('status').lean();
+  const booking = await BookingModel.findById(payment.bookingId)
+    .select('status ref guestId vehicleSnapshot.title')
+    .lean();
   if (!booking || !['EXPIRED', 'CANCELLED', 'DECLINED'].includes(booking.status)) return;
+  const guest = await UserModel.findById(booking.guestId).select('firstName').lean();
 
   const refund = await refundIntent(payment, payment.amountCents, `refund-${payment.id}-unwanted`);
   await withTransaction(async (session) => {
@@ -130,6 +136,29 @@ export async function refundUnwantedJob({ paymentId }: { paymentId: string }, { 
     });
     fresh.status = statusAfterRefunds(fresh);
     await fresh.save({ session });
+    const amount = formatNzdExact(refund.amountCents);
+    await notify(
+      {
+        userId: booking.guestId,
+        type: 'REFUND_ISSUED',
+        title: `${amount} refunded`,
+        body: 'Your payment went through after the booking had ended, so nothing was booked.',
+        link: `/trips/${booking.ref}`,
+        email: {
+          template: 'refundIssued',
+          props: {
+            firstName: guest?.firstName ?? 'there',
+            ref: booking.ref,
+            vehicleTitle: booking.vehicleSnapshot.title,
+            amount,
+            url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/trips/${booking.ref}`,
+            afterBookingEnded: true,
+          },
+        },
+        dedupeKey: `REFUND_ISSUED:${paymentId}:unwanted`,
+      },
+      { session },
+    );
   });
   log.warn({ paymentId, bookingStatus: booking.status }, 'Refunded a payment made after its booking ended');
 }
