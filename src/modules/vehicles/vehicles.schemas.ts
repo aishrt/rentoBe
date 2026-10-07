@@ -125,6 +125,10 @@ export const vehicleDetailSchema = z
         .object({ lat: z.number(), lng: z.number(), radiusM: z.number() })
         .nullable()
         .meta({ description: 'A circle that contains the car, for the map; never its address' }),
+      mapUrl: z.string().nullable().meta({
+        description:
+          'The area map image (GET /vehicles/{id}/area-map), served by this API so no Google key reaches the browser; null when Google isn’t set up',
+      }),
     }),
     deliveryOptions: z.array(deliveryOptionSummarySchema),
     protectionPlans: z.array(protectionPlanSummarySchema),
