@@ -58,6 +58,28 @@ export function registerVehiclePaths(registry: OpenAPIRegistry) {
 
   registry.registerPath({
     method: 'get',
+    path: '/vehicles/{id}/area-map',
+    tags: ['Vehicles'],
+    summary: 'The listing’s area map',
+    description:
+      'Public. A Maps Static API image of the approximate area as a shaded circle, never a pin, fetched with the server’s Google key so no key reaches the browser. Use the listing’s `location.mapUrl`. Cached for a day.',
+    request: {
+      params: idParam,
+      query: z.object({
+        v: z.string().optional().meta({ description: 'Changes when the area moves, so caches refresh' }),
+      }),
+    },
+    responses: {
+      200: {
+        description: 'The map',
+        content: { 'image/png': { schema: z.string().meta({ format: 'binary' }) } },
+      },
+      ...errorResponses(404, 429, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
     path: '/vehicles/{id}/reviews',
     tags: ['Vehicles'],
     summary: 'Published guest reviews of the car',

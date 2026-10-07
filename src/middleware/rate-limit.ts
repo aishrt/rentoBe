@@ -123,6 +123,15 @@ export const contactRateLimit = () =>
       "You've sent a few messages already. We'll reply soon; please try again in an hour if it's urgent.",
   });
 
+/** Listing maps per IP: each one not in the browser's cache is a paid Google request (plan §1.2). */
+export const areaMapRateLimit = () =>
+  limitRequests({
+    name: 'area-map',
+    windowMs: 15 * MINUTE,
+    limit: 100,
+    message: 'Too many maps in a short time. Please try again in a few minutes.',
+  });
+
 /** Emails a user can ask us to send again, per user. */
 export const resendEmailRateLimit = () =>
   limitRequests({

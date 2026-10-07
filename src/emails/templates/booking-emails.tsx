@@ -285,6 +285,8 @@ export interface BookingCancelledProps extends TripBasics {
   hostShare?: string;
   /** Host: a Host cancellation fee taken from their next payout. */
   hostFee?: string;
+  /** A request withdrawn before the Host answered: nothing was booked or charged. */
+  withdrawn?: boolean;
 }
 
 export function BookingCancelledEmail(props: BookingCancelledProps) {
@@ -296,6 +298,27 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
         : props.audience === 'GUEST'
           ? 'your host'
           : 'the guest';
+  if (props.withdrawn) {
+    return (
+      <EmailLayout preview={`The request to book the ${props.vehicleTitle} (${props.ref}) is withdrawn.`}>
+        <EmailHeading>Request withdrawn</EmailHeading>
+        <EmailText>
+          Kia ora {props.firstName}, {who} withdrew {props.audience === 'GUEST' ? 'your' : 'the'} request to
+          book {props.audience === 'GUEST' ? 'the' : 'your'} {props.vehicleTitle} ({props.ref}).
+        </EmailText>
+        <EmailDetails rows={tripRows(props)} />
+        {props.audience === 'GUEST' ? (
+          <EmailText>
+            You haven't been charged. The amount held on your card is released, and your bank usually shows it
+            within a few days.
+          </EmailText>
+        ) : (
+          <EmailText>The dates are free again on your calendar.</EmailText>
+        )}
+        <EmailButton href={props.url}>View the request</EmailButton>
+      </EmailLayout>
+    );
+  }
   return (
     <EmailLayout preview={`Booking ${props.ref} for the ${props.vehicleTitle} is cancelled.`}>
       <EmailHeading>Booking cancelled</EmailHeading>
@@ -391,16 +414,33 @@ export interface RefundIssuedProps {
   vehicleTitle: string;
   amount: string;
   url: string;
+  /** The payment went through after the booking had ended, so it's all given back. */
+  afterBookingEnded?: boolean;
 }
 
-export function RefundIssuedEmail({ firstName, ref, vehicleTitle, amount, url }: RefundIssuedProps) {
+export function RefundIssuedEmail({
+  firstName,
+  ref,
+  vehicleTitle,
+  amount,
+  url,
+  afterBookingEnded,
+}: RefundIssuedProps) {
   return (
     <EmailLayout preview={`We've refunded ${amount} for booking ${ref}.`}>
       <EmailHeading>Refund on its way</EmailHeading>
-      <EmailText>
-        Kia ora {firstName}, we've refunded {amount} NZD for booking {ref} ({vehicleTitle}) to the card you
-        paid with. It usually shows within 5–10 working days, depending on your bank.
-      </EmailText>
+      {afterBookingEnded ? (
+        <EmailText>
+          Kia ora {firstName}, your payment for booking {ref} ({vehicleTitle}) went through after the booking
+          had ended, so nothing was booked. We've refunded all {amount} NZD to the card you paid with. It
+          usually shows within 5–10 working days, depending on your bank.
+        </EmailText>
+      ) : (
+        <EmailText>
+          Kia ora {firstName}, we've refunded {amount} NZD for booking {ref} ({vehicleTitle}) to the card you
+          paid with. It usually shows within 5–10 working days, depending on your bank.
+        </EmailText>
+      )}
       <EmailButton href={url}>View the booking</EmailButton>
     </EmailLayout>
   );

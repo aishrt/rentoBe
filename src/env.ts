@@ -114,8 +114,9 @@ const envSchema = z
       .regex(/^\+\d{8,15}$/, 'TWILIO_FROM_NUMBER is a number in E.164, e.g. +614…')
       .optional(),
 
-    // Location search (plan §1.2): "local" suggests our own NZ places only; "google" adds street
-    // addresses from Google Places, with the server key restricted to the Places API.
+    // Google Maps Platform (plan §1.2), one key for everything and only ever on this server. Location
+    // search: "local" suggests our own NZ places only; "google" adds street addresses from Places API (New).
+    // With the key set, this API also serves each listing's area map from the Maps Static API.
     PLACES_DRIVER: z.enum(['local', 'google']).default('local'),
     GOOGLE_MAPS_SERVER_KEY: z.string().min(20).optional(),
 
