@@ -1,4 +1,6 @@
 import mongoose, { type Types } from 'mongoose';
+import { logger } from '../../integrations/logger.js';
+import { areaMapLink, fetchAreaMap, type MapImage } from '../../integrations/maps/area-map.js';
 import { HttpError } from '../../lib/http-error.js';
 import { memo } from '../../lib/memo.js';
 import { addNzDays, parseNzDateTime } from '../../lib/nz-time.js';
@@ -76,6 +78,9 @@ export async function getVehicleDetail(slug: string, now = new Date()): Promise<
     getPlatformSettings(),
   ]);
   if (!host) throw notFound();
+  const approx = vehicle.location
+    ? approximateArea(vehicle._id.toString(), vehicle.location.coordinates)
+    : null;
 
   return {
     id: vehicle._id.toString(),
@@ -117,7 +122,8 @@ export async function getVehicleDetail(slug: string, now = new Date()): Promise<
       ...(vehicle.suburb && { suburb: vehicle.suburb }),
       ...(vehicle.city && { city: vehicle.city }),
       ...(vehicle.region && { region: vehicle.region }),
-      approx: vehicle.location ? approximateArea(vehicle._id.toString(), vehicle.location.coordinates) : null,
+      approx,
+      mapUrl: approx ? areaMapLink(vehicle._id.toString(), approx) : null,
     },
     deliveryOptions: vehicle.deliveryOptions.map((option) => deliveryOptionSummary(option, vehicle)),
     protectionPlans: settings.protectionPlans,
@@ -125,6 +131,22 @@ export async function getVehicleDetail(slug: string, now = new Date()): Promise<
     tripCount: vehicle.tripCount,
     host: publicHost(host),
   };
+}
+
+/**
+ * GET /vehicles/{id}/area-map: the listing's map image, fetched from Google with the server's key
+ * (plan §1.2). 503 when Google isn't set up or refuses it, and the website shows its sketch instead.
+ */
+export async function vehicleAreaMap(id: string): Promise<MapImage> {
+  const vehicle = await findLiveVehicle(id);
+  if (!vehicle.location) throw notFound();
+  const area = approximateArea(vehicle._id.toString(), vehicle.location.coordinates);
+  const image = await fetchAreaMap(area).catch((error: unknown) => {
+    logger.warn({ err: error }, 'Google Maps Static API failed; the listing shows its sketch');
+    return null;
+  });
+  if (!image) throw new HttpError(503, 'MAP_UNAVAILABLE', "The map isn't available right now.");
+  return image;
 }
 
 /** The homepage's featured cars block (plan §12.6): admins pick them in `home.featured-vehicles`. */
