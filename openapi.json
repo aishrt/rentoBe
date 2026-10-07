@@ -3305,10 +3305,18 @@
                   "radiusM"
                 ],
                 "description": "A circle that contains the car, for the map; never its address"
+              },
+              "mapUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The area map image (GET /vehicles/{id}/area-map), served by this API so no Google key reaches the browser; null when Google isn’t set up"
               }
             },
             "required": [
-              "approx"
+              "approx",
+              "mapUrl"
             ]
           },
           "deliveryOptions": {
@@ -10984,6 +10992,80 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vehicles/{id}/area-map": {
+      "get": {
+        "tags": [
+          "Vehicles"
+        ],
+        "summary": "The listing’s area map",
+        "description": "Public. A Maps Static API image of the approximate area as a shaded circle, never a pin, fetched with the server’s Google key so no key reaches the browser. Use the listing’s `location.mapUrl`. Cached for a day.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The car’s id"
+            },
+            "required": true,
+            "description": "The car’s id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Changes when the area moves, so caches refresh"
+            },
+            "required": false,
+            "description": "Changes when the area moves, so caches refresh",
+            "name": "v",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The map",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
             "content": {
               "application/json": {
                 "schema": {

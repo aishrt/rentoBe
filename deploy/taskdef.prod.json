@@ -26,6 +26,7 @@
         { "name": "MAIL_DRIVER", "value": "resend" },
         { "name": "SMS_DRIVER", "value": "dummy" },
         { "name": "API_PUBLIC_URL", "value": "https://api.rentovroom.com" },
+        { "name": "PLACES_DRIVER", "value": "google" },
         { "name": "UPLOAD_DRIVER", "value": "s3" },
         { "name": "S3_BUCKET", "value": "rento-vroom-media-prod-935937182366" },
         { "name": "S3_REGION", "value": "ap-southeast-2" },
@@ -79,6 +80,10 @@
         {
           "name": "STRIPE_WEBHOOK_SECRET",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:STRIPE_WEBHOOK_SECRET::"
+        },
+        {
+          "name": "GOOGLE_MAPS_SERVER_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:GOOGLE_MAPS_SERVER_KEY::"
         }
       ],
       "logConfiguration": {
