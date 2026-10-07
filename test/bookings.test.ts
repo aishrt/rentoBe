@@ -1,8 +1,12 @@
 import request from 'supertest';
 import Stripe from 'stripe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { renderEmail } from '../src/emails/index.js';
+import type { BookingCancelledProps, RefundIssuedProps } from '../src/emails/templates/booking-emails.js';
 import { env } from '../src/env.js';
 import { stripe } from '../src/integrations/stripe.js';
+import { refundUnwantedJob } from '../src/jobs/handlers/booking-jobs.js';
+import type { JobContext } from '../src/jobs/handlers/index.js';
 import { JobModel } from '../src/jobs/job.model.js';
 import { createJobRunner } from '../src/jobs/runner.js';
 import { forget } from '../src/lib/memo.js';
@@ -441,6 +445,35 @@ describe('Booking an Instant Book car', () => {
     expect((await BookingModel.findById(late.id).lean())!.status).toBe('CONFIRMED');
   });
 
+  it('refunds a payment that went through after the booking ended, and tells the Guest why', async () => {
+    const spies = mockStripe();
+    const { id, ref } = await paidBooking();
+    await BookingModel.updateOne({ _id: id }, { $set: { status: 'EXPIRED' } });
+    const payment = await PaymentModel.findOneAndUpdate(
+      { bookingId: id },
+      { $set: { status: 'SUCCEEDED' } },
+      { new: true },
+    );
+    const context = { log: { warn: vi.fn() } } as unknown as JobContext;
+
+    await refundUnwantedJob({ paymentId: payment!.id }, context);
+    // A retry finds it refunded and does nothing more.
+    await refundUnwantedJob({ paymentId: payment!.id }, context);
+
+    expect(spies.refund).toHaveBeenCalledTimes(1);
+    const emails = await NotificationModel.find({ type: 'REFUND_ISSUED', channel: 'EMAIL' }).lean();
+    expect(emails).toHaveLength(1);
+    expect(emails[0]!.payload).toMatchObject({
+      template: 'refundIssued',
+      props: { ref, afterBookingEnded: true },
+    });
+    const rendered = await renderEmail(
+      'refundIssued',
+      (emails[0]!.payload as { props: RefundIssuedProps }).props,
+    );
+    expect(rendered.text).toContain('went through after the booking had ended');
+  });
+
   it('tells the Guest once when a payment fails, and keeps the dates held', async () => {
     mockStripe();
     const { id, piId } = await paidBooking();
@@ -550,6 +583,23 @@ describe('Request to book', () => {
       status: 'CANCELLED',
       cancellation: { reason: 'REQUEST_WITHDRAWN', by: 'GUEST' },
     });
+
+    // Both emails say the request was withdrawn, not that a booking was cancelled.
+    const emails = await NotificationModel.find({ type: 'REQUEST_WITHDRAWN', channel: 'EMAIL' }).lean();
+    const payloads = emails.map((email) => email.payload as { template: 'bookingCancelled'; props: object });
+    expect(payloads.map((payload) => payload.props)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ audience: 'GUEST', withdrawn: true }),
+        expect.objectContaining({ audience: 'HOST', withdrawn: true }),
+      ]),
+    );
+    const guestEmail = payloads.find(
+      (payload) => (payload.props as { audience: string }).audience === 'GUEST',
+    )!;
+    const rendered = await renderEmail('bookingCancelled', guestEmail.props as BookingCancelledProps);
+    expect(rendered.subject).toBe(`Request ${ref} is withdrawn`);
+    expect(rendered.text).toContain("You haven't been charged");
+    expect(rendered.text.toLowerCase()).not.toContain('booking cancelled');
   });
 });
 

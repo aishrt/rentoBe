@@ -151,7 +151,8 @@ export const emailTemplates = {
     component: RequestExpiredHostEmail,
   }),
   bookingCancelled: defineTemplate<BookingCancelledProps>({
-    subject: ({ ref }) => `Booking ${ref} is cancelled`,
+    subject: ({ ref, withdrawn }) =>
+      withdrawn ? `Request ${ref} is withdrawn` : `Booking ${ref} is cancelled`,
     component: BookingCancelledEmail,
   }),
   paymentReceipt: defineTemplate<PaymentReceiptProps>({
