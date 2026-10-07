@@ -379,6 +379,504 @@
           }
         }
       },
+      "SavedCars": {
+        "type": "object",
+        "properties": {
+          "cars": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedCar"
+            },
+            "description": "Most recently saved first"
+          },
+          "search": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "place": {
+                "type": "string"
+              },
+              "start": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "days": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "days"
+            ],
+            "description": "The last search’s dates, while they are still ahead; null otherwise"
+          }
+        },
+        "required": [
+          "cars",
+          "search"
+        ]
+      },
+      "SavedCar": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "description": "e.g. \"2022 Toyota RAV4\""
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "photo": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "alt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url",
+              "alt"
+            ]
+          },
+          "suburb": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "distanceKm": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "From the searched place; null without one"
+          },
+          "rating": {
+            "$ref": "#/components/schemas/Rating"
+          },
+          "tripCount": {
+            "type": "integer"
+          },
+          "dailyCents": {
+            "type": "integer"
+          },
+          "estimate": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "days": {
+                "type": "integer"
+              },
+              "totalCents": {
+                "type": "integer",
+                "description": "Every mandatory charge for the dates (rental, service fee, mandatory protection, GST), plus airport delivery for an airport search"
+              },
+              "includesAirportDelivery": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "days",
+              "totalCents",
+              "includesAirportDelivery"
+            ],
+            "description": "Only when the search has dates"
+          },
+          "instantBook": {
+            "type": "boolean"
+          },
+          "delivery": {
+            "type": "boolean",
+            "description": "Delivers to an address"
+          },
+          "airportDelivery": {
+            "type": "boolean"
+          },
+          "bodyType": {
+            "type": "string",
+            "enum": [
+              "HATCHBACK",
+              "SEDAN",
+              "WAGON",
+              "SUV",
+              "UTE",
+              "VAN",
+              "PEOPLE_MOVER",
+              "COUPE",
+              "CONVERTIBLE"
+            ]
+          },
+          "fuelType": {
+            "type": "string",
+            "enum": [
+              "PETROL",
+              "DIESEL",
+              "HYBRID",
+              "PHEV",
+              "EV"
+            ]
+          },
+          "transmission": {
+            "type": "string",
+            "enum": [
+              "AUTOMATIC",
+              "MANUAL"
+            ]
+          },
+          "seats": {
+            "type": "integer"
+          },
+          "unlimitedKm": {
+            "type": "boolean"
+          },
+          "petFriendly": {
+            "type": "boolean"
+          },
+          "childSeat": {
+            "type": "boolean"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to three key features"
+          },
+          "listed": {
+            "type": "boolean",
+            "description": "Still live in search; false once the Host takes it down"
+          },
+          "availableForDates": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether it can be booked for the last searched dates: free, documents current and within its trip rules. Null without dates"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "title",
+          "make",
+          "model",
+          "year",
+          "photo",
+          "distanceKm",
+          "rating",
+          "tripCount",
+          "dailyCents",
+          "estimate",
+          "instantBook",
+          "delivery",
+          "airportDelivery",
+          "bodyType",
+          "fuelType",
+          "transmission",
+          "seats",
+          "unlimitedKm",
+          "petFriendly",
+          "childSeat",
+          "features",
+          "listed",
+          "availableForDates"
+        ],
+        "description": "A car saved with the heart. The estimate is for the last searched dates, when it can be booked"
+      },
+      "Rating": {
+        "type": "object",
+        "properties": {
+          "avg": {
+            "type": "number"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "avg",
+          "count"
+        ],
+        "description": "Average stars and how many reviews; count 0 shows as \"New\""
+      },
+      "SavedCards": {
+        "type": "object",
+        "properties": {
+          "cards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedCard"
+            }
+          }
+        },
+        "required": [
+          "cards"
+        ]
+      },
+      "SavedCard": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The Stripe PaymentMethod id (pm_…)"
+          },
+          "brand": {
+            "type": "string",
+            "description": "e.g. visa, mastercard, amex"
+          },
+          "last4": {
+            "type": "string"
+          },
+          "expMonth": {
+            "type": "integer"
+          },
+          "expYear": {
+            "type": "integer"
+          },
+          "expired": {
+            "type": "boolean"
+          },
+          "wallet": {
+            "type": "string",
+            "enum": [
+              "apple_pay",
+              "google_pay"
+            ],
+            "description": "Saved from Apple Pay or Google Pay"
+          }
+        },
+        "required": [
+          "id",
+          "brand",
+          "last4",
+          "expMonth",
+          "expYear",
+          "expired"
+        ]
+      },
+      "CardSetup": {
+        "type": "object",
+        "properties": {
+          "clientSecret": {
+            "type": "string",
+            "description": "For the Payment Element to save one card. Never logged or stored."
+          }
+        },
+        "required": [
+          "clientSecret"
+        ]
+      },
+      "PaymentHistory": {
+        "type": "object",
+        "properties": {
+          "payments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaymentHistoryItem"
+            },
+            "description": "Newest first, up to 100"
+          }
+        },
+        "required": [
+          "payments"
+        ]
+      },
+      "PaymentHistoryItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "vehicleTitle": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "BOOKING",
+              "EXTRA_CHARGE"
+            ]
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AUTHORISED",
+              "SUCCEEDED",
+              "FAILED",
+              "REFUNDED",
+              "PARTIALLY_REFUNDED"
+            ],
+            "description": "AUTHORISED: held on the card, not charged yet. FAILED is only listed for an extra charge still to pay"
+          },
+          "method": {
+            "type": "string",
+            "description": "e.g. \"Visa ending 4242\""
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "refundedCents": {
+            "type": "integer"
+          },
+          "refunds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "amountCents": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "SUCCEEDED",
+                    "FAILED"
+                  ]
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "amountCents",
+                "status",
+                "at"
+              ]
+            }
+          },
+          "hasReceipt": {
+            "type": "boolean",
+            "description": "GET /bookings/{id}/receipt has a receipt for it"
+          }
+        },
+        "required": [
+          "id",
+          "bookingRef",
+          "vehicleTitle",
+          "type",
+          "amountCents",
+          "status",
+          "at",
+          "refundedCents",
+          "refunds",
+          "hasReceipt"
+        ]
+      },
+      "AccountClosure": {
+        "type": "object",
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "UPCOMING_TRIP",
+                    "HOSTED_BOOKING",
+                    "OPEN_INCIDENT",
+                    "UNPAID_CHARGE",
+                    "PAYOUT_DUE"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ]
+            },
+            "description": "Why the account can’t be closed yet (plan §8.2): a trip or booking still to come or under way, an open incident, an unpaid charge or a payout still due"
+          }
+        },
+        "required": [
+          "allowed",
+          "blockers"
+        ]
+      },
+      "PrivacyRequestResponse": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "The support ticket reference, e.g. ST-4HX8PA"
+          },
+          "alreadyOpen": {
+            "type": "boolean",
+            "description": "The same request was already open, so no new one was made"
+          }
+        },
+        "required": [
+          "ref",
+          "alreadyOpen"
+        ]
+      },
+      "PrivacyRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "ACCESS",
+              "CORRECTION",
+              "CLOSE_ACCOUNT"
+            ],
+            "description": "ACCESS: a copy of their information. CORRECTION: something to fix (say what). CLOSE_ACCOUNT: close and anonymise the account"
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
       "AdminOverview": {
         "type": "object",
         "properties": {
@@ -2724,22 +3222,6 @@
           "features"
         ]
       },
-      "Rating": {
-        "type": "object",
-        "properties": {
-          "avg": {
-            "type": "number"
-          },
-          "count": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "avg",
-          "count"
-        ],
-        "description": "Average stars and how many reviews; count 0 shows as \"New\""
-      },
       "VehicleMakes": {
         "type": "object",
         "properties": {
@@ -4767,6 +5249,278 @@
           "email",
           "subject",
           "message"
+        ]
+      },
+      "SupportTickets": {
+        "type": "object",
+        "properties": {
+          "tickets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupportTicketSummary"
+            }
+          }
+        },
+        "required": [
+          "tickets"
+        ]
+      },
+      "SupportTicketSummary": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "BOOKING",
+              "PAYMENT",
+              "ACCOUNT",
+              "HOSTING",
+              "SAFETY",
+              "PRIVACY",
+              "OTHER"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "PENDING",
+              "RESOLVED"
+            ],
+            "description": "OPEN: with the support team. PENDING: waiting for the user’s reply. RESOLVED: done"
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the last message was added"
+          }
+        },
+        "required": [
+          "ref",
+          "subject",
+          "category",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "SupportTicketResponse": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "$ref": "#/components/schemas/SupportTicket"
+          }
+        },
+        "required": [
+          "ticket"
+        ]
+      },
+      "SupportTicket": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "BOOKING",
+              "PAYMENT",
+              "ACCOUNT",
+              "HOSTING",
+              "SAFETY",
+              "PRIVACY",
+              "OTHER"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "PENDING",
+              "RESOLVED"
+            ],
+            "description": "OPEN: with the support team. PENDING: waiting for the user’s reply. RESOLVED: done"
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the last message was added"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "from": {
+                  "type": "string",
+                  "enum": [
+                    "YOU",
+                    "SUPPORT"
+                  ]
+                },
+                "body": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "from",
+                "body",
+                "createdAt"
+              ]
+            }
+          }
+        },
+        "required": [
+          "ref",
+          "subject",
+          "category",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "messages"
+        ],
+        "description": "A user’s own ticket, without the staff’s internal notes"
+      },
+      "TicketReply": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 5000
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
+      "HelpArticles": {
+        "type": "object",
+        "properties": {
+          "articles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HelpArticleSummary"
+            },
+            "description": "In the order admins set"
+          }
+        },
+        "required": [
+          "articles"
+        ]
+      },
+      "HelpArticleSummary": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "GUEST",
+              "HOST",
+              "ALL"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "description": "The opening sentence or two, as plain text"
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "category",
+          "audience",
+          "summary"
+        ]
+      },
+      "HelpArticleResponse": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "$ref": "#/components/schemas/HelpArticle"
+          }
+        },
+        "required": [
+          "article"
+        ]
+      },
+      "HelpArticle": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "GUEST",
+              "HOST",
+              "ALL"
+            ]
+          },
+          "body": {
+            "type": "string",
+            "description": "Markdown"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "category",
+          "audience",
+          "body",
+          "updatedAt"
         ]
       },
       "HostProfileResponse": {
@@ -7729,6 +8483,168 @@
           "acceptGuestAgreement"
         ]
       },
+      "ReceiptResponse": {
+        "type": "object",
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          }
+        },
+        "required": [
+          "receipt"
+        ]
+      },
+      "Receipt": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "The booking reference, which is also the receipt number"
+          },
+          "paidAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "supplier": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "gstNumber": {
+                "type": "string",
+                "description": "Shown once the business is GST-registered"
+              },
+              "email": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "email"
+            ]
+          },
+          "customer": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "email"
+            ]
+          },
+          "vehicleTitle": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "amountCents": {
+                  "type": "integer"
+                },
+                "gstCents": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "label",
+                "amountCents",
+                "gstCents"
+              ]
+            }
+          },
+          "totalCents": {
+            "type": "integer"
+          },
+          "gstCents": {
+            "type": "integer",
+            "description": "The GST included in the total"
+          },
+          "gstRatePct": {
+            "type": "number"
+          },
+          "paidWith": {
+            "type": "string",
+            "description": "e.g. \"Visa ending 4242\" or \"Apple Pay (Visa ending 4242)\""
+          },
+          "refunds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "amountCents": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "SUCCEEDED",
+                    "FAILED"
+                  ]
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "amountCents",
+                "status",
+                "at"
+              ]
+            }
+          },
+          "refundedCents": {
+            "type": "integer"
+          },
+          "netPaidCents": {
+            "type": "integer",
+            "description": "The total less refunds that went through"
+          }
+        },
+        "required": [
+          "ref",
+          "paidAt",
+          "supplier",
+          "customer",
+          "vehicleTitle",
+          "start",
+          "end",
+          "days",
+          "lines",
+          "totalCents",
+          "gstCents",
+          "gstRatePct",
+          "paidWith",
+          "refunds",
+          "refundedCents",
+          "netPaidCents"
+        ],
+        "description": "The GST receipt for a paid booking (plan §8.1, item 18): every line, the GST included and the total in NZD"
+      },
       "CancellationPreview": {
         "type": "object",
         "properties": {
@@ -9592,6 +10508,373 @@
         }
       }
     },
+    "/me/saved-cars": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "The Saved cars page",
+        "description": "Each saved car as a card, with its estimated total for the last searched dates when it can be booked for them (spec §8, §28: comparing cars). A car its Host has taken down shows `listed: false`.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved cars",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedCars"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/payment-methods": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Saved cards",
+        "description": "The cards saved to the Guest’s Stripe customer, from checkout or added here (plan §8.1, item 7). Empty until the first one.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved cards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedCards"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/payment-methods/setup": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Start saving a card",
+        "description": "A Stripe SetupIntent for the Payment Element to save one card for checkout and post-trip charges. Card details go straight to Stripe.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ready for the Payment Element",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CardSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/payment-methods/{id}": {
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Remove a saved card",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The card’s id (pm_…)"
+            },
+            "required": true,
+            "description": "The card’s id (pm_…)",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/payments": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Payment history",
+        "description": "What the Guest has paid, newest first, with refunds and whether each has a receipt (plan §8.1, item 7). Attempts that never charged anything are left out.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentHistory"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/account-closure": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Whether the account can be closed now",
+        "description": "Closing is refused while a trip or booking is requested, booked or under way, an incident is open, an extra charge is unpaid or a payout is due (plan §8.2).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether, and why not",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountClosure"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/privacy-requests": {
+      "post": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Ask for a copy or correction of personal information, or to close the account",
+        "description": "Opens a PRIVACY support ticket for staff to carry out, and emails its reference (NZ Privacy Act 2020, plan §14). The same request while one is open returns that one. Closing the account answers 409 CLOSURE_BLOCKED while GET /me/account-closure lists blockers.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrivacyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The ticket",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivacyRequestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/overview": {
       "get": {
         "tags": [
@@ -11345,6 +12628,272 @@
           },
           "429": {
             "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "My support requests",
+        "description": "The signed-in user’s own tickets, most recently active first: from the Contact form while signed in, a booking’s Contact support link or a privacy request.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tickets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportTickets"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/support/tickets/{ref}": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "One of my support requests, with its replies",
+        "description": "The staff’s internal notes are never included.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The ticket reference, e.g. ST-4HX8PA"
+            },
+            "required": true,
+            "description": "The ticket reference, e.g. ST-4HX8PA",
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The ticket",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportTicketResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/support/tickets/{ref}/messages": {
+      "post": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Reply on my support request",
+        "description": "It goes back to the support team, reopening a resolved ticket. Rate-limited per user.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The ticket reference, e.g. ST-4HX8PA"
+            },
+            "required": true,
+            "description": "The ticket reference, e.g. ST-4HX8PA",
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketReply"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The ticket",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportTicketResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/help/articles": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "Help centre articles",
+        "description": "Public. Published articles in the order admins set; with an audience, the ones for Guests or Hosts and the ones for everyone.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "GUEST",
+                "HOST"
+              ],
+              "description": "Also includes the articles for everyone"
+            },
+            "required": false,
+            "description": "Also includes the articles for everyone",
+            "name": "audience",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Articles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HelpArticles"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/help/articles/{slug}": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "One help article",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "slug",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The article",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HelpArticleResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -14898,6 +16447,169 @@
           },
           "503": {
             "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/receipt": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "The GST receipt",
+        "description": "For the Guest (and staff) once the booking is paid (plan §8.1, item 18): every line, the GST included, how it was paid and any refunds. 409 NO_RECEIPT before payment; 403 for the Host.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceiptResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{id}/receipt.pdf": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "The GST receipt as a PDF",
+        "description": "The same receipt as an A4 PDF to download.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The PDF, as an attachment",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {

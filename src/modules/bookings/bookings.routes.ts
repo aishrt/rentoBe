@@ -21,6 +21,7 @@ import {
   declineBookingSchema,
   preparePaymentSchema,
 } from './bookings.schemas.js';
+import { bookingReceipt, receiptPdf } from './receipt.service.js';
 
 /** Mounted at /api/v1/bookings (plan §11): the booking flow, trips and the Host's answers. */
 export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: true }) {
@@ -64,6 +65,21 @@ export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: tr
     await syncBookingPayment(booking);
     const { booking: fresh } = await findBookingFor(actor(req), booking.id);
     res.json({ booking: await bookingView(fresh, 'GUEST') });
+  });
+
+  // The GST receipt (plan §8.1, item 18), as data for the receipt page and as a PDF to download.
+  router.get('/:id/receipt', async (req, res) => {
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    res.json({ receipt: await bookingReceipt(booking, viewer) });
+  });
+
+  router.get('/:id/receipt.pdf', async (req, res) => {
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    const pdf = await receiptPdf(await bookingReceipt(booking, viewer));
+    res
+      .type('application/pdf')
+      .set('Content-Disposition', `attachment; filename="rento-vroom-receipt-${booking.ref}.pdf"`)
+      .send(pdf);
   });
 
   router.get('/:id/cancellation-preview', async (req, res) => {

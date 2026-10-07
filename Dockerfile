@@ -20,6 +20,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# Fonts for the PDFs the API writes, such as receipts; read from the working directory at runtime.
+COPY --from=build /app/assets ./assets
 USER node
 EXPOSE 4000
 # Source maps turn stack traces in logs and Sentry into TypeScript file and line numbers.

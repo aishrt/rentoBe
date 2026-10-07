@@ -20,6 +20,7 @@ import {
   reviewsRouter,
 } from './modules/cms/content.routes.js';
 import { currencyRouter } from './modules/currency/currency.routes.js';
+import { helpRouter } from './modules/help/help.routes.js';
 import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { stripeWebhookRouter } from './modules/payments/stripe-webhook.js';
 import { placesRouter, searchRouter } from './modules/search/search.routes.js';
@@ -77,6 +78,7 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   api.use('/faqs', faqsRouter());
   api.use('/policies', policiesRouter());
   api.use('/reviews', reviewsRouter());
+  api.use('/help', helpRouter());
   api.use('/support', supportRouter({ rateLimit }));
   api.use('/uploads', uploadsRouter());
   api.use('/files', filesRouter());

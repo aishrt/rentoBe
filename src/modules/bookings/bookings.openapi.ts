@@ -15,6 +15,7 @@ import {
   identityReviewSchema,
   paymentSessionSchema,
   preparePaymentSchema,
+  receiptResponseSchema,
 } from './bookings.schemas.js';
 
 const idParam = z.object({
@@ -115,6 +116,38 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The booking', bookingResponseSchema),
       ...errorResponses(401, 403, 404, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/bookings/{id}/receipt',
+    tags: ['Bookings'],
+    summary: 'The GST receipt',
+    description:
+      'For the Guest (and staff) once the booking is paid (plan §8.1, item 18): every line, the GST included, how it was paid and any refunds. 409 NO_RECEIPT before payment; 403 for the Host.',
+    security: signedIn,
+    request: { params: idParam },
+    responses: {
+      200: jsonResponse('The receipt', receiptResponseSchema),
+      ...errorResponses(401, 403, 404, 409),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/bookings/{id}/receipt.pdf',
+    tags: ['Bookings'],
+    summary: 'The GST receipt as a PDF',
+    description: 'The same receipt as an A4 PDF to download.',
+    security: signedIn,
+    request: { params: idParam },
+    responses: {
+      200: {
+        description: 'The PDF, as an attachment',
+        content: { 'application/pdf': { schema: z.string().meta({ format: 'binary' }) } },
+      },
+      ...errorResponses(401, 403, 404, 409),
     },
   });
 

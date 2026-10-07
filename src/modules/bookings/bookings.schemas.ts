@@ -225,3 +225,43 @@ export const cancellationPreviewSchema = z
   })
   .meta({ id: 'CancellationPreview' });
 export type CancellationPreview = z.infer<typeof cancellationPreviewSchema>;
+
+const receiptRefundSchema = z.object({
+  amountCents: z.number().int(),
+  status: z.enum(['PENDING', 'SUCCEEDED', 'FAILED']),
+  at: z.iso.datetime(),
+});
+
+export const receiptSchema = z
+  .object({
+    ref: z.string().meta({ description: 'The booking reference, which is also the receipt number' }),
+    paidAt: z.iso.datetime(),
+    supplier: z.object({
+      name: z.string(),
+      gstNumber: z.string().optional().meta({ description: 'Shown once the business is GST-registered' }),
+      email: z.string(),
+    }),
+    customer: z.object({ name: z.string(), email: z.string() }),
+    vehicleTitle: z.string(),
+    start: z.iso.datetime(),
+    end: z.iso.datetime(),
+    days: z.number().int(),
+    lines: z.array(
+      z.object({ label: z.string(), amountCents: z.number().int(), gstCents: z.number().int() }),
+    ),
+    totalCents: z.number().int(),
+    gstCents: z.number().int().meta({ description: 'The GST included in the total' }),
+    gstRatePct: z.number(),
+    paidWith: z.string().meta({ description: 'e.g. "Visa ending 4242" or "Apple Pay (Visa ending 4242)"' }),
+    refunds: z.array(receiptRefundSchema),
+    refundedCents: z.number().int(),
+    netPaidCents: z.number().int().meta({ description: 'The total less refunds that went through' }),
+  })
+  .meta({
+    id: 'Receipt',
+    description:
+      'The GST receipt for a paid booking (plan §8.1, item 18): every line, the GST included and the total in NZD',
+  });
+export type Receipt = z.infer<typeof receiptSchema>;
+
+export const receiptResponseSchema = z.object({ receipt: receiptSchema }).meta({ id: 'ReceiptResponse' });

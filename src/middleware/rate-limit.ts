@@ -123,6 +123,16 @@ export const contactRateLimit = () =>
       "You've sent a few messages already. We'll reply soon; please try again in an hour if it's urgent.",
   });
 
+/** Replies on a user's own support tickets, per user, against spam. */
+export const ticketReplyRateLimit = () =>
+  limitRequests({
+    name: 'ticket-reply',
+    windowMs: 60 * MINUTE,
+    limit: 30,
+    perUser: true,
+    message: "You've sent a lot of messages in a short time. Please try again in an hour.",
+  });
+
 /** Emails a user can ask us to send again, per user. */
 export const resendEmailRateLimit = () =>
   limitRequests({

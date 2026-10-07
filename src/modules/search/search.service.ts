@@ -268,7 +268,8 @@ export function toVehicleCard(
   };
 }
 
-async function hostGstStatus(hostIds: Types.ObjectId[]): Promise<Map<string, boolean>> {
+/** Each Host's GST registration, which the price of their cars depends on (plan §5). */
+export async function hostGstStatus(hostIds: Types.ObjectId[]): Promise<Map<string, boolean>> {
   if (hostIds.length === 0) return new Map();
   const hosts = await UserModel.find({ _id: mongoose.trusted({ $in: hostIds }) })
     .select('hostProfile.gstRegistered')

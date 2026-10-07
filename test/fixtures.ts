@@ -1,5 +1,7 @@
 import type { Types } from 'mongoose';
 import { point } from '../src/lib/model-fields.js';
+import { BookingModel, type Booking } from '../src/modules/bookings/booking.model.js';
+import { PaymentModel, type Payment } from '../src/modules/payments/payment.model.js';
 import { PlaceModel } from '../src/modules/search/place.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel, type Vehicle } from '../src/modules/vehicles/vehicle.model.js';
@@ -158,6 +160,70 @@ export async function createVehicle(
       },
     ],
     ...rest,
+  });
+}
+
+let bookingNumber = 0;
+
+/**
+ * A confirmed 3-day booking written straight to the database, for features that start after checkout
+ * (trips, receipts, handover, reviews, payouts). Its price is a real one: 3 days at $89 with the 10 %
+ * service fee and the $15 Basic plan, GST included.
+ */
+export async function createBookingRecord(
+  parties: { guestId: Types.ObjectId; hostId: Types.ObjectId; vehicleId: Types.ObjectId },
+  overrides: Partial<Booking> = {},
+) {
+  bookingNumber += 1;
+  const startAt = overrides.startAt ?? new Date(Date.now() + 10 * DAY_MS);
+  const endAt = overrides.endAt ?? new Date(startAt.getTime() + 3 * DAY_MS);
+  const createdAt = new Date(Date.now() - DAY_MS);
+  return BookingModel.create({
+    ref: `RV-T${String(bookingNumber).padStart(5, '0')}`,
+    ...parties,
+    startAt,
+    endAt,
+    status: 'CONFIRMED',
+    instantBook: true,
+    vehicleSnapshot: { title: '2021 Toyota Corolla', regoPlate: 'TST001' },
+    terms: { fuelPolicy: 'SAME_LEVEL', kmAllowancePerDay: 250, unlimitedKm: false, extraKmCents: 35 },
+    price: {
+      subtotalCents: 26700,
+      deliveryCents: 0,
+      serviceFeeCents: 2670,
+      protectionCents: 4500,
+      gstCents: 4418,
+      totalCents: 33870,
+      hostPayoutCents: 21360,
+      platformFeeCents: 8010,
+    },
+    lineItems: [
+      { code: 'RENTAL', label: '3 days × $89', amountCents: 26700, gstCents: 3483, mandatory: true },
+      { code: 'SERVICE_FEE', label: 'Service fee', amountCents: 2670, gstCents: 348, mandatory: true },
+      { code: 'PROTECTION', label: 'Basic protection', amountCents: 4500, gstCents: 587, mandatory: true },
+    ],
+    cancellationPolicy: 'MODERATE',
+    statusHistory: [
+      { status: 'PAYMENT_PENDING', at: createdAt, by: parties.guestId },
+      { status: 'CONFIRMED', at: new Date(createdAt.getTime() + 60_000) },
+    ],
+    ...overrides,
+  });
+}
+
+/** The booking's payment, as Stripe left it once paid. */
+export async function createPaymentRecord(
+  booking: { _id: Types.ObjectId; price: { totalCents: number } },
+  overrides: Partial<Payment> = {},
+) {
+  return PaymentModel.create({
+    bookingId: booking._id,
+    type: 'BOOKING',
+    stripePaymentIntentId: `pi_test_${booking._id.toString()}_${Math.random().toString(36).slice(2, 8)}`,
+    amountCents: booking.price.totalCents,
+    status: 'SUCCEEDED',
+    method: 'Visa ending 4242',
+    ...overrides,
   });
 }
 

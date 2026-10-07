@@ -1,4 +1,4 @@
-import mongoose, { type ClientSession } from 'mongoose';
+import type { ClientSession } from 'mongoose';
 import Stripe from 'stripe';
 import { withTransaction } from '../../db.js';
 import { CHARGE_CURRENCY, stripe } from '../../integrations/stripe.js';
@@ -7,6 +7,7 @@ import { reportError } from '../../integrations/sentry.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
 import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
+import { ensureCustomer } from '../payments/stripe-customer.js';
 import { AGREEMENT_VERSIONS } from '../users/agreements.js';
 import { verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel } from '../users/user.model.js';
@@ -25,22 +26,6 @@ import type { PaymentSession } from './bookings.schemas.js';
  */
 
 type Intent = Pick<Stripe.PaymentIntent, 'id' | 'status' | 'last_payment_error' | 'amount' | 'metadata'>;
-
-/** The Guest's Stripe customer, created on their first payment (plan §8.1, item 7). */
-async function ensureCustomer(userId: string): Promise<string> {
-  const user = await UserModel.findById(userId).select('email firstName lastName stripeCustomerId');
-  if (!user) throw unauthenticated();
-  if (user.stripeCustomerId) return user.stripeCustomerId;
-  const customer = await stripe().customers.create(
-    { email: user.email, name: `${user.firstName} ${user.lastName}`, metadata: { userId: user.id } },
-    { idempotencyKey: `customer-${user.id}` },
-  );
-  await UserModel.updateOne(
-    { _id: user._id, stripeCustomerId: mongoose.trusted({ $exists: false }) },
-    { $set: { stripeCustomerId: customer.id } },
-  );
-  return customer.id;
-}
 
 const REUSABLE: Stripe.PaymentIntent.Status[] = [
   'requires_payment_method',

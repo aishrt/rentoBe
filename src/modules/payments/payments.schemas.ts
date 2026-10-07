@@ -42,3 +42,62 @@ export const testPaymentStatusSchema = z
 
 export type TestPayment = z.infer<typeof testPaymentSchema>;
 export type TestPaymentStatus = z.infer<typeof testPaymentStatusSchema>;
+
+/** A card saved to the Guest's Stripe customer, for checkout and post-trip charges (plan §8.1, item 7). */
+export const savedCardSchema = z
+  .object({
+    id: z.string().meta({ description: 'The Stripe PaymentMethod id (pm_…)' }),
+    brand: z.string().meta({ description: 'e.g. visa, mastercard, amex' }),
+    last4: z.string(),
+    expMonth: z.number().int(),
+    expYear: z.number().int(),
+    expired: z.boolean(),
+    wallet: z
+      .enum(['apple_pay', 'google_pay'])
+      .optional()
+      .meta({ description: 'Saved from Apple Pay or Google Pay' }),
+  })
+  .meta({ id: 'SavedCard' });
+export type SavedCard = z.infer<typeof savedCardSchema>;
+
+export const savedCardsResponseSchema = z
+  .object({ cards: z.array(savedCardSchema) })
+  .meta({ id: 'SavedCards' });
+
+export const cardSetupResponseSchema = z
+  .object({
+    clientSecret: z
+      .string()
+      .meta({ description: 'For the Payment Element to save one card. Never logged or stored.' }),
+  })
+  .meta({ id: 'CardSetup' });
+
+const historyRefundSchema = z.object({
+  amountCents: z.number().int(),
+  status: z.enum(['PENDING', 'SUCCEEDED', 'FAILED']),
+  at: z.iso.datetime(),
+});
+
+export const paymentHistoryItemSchema = z
+  .object({
+    id: z.string(),
+    bookingRef: z.string(),
+    vehicleTitle: z.string(),
+    type: z.enum(['BOOKING', 'EXTRA_CHARGE']),
+    amountCents: z.number().int(),
+    status: z.enum(['AUTHORISED', 'SUCCEEDED', 'FAILED', 'REFUNDED', 'PARTIALLY_REFUNDED']).meta({
+      description:
+        'AUTHORISED: held on the card, not charged yet. FAILED is only listed for an extra charge still to pay',
+    }),
+    method: z.string().optional().meta({ description: 'e.g. "Visa ending 4242"' }),
+    at: z.iso.datetime(),
+    refundedCents: z.number().int(),
+    refunds: z.array(historyRefundSchema),
+    hasReceipt: z.boolean().meta({ description: 'GET /bookings/{id}/receipt has a receipt for it' }),
+  })
+  .meta({ id: 'PaymentHistoryItem' });
+export type PaymentHistoryItem = z.infer<typeof paymentHistoryItemSchema>;
+
+export const paymentHistoryResponseSchema = z
+  .object({ payments: z.array(paymentHistoryItemSchema).meta({ description: 'Newest first, up to 100' }) })
+  .meta({ id: 'PaymentHistory' });

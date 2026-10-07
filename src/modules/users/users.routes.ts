@@ -18,8 +18,22 @@ import { hostApplicationSchema, hostProfilePatchSchema } from '../hosts/hosts.sc
 import { applyToHost, getHostProfile, updateHostProfile } from '../hosts/hosts.service.js';
 import { driverLicenceInputSchema } from './driver-licence.schemas.js';
 import { checkoutReadiness, saveDriverLicence } from './driver-licence.service.js';
+import {
+  listPaymentHistory,
+  listSavedCards,
+  removeSavedCard,
+  startCardSetup,
+} from '../payments/guest-payments.service.js';
+import { privacyRequestSchema } from './privacy.schemas.js';
+import { accountClosure, requestPrivacy } from './privacy.service.js';
 import { lastSearchSchema } from './saved.schemas.js';
-import { listFavourites, removeFavourite, saveFavourite, saveLastSearch } from './saved.service.js';
+import {
+  listFavourites,
+  listSavedCars,
+  removeFavourite,
+  saveFavourite,
+  saveLastSearch,
+} from './saved.service.js';
 import { UserModel } from './user.model.js';
 import { toPublicUser } from './user.service.js';
 
@@ -122,6 +136,39 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
   router.put('/last-search', async (req, res) => {
     await saveLastSearch(req.auth!.userId, validate(lastSearchSchema, req.body));
     res.status(204).end();
+  });
+
+  // The Guest dashboard (spec §8): Saved cars priced for the last searched dates.
+  router.get('/saved-cars', async (req, res) => {
+    res.json(await listSavedCars(req.auth!.userId));
+  });
+
+  // Saved cards and payment history (plan §8.1, item 7).
+  router.get('/payment-methods', async (req, res) => {
+    res.json({ cards: await listSavedCards(req.auth!.userId) });
+  });
+
+  router.post('/payment-methods/setup', ...limit(accountChangeRateLimit), async (req, res) => {
+    res.json(await startCardSetup(req.auth!.userId));
+  });
+
+  router.delete('/payment-methods/:id', async (req, res) => {
+    await removeSavedCard(req.auth!.userId, String(req.params.id));
+    res.status(204).end();
+  });
+
+  router.get('/payments', async (req, res) => {
+    res.json({ payments: await listPaymentHistory(req.auth!.userId) });
+  });
+
+  // Privacy requests and closing the account (plan §8.2, §14).
+  router.get('/account-closure', async (req, res) => {
+    res.json(await accountClosure(req.auth!.userId));
+  });
+
+  router.post('/privacy-requests', ...limit(accountChangeRateLimit), async (req, res) => {
+    const input = validate(privacyRequestSchema, req.body);
+    res.status(201).json(await requestPrivacy(req.auth!.userId, input, req.ip));
   });
 
   return router;

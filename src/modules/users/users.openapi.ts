@@ -9,7 +9,17 @@ import {
   mfaVerifySchema,
 } from '../auth/auth.schemas.js';
 import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
-import { favouritesResponseSchema, lastSearchSchema } from './saved.schemas.js';
+import {
+  cardSetupResponseSchema,
+  paymentHistoryResponseSchema,
+  savedCardsResponseSchema,
+} from '../payments/payments.schemas.js';
+import {
+  accountClosureSchema,
+  privacyRequestResponseSchema,
+  privacyRequestSchema,
+} from './privacy.schemas.js';
+import { favouritesResponseSchema, lastSearchSchema, savedCarsResponseSchema } from './saved.schemas.js';
 import { userResponseSchema } from './user.schemas.js';
 
 /** The contract for users.routes.ts (plan §2.3). */
@@ -179,5 +189,94 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
     security: signedIn,
     request: { body: jsonBody(lastSearchSchema) },
     responses: { 204: { description: 'Saved' }, ...errorResponses(400, 401) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/saved-cars',
+    tags: ['Account'],
+    summary: 'The Saved cars page',
+    description:
+      'Each saved car as a card, with its estimated total for the last searched dates when it can be booked for them (spec §8, §28: comparing cars). A car its Host has taken down shows `listed: false`.',
+    security: signedIn,
+    responses: { 200: jsonResponse('Saved cars', savedCarsResponseSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/payment-methods',
+    tags: ['Account'],
+    summary: 'Saved cards',
+    description:
+      'The cards saved to the Guest’s Stripe customer, from checkout or added here (plan §8.1, item 7). Empty until the first one.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Saved cards', savedCardsResponseSchema),
+      ...errorResponses(401, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/payment-methods/setup',
+    tags: ['Account'],
+    summary: 'Start saving a card',
+    description:
+      'A Stripe SetupIntent for the Payment Element to save one card for checkout and post-trip charges. Card details go straight to Stripe.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Ready for the Payment Element', cardSetupResponseSchema),
+      ...errorResponses(401, 429, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'delete',
+    path: '/me/payment-methods/{id}',
+    tags: ['Account'],
+    summary: 'Remove a saved card',
+    security: signedIn,
+    request: { params: z.object({ id: z.string().meta({ description: 'The card’s id (pm_…)' }) }) },
+    responses: { 204: { description: 'Removed' }, ...errorResponses(401, 404, 503) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/payments',
+    tags: ['Account'],
+    summary: 'Payment history',
+    description:
+      'What the Guest has paid, newest first, with refunds and whether each has a receipt (plan §8.1, item 7). Attempts that never charged anything are left out.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Payments', paymentHistoryResponseSchema),
+      ...errorResponses(401),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/account-closure',
+    tags: ['Account'],
+    summary: 'Whether the account can be closed now',
+    description:
+      'Closing is refused while a trip or booking is requested, booked or under way, an incident is open, an extra charge is unpaid or a payout is due (plan §8.2).',
+    security: signedIn,
+    responses: { 200: jsonResponse('Whether, and why not', accountClosureSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/privacy-requests',
+    tags: ['Account'],
+    summary: 'Ask for a copy or correction of personal information, or to close the account',
+    description:
+      'Opens a PRIVACY support ticket for staff to carry out, and emails its reference (NZ Privacy Act 2020, plan §14). The same request while one is open returns that one. Closing the account answers 409 CLOSURE_BLOCKED while GET /me/account-closure lists blockers.',
+    security: signedIn,
+    request: { body: jsonBody(privacyRequestSchema) },
+    responses: {
+      201: jsonResponse('The ticket', privacyRequestResponseSchema),
+      ...errorResponses(400, 401, 409, 429),
+    },
   });
 }

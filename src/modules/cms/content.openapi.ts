@@ -1,7 +1,14 @@
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
-import { errorResponses, jsonBody, jsonResponse } from '../../openapi/shared.js';
-import { contactRequestSchema, contactResponseSchema } from '../support/support.schemas.js';
+import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
+import { helpArticleResponseSchema, helpArticlesResponseSchema } from '../help/help.schemas.js';
+import {
+  contactRequestSchema,
+  contactResponseSchema,
+  supportTicketResponseSchema,
+  supportTicketsResponseSchema,
+  ticketReplySchema,
+} from '../support/support.schemas.js';
 import {
   LEGAL_PAGE_KEYS,
   destinationDetailSchema,
@@ -12,7 +19,7 @@ import {
   publicPoliciesSchema,
 } from './content.schemas.js';
 
-/** The contract for content.routes.ts and support.routes.ts (plan §2.3). */
+/** The contract for content.routes.ts, help.routes.ts and support.routes.ts (plan §2.3). */
 export function registerContentPaths(registry: OpenAPIRegistry) {
   registry.registerPath({
     method: 'get',
@@ -99,5 +106,75 @@ export function registerContentPaths(registry: OpenAPIRegistry) {
       201: jsonResponse('The ticket', contactResponseSchema),
       ...errorResponses(400, 429),
     },
+  });
+
+  const refParam = z.object({
+    ref: z.string().meta({ description: 'The ticket reference, e.g. ST-4HX8PA' }),
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/support/tickets',
+    tags: ['Content'],
+    summary: 'My support requests',
+    description:
+      'The signed-in user’s own tickets, most recently active first: from the Contact form while signed in, a booking’s Contact support link or a privacy request.',
+    security: signedIn,
+    responses: { 200: jsonResponse('Tickets', supportTicketsResponseSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/support/tickets/{ref}',
+    tags: ['Content'],
+    summary: 'One of my support requests, with its replies',
+    description: 'The staff’s internal notes are never included.',
+    security: signedIn,
+    request: { params: refParam },
+    responses: {
+      200: jsonResponse('The ticket', supportTicketResponseSchema),
+      ...errorResponses(401, 404),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/support/tickets/{ref}/messages',
+    tags: ['Content'],
+    summary: 'Reply on my support request',
+    description: 'It goes back to the support team, reopening a resolved ticket. Rate-limited per user.',
+    security: signedIn,
+    request: { params: refParam, body: jsonBody(ticketReplySchema) },
+    responses: {
+      200: jsonResponse('The ticket', supportTicketResponseSchema),
+      ...errorResponses(400, 401, 404, 429),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/help/articles',
+    tags: ['Content'],
+    summary: 'Help centre articles',
+    description:
+      'Public. Published articles in the order admins set; with an audience, the ones for Guests or Hosts and the ones for everyone.',
+    request: {
+      query: z.object({
+        audience: z
+          .enum(['GUEST', 'HOST'])
+          .optional()
+          .meta({ description: 'Also includes the articles for everyone' }),
+      }),
+    },
+    responses: { 200: jsonResponse('Articles', helpArticlesResponseSchema) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/help/articles/{slug}',
+    tags: ['Content'],
+    summary: 'One help article',
+    request: { params: z.object({ slug: z.string() }) },
+    responses: { 200: jsonResponse('The article', helpArticleResponseSchema), ...errorResponses(404) },
   });
 }
