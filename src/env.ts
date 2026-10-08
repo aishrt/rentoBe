@@ -100,6 +100,12 @@ const envSchema = z
       .string()
       .regex(/^whsec_\w+$/, 'STRIPE_WEBHOOK_SECRET starts with whsec_')
       .optional(),
+    // The signing secret of the second endpoint, for Connect events about Hosts' payout accounts
+    // (account.updated, plan §8.1 item 20). Stripe sends those to an endpoint of their own.
+    STRIPE_CONNECT_WEBHOOK_SECRET: z
+      .string()
+      .regex(/^whsec_\w+$/, 'STRIPE_CONNECT_WEBHOOK_SECRET starts with whsec_')
+      .optional(),
 
     // SMS notifications such as new booking requests (plan §7), sent with Twilio when SMS_DRIVER=twilio.
     // One of the two: a Messaging Service (MG…) or a Twilio number. Twilio has no NZ numbers for SMS: an

@@ -228,3 +228,37 @@ describe('Deleting', () => {
     expect(await NotificationModel.countDocuments({ dedupeKey: 'LISTING_APPROVED:1' })).toBe(1);
   });
 });
+
+describe('notification preferences', () => {
+  it('saves the choices, and the unsubscribe link turns marketing off without signing in', async () => {
+    const { unsubscribeToken } = await import('../src/modules/users/notification-prefs.js');
+    const user = await createUser();
+    const agent = browserAgent();
+    await agent.post('/api/v1/auth/login').send({ email: user.email, password: PASSWORD });
+
+    expect((await agent.get('/api/v1/me/notification-prefs')).body.prefs).toEqual({
+      marketingEmail: false,
+      marketingSms: false,
+      unreadMessageSms: false,
+    });
+    const changed = await agent
+      .patch('/api/v1/me/notification-prefs')
+      .send({ marketingEmail: true, marketingSms: true, unreadMessageSms: true });
+    expect(changed.body.prefs).toEqual({ marketingEmail: true, marketingSms: true, unreadMessageSms: true });
+
+    const visitor = browserAgent();
+    expect(
+      (await visitor.post('/api/v1/notifications/unsubscribe').send({ token: `${user.id}.forged-signature` }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await visitor.post('/api/v1/notifications/unsubscribe').send({ token: unsubscribeToken(user.id) }))
+        .status,
+    ).toBe(204);
+    expect((await agent.get('/api/v1/me/notification-prefs')).body.prefs).toEqual({
+      marketingEmail: false,
+      marketingSms: false,
+      unreadMessageSms: true,
+    });
+  });
+});

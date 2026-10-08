@@ -8,7 +8,7 @@ import { unavailableVehicleIds } from '../availability/availability.service.js';
 import { calculatePrice, defaultProtectionPlan } from '../pricing/pricing.js';
 import { UserModel } from '../users/user.model.js';
 import { coverPhoto, keyFeatures, vehicleTitle } from '../vehicles/vehicle-view.js';
-import { VehicleModel, type Vehicle } from '../vehicles/vehicle.model.js';
+import { VehicleModel, liveVehicleFilter, type Vehicle } from '../vehicles/vehicle.model.js';
 import { resolveSearchPlace, type ResolvedPlace } from './places.service.js';
 import type { SearchQuery, SearchResponse, VehicleCard } from './search.schemas.js';
 
@@ -114,7 +114,7 @@ const exactText = (value: string) => new RegExp(`^${value.replace(/[.*+?^${}()|[
 /** The filters of spec §5 as a MongoDB match (plan §9, Days 6–8). */
 function filterMatch(query: SearchQuery, validUntil: Date, excludeIds: Types.ObjectId[]) {
   const and: Record<string, unknown>[] = [
-    { status: 'ACTIVE' },
+    liveVehicleFilter(),
     // Rego and WOF (or CoF) must stay valid until the trip ends (plan §3, expired documents).
     { regoExpiry: { $gte: validUntil } },
     { $or: [{ wofExpiry: { $gte: validUntil } }, { cofExpiry: { $gte: validUntil } }] },
@@ -380,7 +380,7 @@ const placeSummary = (place: ResolvedPlace) => ({
 export function listMakes() {
   return memo('vehicles:makes', 5 * 60_000, async () => {
     const rows = await VehicleModel.aggregate<{ _id: string; models: string[] }>([
-      { $match: { status: 'ACTIVE', make: { $type: 'string' } } },
+      { $match: { ...liveVehicleFilter(), make: { $type: 'string' } } },
       { $group: { _id: '$make', models: { $addToSet: '$model' } } },
       { $sort: { _id: 1 } },
     ]);

@@ -4,9 +4,37 @@ import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/
 import { testPaymentSchema, testPaymentStatusSchema } from '../payments/payments.schemas.js';
 import { adminOverviewSchema } from './admin.schemas.js';
 import { platformSettingsResponseSchema, platformSettingsUpdateSchema } from './platform-settings.schemas.js';
+import { licenceReviewSchema, verificationQueueSchema } from './verification-queue.service.js';
 
 /** The contract for admin.routes.ts (plan §2.3). Every admin route needs an active staff account. */
 export function registerAdminPaths(registry: OpenAPIRegistry) {
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/verifications',
+    tags: ['Admin'],
+    summary: 'Staff: the verification queue',
+    description:
+      'Identity checks Stripe couldn’t decide or that don’t match what the person entered, then driver licences no ID document has confirmed.',
+    security: signedIn,
+    responses: { 200: jsonResponse('To review', verificationQueueSchema), ...errorResponses(401, 403) },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/admin/users/{id}/licence-review',
+    tags: ['Admin'],
+    summary: 'Staff: approve or reject a driver licence checked by hand',
+    security: signedIn,
+    request: { params: z.object({ id: z.string() }), body: jsonBody(licenceReviewSchema) },
+    responses: {
+      200: jsonResponse(
+        'Decided',
+        z.object({ licenceStatus: z.enum(['APPROVED', 'REJECTED']) }).meta({ id: 'LicenceReviewResult' }),
+      ),
+      ...errorResponses(400, 401, 403, 404),
+    },
+  });
+
   registry.registerPath({
     method: 'get',
     path: '/admin/overview',

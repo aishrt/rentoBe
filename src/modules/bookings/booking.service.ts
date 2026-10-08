@@ -9,6 +9,7 @@ import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { reserveTripDates } from '../availability/availability.service.js';
 import { PaymentModel } from '../payments/payment.model.js';
+import { checkBookingVelocity } from '../risk/risk-signals.js';
 import { eligibilityProblems } from '../users/driver-licence.service.js';
 import { UserModel, type Role } from '../users/user.model.js';
 import { isStaff } from '../users/user.service.js';
@@ -234,6 +235,8 @@ export async function createBooking(
       });
       // The replaced checkout's payment can no longer be used.
       if (previousPayment) await cancelIntent(previousPayment).catch(() => undefined);
+      // Many bookings in a day goes to the admins' risk queue (plan §14); it never stops this one.
+      await checkBookingVelocity(guest._id, now).catch(() => undefined);
       return created;
     } catch (error) {
       // Two bookings drew the same reference; draw again.
@@ -843,7 +846,8 @@ export async function expireRequest(
 export async function resolveVerificationReview(
   guestId: string,
   decision: 'APPROVE' | 'REJECT',
-  staffId: string,
+  /** Support's decision; left out when Stripe Identity approved the check itself. */
+  staffId: string | undefined,
   now = new Date(),
 ): Promise<{ confirmed: string[]; waitingForHost: string[]; released: string[] }> {
   const result = { confirmed: [] as string[], waitingForHost: [] as string[], released: [] as string[] };
@@ -861,7 +865,7 @@ export async function resolveVerificationReview(
           verificationReview: {
             status: decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',
             decidedAt: now,
-            decidedBy: staffId,
+            ...(staffId && { decidedBy: staffId }),
           },
         },
       },

@@ -1,4 +1,5 @@
 import type { ClientSession, Types } from 'mongoose';
+import { afterCommit } from '../../db.js';
 import type { EmailTemplateName, EmailTemplateProps } from '../../emails/index.js';
 import { enqueue } from '../../jobs/queue.js';
 import { fromNzWallClock, toNzWallClock, addNzDays } from '../../lib/nz-time.js';
@@ -114,8 +115,8 @@ export async function notify(
     );
   }
 
-  // Outside a transaction the bell updates straight away; otherwise it catches up within a minute.
-  if (!session) {
-    emitToUser(user._id.toString(), 'notification', { id: inApp!.id, type: input.type, title: input.title });
-  }
+  // The bell updates live once the change behind the notification is saved (plan §7, build order).
+  afterCommit(session, () =>
+    emitToUser(user._id.toString(), 'notification', { id: inApp!.id, type: input.type, title: input.title }),
+  );
 }

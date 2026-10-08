@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { cancellationTierSchema } from '../admin/platform-settings.schemas.js';
 import { PAYMENT_STATUSES } from '../payments/payment.model.js';
+import { PAYOUT_HOLD_REASONS, PAYOUT_STATUSES } from '../payouts/payout.model.js';
 import { ratingSchema } from '../search/search.schemas.js';
 import {
   deliveryAddressSchema,
@@ -143,9 +144,21 @@ export const bookingViewSchema = z
     lineItems: z.array(lineItemSchema),
     price: guestPriceSchema,
     payout: z
-      .object({ hostPayoutCents: z.number().int(), platformFeeCents: z.number().int() })
+      .object({
+        hostPayoutCents: z.number().int(),
+        platformFeeCents: z.number().int(),
+        status: z.enum(PAYOUT_STATUSES).optional().meta({ description: 'Once confirmed: the trip’s payout' }),
+        holdReason: z.enum(PAYOUT_HOLD_REASONS).optional(),
+        scheduledFor: z.iso.datetime().optional(),
+        paidAt: z.iso.datetime().optional(),
+        paidCents: z
+          .number()
+          .int()
+          .optional()
+          .meta({ description: 'Everything paid out for the booking so far' }),
+      })
       .optional()
-      .meta({ description: 'The Host’s view: what they earn' }),
+      .meta({ description: 'The Host’s view: what they earn and when it’s paid' }),
     holdExpiresAt: z.iso
       .datetime()
       .optional()

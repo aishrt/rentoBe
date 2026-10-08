@@ -4,12 +4,29 @@ import {
   expirePaymentHoldJob,
   expireRequestJob,
   paymentReceiptJob,
+  paymentRiskCheckJob,
   refundUnwantedJob,
 } from './booking-jobs.js';
 import { sendEmailJob } from './email-send.js';
 import { refreshExchangeRatesJob } from './exchange-rates.js';
+import { identitySyncJob, unreadMessageEmailJob } from './message-jobs.js';
+import {
+  collectExtraChargeJob,
+  dataRetentionJob,
+  hostRemindersJob,
+  payoutTransferJob,
+  tripExtraChargesJob,
+} from './payout-jobs.js';
 import { sendNotificationJob } from './notification-send.js';
 import { expandRecurringJob } from './recurring-availability.js';
+import {
+  pickupReminderJob,
+  returnCheckJob,
+  returnReminderJob,
+  revealReviewsJob,
+  reviewRequestJob,
+  startCheckJob,
+} from './trip-jobs.js';
 
 export interface JobContext {
   job: JobDocument;
@@ -29,6 +46,20 @@ export const jobHandlers = {
   'payment.receipt': paymentReceiptJob,
   'payment.refundUnwanted': refundUnwantedJob,
   'availability.expandRecurring': expandRecurringJob,
+  'messages.unreadEmail': unreadMessageEmailJob,
+  'reminder.pickup': pickupReminderJob,
+  'reminder.return': returnReminderJob,
+  'trip.startCheck': startCheckJob,
+  'trip.returnCheck': returnCheckJob,
+  'payout.transfer': payoutTransferJob,
+  'extraCharge.collect': collectExtraChargeJob,
+  'trip.extraCharges': tripExtraChargesJob,
+  'daily.hostReminders': hostRemindersJob,
+  'trip.reviewRequest': reviewRequestJob,
+  'reviews.reveal': revealReviewsJob,
+  'identity.sync': identitySyncJob,
+  'daily.dataRetention': dataRetentionJob,
+  'risk.paymentCheck': paymentRiskCheckJob,
 } satisfies Record<string, (payload: never, context: JobContext) => Promise<void>>;
 
 export type JobType = keyof typeof jobHandlers;

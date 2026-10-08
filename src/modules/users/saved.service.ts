@@ -5,7 +5,7 @@ import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import type { PlatformSettings } from '../admin/platform-settings.schemas.js';
 import { unavailableVehicleIds } from '../availability/availability.service.js';
 import { hostGstStatus, toVehicleCard, type SearchDates } from '../search/search.service.js';
-import { VehicleModel, type Vehicle } from '../vehicles/vehicle.model.js';
+import { VehicleModel, liveVehicleFilter, type Vehicle } from '../vehicles/vehicle.model.js';
 import type { LastSearchInput, SavedCar, SavedCarsResponse } from './saved.schemas.js';
 import { UserModel, type LastSearch } from './user.model.js';
 
@@ -27,7 +27,7 @@ export async function listFavourites(userId: string): Promise<string[]> {
 export async function saveFavourite(userId: string, vehicleId: string): Promise<void> {
   if (
     !mongoose.isValidObjectId(vehicleId) ||
-    !(await VehicleModel.exists({ _id: vehicleId, status: 'ACTIVE' }))
+    !(await VehicleModel.exists({ _id: vehicleId, ...liveVehicleFilter() }))
   ) {
     throw new HttpError(404, 'NOT_FOUND', "We couldn't find that car.");
   }

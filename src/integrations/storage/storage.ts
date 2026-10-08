@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { stat, unlink } from 'node:fs/promises';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -62,6 +62,8 @@ export interface StorageDriver {
   confirmUpload(input: { folder: string; isPrivate: boolean; ref: string }): Promise<string>;
   /** Where a private file is fetched from: a short-lived S3 link, or null when this API serves it. */
   downloadUrl(path: string): Promise<string | null>;
+  /** Deletes a private file past its retention period (plan §14). A file already gone is fine. */
+  deletePrivate(path: string): Promise<void>;
 }
 
 const unavailable = () =>
@@ -176,6 +178,10 @@ export function createLocalStorage(): StorageDriver {
     async downloadUrl() {
       return null;
     },
+
+    async deletePrivate(path) {
+      await unlink(localFilePath(path)).catch(() => undefined);
+    },
   };
 }
 
@@ -286,6 +292,10 @@ export function createS3Storage(config: {
       return `${publicUrl}/${folder}/${id}-${Math.max(...PHOTO_WIDTHS)}.webp`;
     },
 
+    async deletePrivate(path) {
+      await remove(`private/${path}`);
+    },
+
     downloadUrl(path) {
       return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: `private/${path}` }), {
         expiresIn: DOWNLOAD_TTL_SECONDS,
@@ -311,4 +321,10 @@ export function getStorage(): StorageDriver {
 /** The link to show for a saved file: public URLs as they are, private files as a short-lived link. */
 export function fileLink(stored: string): string {
   return isPrivateRef(stored) ? privateLink(stored) : stored;
+}
+
+/** Deletes a saved private file (a `local:` or `s3:` reference); public URLs are left alone. */
+export async function deletePrivateFile(stored: string): Promise<void> {
+  if (!isPrivateRef(stored)) return;
+  await getStorage().deletePrivate(stored.replace(/^(local|s3):/, ''));
 }

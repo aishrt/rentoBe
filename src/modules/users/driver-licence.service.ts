@@ -34,6 +34,10 @@ export type EligibilityProblem = CheckoutReadiness['problems'][number];
 
 type EligibilityUser = Pick<User, 'phoneVerifiedAt' | 'dob' | 'driverLicence' | 'identityVerification'>;
 
+/** Stripe is still checking the person's ID and selfie (plan §8.2: checkout waits for the result). */
+export const identityProcessing = (user: Pick<User, 'identityVerification'>) =>
+  user.identityVerification?.status === 'NONE' && user.identityVerification.sessionStatus === 'processing';
+
 /**
  * Whether this person's identity check is waiting for support staff (plan §8.2). They can still book:
  * the card is authorised, and the booking is confirmed once the check is approved.
@@ -53,11 +57,25 @@ export function eligibilityProblems(
   if (settings.verification.phoneAtCheckout && !user.phoneVerifiedAt) {
     problems.push({ code: 'PHONE_REQUIRED', message: 'Verify your mobile number.' });
   }
-  if (user.identityVerification?.status === 'REJECTED') {
+  const identity = user.identityVerification?.status ?? 'NONE';
+  if (identity === 'REJECTED') {
     problems.push({
       code: 'IDENTITY_REJECTED',
       message: "We couldn't verify your identity. Please contact support.",
     });
+  } else if (settings.verification.identityBeforeFirstBooking && identity === 'NONE') {
+    // A check in review (PENDING) can still book: the booking waits for support (plan §8.2).
+    problems.push(
+      identityProcessing(user)
+        ? {
+            code: 'IDENTITY_PROCESSING',
+            message: 'We’re checking your ID. This usually takes a minute or two.',
+          }
+        : {
+            code: 'IDENTITY_REQUIRED',
+            message: 'Verify your identity with a photo of your ID and a selfie.',
+          },
+    );
   }
   const licence = user.driverLicence;
   if (!licence || !user.dob) {
@@ -127,6 +145,8 @@ export async function checkoutReadiness(userId: string, tripEnd?: Date): Promise
       : null,
     hasDateOfBirth: Boolean(user.dob),
     identityStatus: user.identityVerification?.status ?? 'NONE',
+    identityProcessing: identityProcessing(user),
+    ...(user.identityVerification?.lastError && { identityError: user.identityVerification.lastError }),
     problems: eligibilityProblems(user, settings, tripEnd),
   };
 }

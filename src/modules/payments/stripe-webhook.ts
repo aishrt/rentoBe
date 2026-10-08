@@ -5,6 +5,8 @@ import { withTransaction } from '../../db.js';
 import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
 import { bookingPaymentHandlers } from '../bookings/payment-events.js';
+import { applyAccountState } from '../payouts/connect.service.js';
+import { queueIdentitySync } from '../users/identity.service.js';
 import { StripeEventModel } from './stripe-event.model.js';
 
 type StripeEventType = Stripe.Event['type'];
@@ -12,8 +14,7 @@ export type StripeEventHandler = (event: Stripe.Event, session: ClientSession) =
 
 /**
  * The events the webhook endpoint subscribes to (plan §8.1): payments, refunds and card disputes.
- * `npm run stripe:setup` registers them with Stripe. Connect (`account.updated`) and identity
- * events join when payouts and verification are built (Days 17–20).
+ * `npm run stripe:setup` registers them with Stripe.
  */
 export const STRIPE_WEBHOOK_EVENTS = [
   'payment_intent.succeeded',
@@ -24,6 +25,18 @@ export const STRIPE_WEBHOOK_EVENTS = [
   'refund.failed',
   'charge.dispute.created',
   'charge.dispute.closed',
+  'identity.verification_session.verified',
+  'identity.verification_session.requires_input',
+  'identity.verification_session.processing',
+  'identity.verification_session.canceled',
+] as const satisfies readonly StripeEventType[];
+
+/**
+ * Events about Hosts' Connect accounts (plan §8.1, item 20). Stripe sends them to a second endpoint,
+ * at the same URL, with its own signing secret (STRIPE_CONNECT_WEBHOOK_SECRET).
+ */
+export const STRIPE_CONNECT_WEBHOOK_EVENTS = [
+  'account.updated',
 ] as const satisfies readonly StripeEventType[];
 
 /**
@@ -34,6 +47,22 @@ export const STRIPE_WEBHOOK_EVENTS = [
  */
 export const stripeEventHandlers: Partial<Record<StripeEventType, StripeEventHandler>> = {
   ...bookingPaymentHandlers,
+  'account.updated': (event, session) => applyAccountState(event.data.object as Stripe.Account, session),
+  // Identity checks (plan §9, Days 19–20): applied by the `identity.sync` job.
+  ...Object.fromEntries(
+    (
+      [
+        'identity.verification_session.verified',
+        'identity.verification_session.requires_input',
+        'identity.verification_session.processing',
+        'identity.verification_session.canceled',
+      ] as const
+    ).map((type) => [
+      type,
+      (event: Stripe.Event, session: ClientSession) =>
+        queueIdentitySync(event.data.object as Stripe.Identity.VerificationSession, session),
+    ]),
+  ),
 };
 
 /**
@@ -57,11 +86,16 @@ function verifiedEvent(body: unknown, signature: string | undefined): Stripe.Eve
     throw new HttpError(503, 'PAYMENTS_UNAVAILABLE', 'The Stripe webhook secret is not set.');
   }
   if (!Buffer.isBuffer(body) || !signature) throw invalidSignature();
-  try {
-    return Stripe.webhooks.constructEvent(body, signature, env.STRIPE_WEBHOOK_SECRET);
-  } catch {
-    throw invalidSignature();
+  // The platform's endpoint, then the Connect endpoint's: both post to this URL.
+  for (const secret of [env.STRIPE_WEBHOOK_SECRET, env.STRIPE_CONNECT_WEBHOOK_SECRET]) {
+    if (!secret) continue;
+    try {
+      return Stripe.webhooks.constructEvent(body, signature, secret);
+    } catch {
+      // Try the other secret.
+    }
   }
+  throw invalidSignature();
 }
 
 const invalidSignature = () =>

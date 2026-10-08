@@ -124,7 +124,14 @@ async function readyGuest(email = 'kiri@example.co.nz', phone = '+64221112222') 
   const guest = await createUser({ email, firstName: 'Kiri' });
   await UserModel.updateOne(
     { _id: guest._id },
-    { $set: { phone, phoneVerifiedAt: new Date(), emailVerifiedAt: new Date() } },
+    {
+      $set: {
+        phone,
+        phoneVerifiedAt: new Date(),
+        emailVerifiedAt: new Date(),
+        identityVerification: { status: 'APPROVED', verifiedAt: new Date() },
+      },
+    },
   );
   const agent = await signIn(email);
   const licence = await agent.put('/api/v1/me/driver-licence').send({
@@ -197,6 +204,8 @@ describe('Checkout readiness and licence details', () => {
     const empty = await agent.get('/api/v1/me/checkout');
     expect(empty.body.problems.map((problem: { code: string }) => problem.code)).toEqual([
       'PHONE_REQUIRED',
+      // Identity before the first booking (plan §16, item 5).
+      'IDENTITY_REQUIRED',
       'LICENCE_REQUIRED',
     ]);
 
@@ -225,6 +234,7 @@ describe('Checkout readiness and licence details', () => {
     });
     expect(young.body.problems.map((problem: { code: string }) => problem.code)).toEqual([
       'PHONE_REQUIRED',
+      'IDENTITY_REQUIRED',
       'TOO_YOUNG',
       'CLASS_NOT_ACCEPTED',
       'NOT_LICENSED_LONG_ENOUGH',
@@ -410,7 +420,7 @@ describe('Booking an Instant Book car', () => {
     expect(notReady.status).toBe(409);
     expect(notReady.body.error).toMatchObject({
       code: 'VERIFICATION_REQUIRED',
-      fields: { verification: 'PHONE_REQUIRED,LICENCE_REQUIRED' },
+      fields: { verification: 'PHONE_REQUIRED,IDENTITY_REQUIRED,LICENCE_REQUIRED' },
     });
 
     const { agent } = await readyGuest();

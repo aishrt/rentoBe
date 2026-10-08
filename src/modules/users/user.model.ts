@@ -69,11 +69,23 @@ export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 
 /** Identity check for Guests and Hosts (plan §9, Days 19–20). ID images stay with the provider. */
 export interface IdentityVerification {
+  /** NONE until it passes; PENDING while support reviews it by hand (plan §8.2). */
   status: VerificationStatus;
   provider?: string;
+  /** Stripe Identity's VerificationSession id. */
   providerRef?: string;
+  /** Stripe's own state of the session: requires_input, processing, verified or canceled. */
+  sessionStatus?: string;
+  /** Why the last attempt didn't pass, to show the person so they can try again. */
+  lastError?: string;
+  /** Why it needs a person to look at it, for support staff. */
+  reviewReason?: string;
+  /** The document checked: driving_license, passport or id_card. */
+  documentType?: string;
   verifiedAt?: Date;
   reviewedBy?: Types.ObjectId;
+  /** When Stripe deleted the ID images, keeping only the result (plan §14: 90 days). */
+  redactedAt?: Date;
 }
 
 export const LICENCE_CLASSES = ['NZ_FULL', 'NZ_RESTRICTED', 'NZ_LEARNER', 'OVERSEAS'] as const;
@@ -111,6 +123,10 @@ export interface HostProfile {
   reviewNotes?: string;
   stripeAccountId?: string;
   payoutsEnabled: boolean;
+  /** What Stripe still needs from the Host before payouts can be sent (plan §8.1, item 20). */
+  payoutRequirements?: string[];
+  /** Business days Stripe takes to pay the Host's bank after a transfer, from their account. */
+  payoutDelayDays?: number;
   bio?: string;
   /** Share of booking requests answered, 0–100. */
   responseRate?: number;
@@ -279,8 +295,13 @@ const userSchema = new Schema<User>(
           status: { type: String, enum: VERIFICATION_STATUSES, default: 'NONE' },
           provider: String,
           providerRef: String,
+          sessionStatus: String,
+          lastError: String,
+          reviewReason: String,
+          documentType: String,
           verifiedAt: Date,
           reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+          redactedAt: Date,
         },
         { _id: false },
       ),
@@ -315,6 +336,8 @@ const userSchema = new Schema<User>(
           reviewNotes: String,
           stripeAccountId: String,
           payoutsEnabled: { type: Boolean, default: false },
+          payoutRequirements: { type: [String], default: undefined },
+          payoutDelayDays: { type: Number, min: 0 },
           bio: { type: String, maxlength: 1000 },
           responseRate: { type: Number, min: 0, max: 100 },
           tripCount: { type: Number, min: 0, default: 0 },

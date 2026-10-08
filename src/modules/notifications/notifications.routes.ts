@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { validate } from '../../lib/validate.js';
+import { unsubscribe, unsubscribeSchema } from '../users/notification-prefs.js';
 import { requireAuth } from '../../middleware/auth.js';
 import {
   deleteNotificationsSchema,
@@ -22,6 +23,14 @@ import {
  */
 export function notificationsRouter() {
   const router = Router();
+
+  // The link in a marketing email works without signing in (plan §7).
+  router.post('/unsubscribe', async (req, res) => {
+    const { token } = validate(unsubscribeSchema, req.body);
+    await unsubscribe(token);
+    res.status(204).end();
+  });
+
   router.use(requireAuth);
 
   router.get('/', async (req, res) => {

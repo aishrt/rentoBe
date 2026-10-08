@@ -9,6 +9,7 @@ import { refundIntent, statusAfterRefunds } from '../../modules/bookings/booking
 import { expirePaymentHold, expireRequest } from '../../modules/bookings/booking.service.js';
 import { notify } from '../../modules/notifications/notify.js';
 import { PaymentModel } from '../../modules/payments/payment.model.js';
+import { checkPaymentRisk } from '../../modules/risk/risk-signals.js';
 import { UserModel } from '../../modules/users/user.model.js';
 import { enqueue } from '../queue.js';
 import type { JobContext } from './index.js';
@@ -161,4 +162,10 @@ export async function refundUnwantedJob({ paymentId }: { paymentId: string }, { 
     );
   });
   log.warn({ paymentId, bookingStatus: booking.status }, 'Refunded a payment made after its booking ended');
+}
+
+/** `risk.paymentCheck`: the card's country and Stripe Radar's verdict on a payment (plan §14). */
+export async function paymentRiskCheckJob({ paymentId }: { paymentId: string }, { log }: JobContext) {
+  await checkPaymentRisk(paymentId);
+  log.info({ paymentId }, 'Payment risk checked');
 }

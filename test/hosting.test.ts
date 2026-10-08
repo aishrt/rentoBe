@@ -1,3 +1,4 @@
+import type Stripe from 'stripe';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
@@ -5,6 +6,7 @@ import { forget } from '../src/lib/memo.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
+import { applyAccountState } from '../src/modules/payouts/connect.service.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
 import { createPlaces, createVehicle, nzDay } from './fixtures.js';
@@ -269,6 +271,16 @@ describe('Vehicle onboarding', () => {
     ).toBe(true);
     expect(await AuditLogModel.countDocuments({ action: 'vehicle.approved' })).toBe(1);
     expect(await NotificationModel.countDocuments({ type: 'LISTING_APPROVED', channel: 'EMAIL' })).toBe(1);
+
+    // Approved, but it waits for the Host's payout setup before going live (plan §8.2).
+    expect((await request(app).get('/api/v1/search').query({ where: 'Ponsonby' })).body.results).toEqual([]);
+    await UserModel.updateOne({ _id: user._id }, { $set: { 'hostProfile.stripeAccountId': 'acct_test' } });
+    await applyAccountState({
+      id: 'acct_test',
+      payouts_enabled: true,
+      capabilities: { transfers: 'active' },
+      requirements: { currently_due: [], past_due: [] },
+    } as unknown as Stripe.Account);
 
     // Live: in search, with the approved photos served publicly.
     const search = await request(app).get('/api/v1/search').query({ where: 'Ponsonby' });

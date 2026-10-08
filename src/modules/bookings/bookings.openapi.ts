@@ -42,10 +42,65 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Bookings'],
     summary: 'Save driver licence details',
     description:
-      'The number is encrypted, and a keyed hash finds the same licence on another account (a risk flag, not an error). Support staff check licences until the identity check arrives.',
+      'The number is encrypted, and a keyed hash finds the same licence on another account (a risk flag, not an error). The identity check confirms it when the person uses their licence as the ID; otherwise support staff check it.',
     security: signedIn,
     request: { body: jsonBody(driverLicenceInputSchema) },
     responses: { 200: jsonResponse('Readiness', checkoutReadinessSchema), ...errorResponses(400, 401) },
+  });
+
+  const identitySchema = z
+    .object({
+      status: z.enum(['NONE', 'PENDING', 'APPROVED', 'REJECTED']).meta({
+        description: 'NONE until it passes; PENDING while support reviews it by hand',
+      }),
+      sessionStatus: z
+        .string()
+        .optional()
+        .meta({ description: 'Stripe’s: requires_input, processing, verified or canceled' }),
+      lastError: z.string().optional().meta({ description: 'Why the last attempt didn’t pass' }),
+      documentType: z.string().optional(),
+      verifiedAt: z.iso.datetime().optional(),
+    })
+    .meta({ id: 'IdentityStatus' });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/verification',
+    tags: ['Bookings'],
+    summary: 'Start the identity check (Stripe Identity)',
+    description:
+      'A photo of an ID (the driver licence if possible) and a matching selfie, on Stripe’s page. Stripe brings the person back to `returnTo`, a path on the website.',
+    security: signedIn,
+    request: {
+      body: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: z.object({ returnTo: z.string().optional() }).meta({ id: 'IdentityCheckRequest' }),
+          },
+        },
+      },
+    },
+    responses: {
+      200: jsonResponse(
+        'Stripe’s identity page',
+        z.object({ url: z.string() }).meta({ id: 'IdentityCheckLink' }),
+      ),
+      ...errorResponses(401, 409, 429, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/verification',
+    tags: ['Bookings'],
+    summary: 'Where the identity check stands',
+    description: 'Read again from Stripe while it’s under way, so checkout can wait for the result.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('The check', z.object({ identity: identitySchema }).meta({ id: 'IdentityResponse' })),
+      ...errorResponses(401),
+    },
   });
 
   registry.registerPath({

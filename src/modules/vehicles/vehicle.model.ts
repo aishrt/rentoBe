@@ -1,4 +1,4 @@
-import { Schema, model, type HydratedDocument, type Types } from 'mongoose';
+import mongoose, { Schema, model, type HydratedDocument, type Types } from 'mongoose';
 import {
   NZ_REGIONS,
   cents,
@@ -197,6 +197,14 @@ export interface Vehicle {
   region?: NzRegion;
   rating: Rating;
   tripCount: number;
+  /**
+   * False while an approved listing waits for its Host to finish payout setup (plan §8.2): it goes live
+   * once Stripe Connect onboarding is done. Listings approved before this rule have no value and count as
+   * ready.
+   */
+  payoutsReady?: boolean;
+  /** Its Host's account is suspended: hidden until the suspension is lifted (plan §8.2, user suspended). */
+  hostSuspended?: boolean;
   /** Written first in every booking transaction, so simultaneous bookings for this car conflict (plan §3). */
   bookingSeq: number;
   photos: VehiclePhoto[];
@@ -337,6 +345,8 @@ const vehicleSchema = new Schema<Vehicle>(
     rating: { type: ratingSchema, default: () => ({}) },
     tripCount: { type: Number, min: 0, default: 0 },
     bookingSeq: { type: Number, default: 0 },
+    payoutsReady: Boolean,
+    hostSuspended: Boolean,
     photos: { type: [photoSchema], default: [] },
     documents: { type: [documentSchema], default: [] },
     deliveryOptions: { type: [deliveryOptionSchema], default: [] },
@@ -355,3 +365,13 @@ vehicleSchema.index({ regoPlate: 1 });
 
 export const VehicleModel = model<Vehicle>('Vehicle', vehicleSchema);
 export type VehicleDocument = HydratedDocument<Vehicle>;
+
+/**
+ * The query for a listing Guests can see and book: ACTIVE, and not waiting for its Host's payout setup
+ * (plan §8.2). Works in find() and in aggregation stages.
+ */
+export const liveVehicleFilter = () => ({
+  status: 'ACTIVE',
+  payoutsReady: mongoose.trusted({ $ne: false }),
+  hostSuspended: mongoose.trusted({ $ne: true }),
+});

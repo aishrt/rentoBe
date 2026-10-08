@@ -12,10 +12,24 @@ import {
 import { HttpError, forbidden } from '../../lib/http-error.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { findBookingFor } from '../bookings/booking.service.js';
 import { isStaff } from '../users/user.service.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
-import { DOCUMENT_TYPES_ALLOWED, PHOTO_TYPES_ALLOWED, uploadRequestSchema } from './uploads.schemas.js';
-import { uploadFolder } from './upload-folders.js';
+import {
+  BOOKING_UPLOAD_PURPOSES,
+  DOCUMENT_TYPES_ALLOWED,
+  PHOTO_TYPES_ALLOWED,
+  uploadRequestSchema,
+  type BookingUploadPurpose,
+  type UploadPurpose,
+} from './uploads.schemas.js';
+import { bookingUploadFolder, uploadFolder } from './upload-folders.js';
+
+/** Purposes that take photos only; documents and incident evidence can also be a PDF. */
+const PHOTO_PURPOSES: UploadPurpose[] = ['VEHICLE_PHOTO', 'MESSAGE_PHOTO', 'INSPECTION_PHOTO'];
+
+const isBookingPurpose = (purpose: UploadPurpose): purpose is BookingUploadPurpose =>
+  (BOOKING_UPLOAD_PURPOSES as readonly string[]).includes(purpose);
 
 const CONTENT_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -49,21 +63,30 @@ export function uploadsRouter() {
   // A signed upload target for one file (plan §11: POST /uploads/signature).
   router.post('/signature', requireAuth, async (req, res) => {
     const input = validate(uploadRequestSchema, req.body);
-    const allowed: readonly string[] =
-      input.purpose === 'VEHICLE_PHOTO' ? PHOTO_TYPES_ALLOWED : DOCUMENT_TYPES_ALLOWED;
+    const photosOnly = PHOTO_PURPOSES.includes(input.purpose);
+    const allowed: readonly string[] = photosOnly ? PHOTO_TYPES_ALLOWED : DOCUMENT_TYPES_ALLOWED;
     if (!allowed.includes(input.contentType)) {
       throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
-        contentType:
-          input.purpose === 'VEHICLE_PHOTO'
-            ? 'Photos can be JPEG, PNG, WebP or HEIC'
-            : 'Documents can be a PDF or a photo',
+        contentType: photosOnly ? 'Photos can be JPEG, PNG, WebP or HEIC' : 'Files can be a PDF or a photo',
       });
     }
-    const vehicle = await VehicleModel.findById(input.vehicleId).select('hostId').lean();
-    if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No car with that id.');
-    if (!vehicle.hostId.equals(req.auth!.userId) && !isStaff(req.auth!.roles)) throw forbidden();
 
-    const { folder, isPrivate } = uploadFolder(input.purpose, input.vehicleId);
+    let target: { folder: string; isPrivate: boolean };
+    if (isBookingPurpose(input.purpose)) {
+      // Only the booking's Guest and Host, or support staff, add files to it.
+      const { booking } = await findBookingFor(
+        { userId: req.auth!.userId, roles: req.auth!.roles },
+        input.bookingId!,
+      );
+      target = bookingUploadFolder(input.purpose, booking.id);
+    } else {
+      const vehicle = await VehicleModel.findById(input.vehicleId).select('hostId').lean();
+      if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No car with that id.');
+      if (!vehicle.hostId.equals(req.auth!.userId) && !isStaff(req.auth!.roles)) throw forbidden();
+      target = uploadFolder(input.purpose, input.vehicleId!);
+    }
+
+    const { folder, isPrivate } = target;
     res.json(
       await getStorage().createUpload({
         folder,

@@ -152,3 +152,23 @@ export const resendEmailRateLimit = () =>
     message:
       "We've sent a few emails already. Please check your inbox and spam folder, or try again in an hour.",
   });
+
+/** Chat messages, per user, against spam (plan §14, messaging safety). */
+export const messageRateLimit = () =>
+  limitRequests({
+    name: 'message',
+    windowMs: 10 * MINUTE,
+    limit: 60,
+    perUser: true,
+    message: "You've sent a lot of messages in a short time. Please wait a few minutes.",
+  });
+
+/** Reports of users, messages, reviews and listings, per user. */
+export const reportRateLimit = () =>
+  limitRequests({
+    name: 'report',
+    windowMs: 60 * MINUTE,
+    limit: 20,
+    perUser: true,
+    message: "You've sent a lot of reports in a short time. Please try again later.",
+  });

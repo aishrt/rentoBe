@@ -66,6 +66,8 @@ export const ELIGIBILITY_CODES = [
   'ENGLISH_PROOF_REQUIRED',
   'LICENCE_REJECTED',
   'IDENTITY_REJECTED',
+  'IDENTITY_REQUIRED',
+  'IDENTITY_PROCESSING',
 ] as const;
 
 export const checkoutReadinessSchema = z
@@ -85,6 +87,13 @@ export const checkoutReadinessSchema = z
       .nullable(),
     hasDateOfBirth: z.boolean(),
     identityStatus: z.enum(VERIFICATION_STATUSES),
+    identityProcessing: z
+      .boolean()
+      .meta({ description: 'Stripe is checking the ID and selfie; usually a minute or two' }),
+    identityError: z
+      .string()
+      .optional()
+      .meta({ description: 'Why the last identity check didn’t pass, so the person can try again' }),
     problems: z.array(z.object({ code: z.enum(ELIGIBILITY_CODES), message: z.string() })).meta({
       description: 'Anything that stops this person booking; with `end`, checked against that trip end',
     }),

@@ -1,11 +1,17 @@
 import { OpenAPIRegistry, OpenApiGeneratorV31 } from '@asteasolutions/zod-to-openapi';
 import { registerAdminListingPaths } from '../modules/admin/admin-listings.openapi.js';
+import { registerAdminOpsPaths } from '../modules/admin/admin-ops.openapi.js';
 import { registerAdminPaths } from '../modules/admin/admin.openapi.js';
 import { registerAuthPaths } from '../modules/auth/auth.openapi.js';
 import { registerBookingPaths } from '../modules/bookings/bookings.openapi.js';
 import { registerContentPaths } from '../modules/cms/content.openapi.js';
 import { registerCurrencyPaths } from '../modules/currency/currency.openapi.js';
+import { registerIncidentPaths } from '../modules/incidents/incidents.openapi.js';
+import { registerInspectionPaths } from '../modules/inspections/inspections.openapi.js';
+import { registerMessagePaths } from '../modules/messages/messages.openapi.js';
 import { registerNotificationPaths } from '../modules/notifications/notifications.openapi.js';
+import { registerPayoutPaths } from '../modules/payouts/payouts.openapi.js';
+import { registerReviewPaths } from '../modules/reviews/reviews.openapi.js';
 import { registerSearchPaths } from '../modules/search/search.openapi.js';
 import { registerStaffPaths } from '../modules/staff/staff.openapi.js';
 import { registerUserPaths } from '../modules/users/users.openapi.js';
@@ -46,6 +52,12 @@ export function buildOpenApiDocument() {
   registerNotificationPaths(registry);
   registerAdminListingPaths(registry);
   registerBookingPaths(registry);
+  registerMessagePaths(registry);
+  registerInspectionPaths(registry);
+  registerPayoutPaths(registry);
+  registerReviewPaths(registry);
+  registerIncidentPaths(registry);
+  registerAdminOpsPaths(registry);
 
   return new OpenApiGeneratorV31(registry.definitions).generateDocument({
     openapi: '3.1.0',

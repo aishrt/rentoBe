@@ -3,6 +3,8 @@ import { HttpError } from '../../lib/http-error.js';
 import { addNzDays } from '../../lib/nz-time.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { maintenanceInputSchema } from '../hosts/host-reminders.schemas.js';
+import { getMaintenance, hostTodo, saveMaintenance } from '../hosts/host-reminders.service.js';
 import {
   blockInputSchema,
   documentAttachSchema,
@@ -123,6 +125,23 @@ export function hostRouter() {
     const vehicle = await ownVehicle(req.auth!.userId, id(req.params));
     await unblockDates(vehicle._id, String(req.params.blockId), ['HOST_BLOCK']);
     res.status(204).end();
+  });
+
+  // The to-do list on the Host's dashboard (spec §9).
+  router.get('/todo', async (req, res) => {
+    res.json({ items: await hostTodo(req.auth!.userId) });
+  });
+
+  // Maintenance reminders the Host sets for a car (plan §3 vehicles.maintenanceReminders).
+  router.get('/vehicles/:id/maintenance-reminders', async (req, res) => {
+    const vehicle = await ownVehicle(req.auth!.userId, String(req.params.id));
+    res.json(await getMaintenance(vehicle.toObject()));
+  });
+
+  router.put('/vehicles/:id/maintenance-reminders', async (req, res) => {
+    const input = validate(maintenanceInputSchema, req.body);
+    const vehicle = await ownVehicle(req.auth!.userId, String(req.params.id));
+    res.json(await saveMaintenance(vehicle._id, input));
   });
 
   router.put('/vehicles/:id/recurring-rules', async (req, res) => {

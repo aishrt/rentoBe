@@ -3,6 +3,8 @@ import { HttpError } from '../../lib/http-error.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { resolveVerificationReview } from '../bookings/booking.service.js';
 import type { IdentityReviewResult } from '../bookings/bookings.schemas.js';
+import { env } from '../../env.js';
+import { notify } from '../notifications/notify.js';
 import { UserModel } from '../users/user.model.js';
 
 /**
@@ -24,7 +26,7 @@ export async function reviewIdentity(
     throw new HttpError(409, 'NOT_IN_REVIEW', "This person's identity check isn't waiting for a review.");
   }
 
-  const identityStatus = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+  const identityStatus: 'APPROVED' | 'REJECTED' = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
   user.identityVerification = {
     ...(user.identityVerification.provider && { provider: user.identityVerification.provider }),
     ...(user.identityVerification.providerRef && { providerRef: user.identityVerification.providerRef }),
@@ -42,5 +44,45 @@ export async function reviewIdentity(
     ip,
   });
 
-  return { identityStatus, ...(await resolveVerificationReview(user.id, decision, staffId, now)) };
+  const result = { identityStatus, ...(await resolveVerificationReview(user.id, decision, staffId, now)) };
+  await notify({
+    userId: user._id,
+    type: decision === 'APPROVE' ? 'IDENTITY_APPROVED' : 'IDENTITY_REJECTED',
+    title: decision === 'APPROVE' ? 'Your identity is verified' : 'We couldn’t verify your identity',
+    body:
+      decision === 'APPROVE'
+        ? result.confirmed.length > 0
+          ? `Booking ${result.confirmed.join(', ')} is confirmed.`
+          : 'You’re all set to book.'
+        : 'Any booking waiting for the check was released. Contact support if you have questions.',
+    link: '/account',
+    email: {
+      template: 'tripNotice',
+      props: {
+        firstName: user.firstName,
+        heading: decision === 'APPROVE' ? 'Your identity is verified' : 'We couldn’t verify your identity',
+        paragraphs:
+          decision === 'APPROVE'
+            ? [
+                'Our team has finished checking your ID, and you’re verified.',
+                ...(result.confirmed.length > 0
+                  ? [`Your booking ${result.confirmed.join(', ')} is confirmed.`]
+                  : []),
+              ]
+            : [
+                'Our team couldn’t verify your identity from the ID and selfie you sent, so you can’t book a car for now.',
+                ...(result.released.length > 0
+                  ? [
+                      `Booking ${result.released.join(', ')} was released, and your card authorisation with it: nothing was charged.`,
+                    ]
+                  : []),
+                'If you think this is a mistake, reply to this email.',
+              ],
+        buttonLabel: 'Your account',
+        url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/account`,
+      },
+    },
+    dedupeKey: `IDENTITY_REVIEWED:${user.id}:${now.getTime()}`,
+  });
+  return result;
 }

@@ -16,6 +16,18 @@ export const INSPECTION_ANGLES = [
 ] as const;
 export type InspectionAngle = (typeof INSPECTION_ANGLES)[number];
 
+/** The angles every check-in and check-out photographs (plan §9, Days 19–21); damage photos are extra. */
+export const REQUIRED_INSPECTION_ANGLES = [
+  'FRONT',
+  'REAR',
+  'DRIVER_SIDE',
+  'PASSENGER_SIDE',
+  'WHEELS',
+  'WINDSCREEN',
+  'INTERIOR',
+  'DASHBOARD',
+] as const satisfies readonly InspectionAngle[];
+
 /** Damage marked on the car diagram. x and y are percentages of the diagram's width and height. */
 export interface DamagePin {
   _id?: Types.ObjectId;
@@ -28,6 +40,8 @@ export interface DamagePin {
    */
   newDamage: boolean;
   flaggedBy?: Types.ObjectId;
+  /** When it was marked: with the report, or later, while the damage-report window is open. */
+  flaggedAt?: Date;
 }
 
 export interface InspectionPhoto {
@@ -48,6 +62,8 @@ export interface InspectionPhoto {
 export interface ConditionReport {
   bookingId: Types.ObjectId;
   stage: InspectionStage;
+  /** Who did the inspection: the Guest, the Host, or support staff completing a trip. */
+  submittedBy?: Types.ObjectId;
   odometer: number;
   fuelOrBatteryPct: number;
   notes?: string;
@@ -67,6 +83,7 @@ const damagePinSchema = new Schema<DamagePin>({
   note: { type: String, maxlength: 500 },
   newDamage: { type: Boolean, default: false },
   flaggedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  flaggedAt: Date,
 });
 
 const inspectionPhotoSchema = new Schema<InspectionPhoto>(
@@ -87,6 +104,7 @@ const conditionReportSchema = new Schema<ConditionReport>(
   {
     bookingId: { type: Schema.Types.ObjectId, ref: 'Booking', required: true },
     stage: { type: String, enum: INSPECTION_STAGES, required: true },
+    submittedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     odometer: {
       type: Number,
       required: true,

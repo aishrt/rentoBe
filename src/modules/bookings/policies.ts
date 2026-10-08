@@ -54,7 +54,7 @@ const hoursBefore = (booking: PricedBooking, now: Date) =>
   (booking.startAt.getTime() - now.getTime()) / HOUR_MS;
 
 /** The commission rate this booking was priced with: the rental and delivery less the Host's payout. */
-function commissionRate(booking: PricedBooking): number {
+export function commissionRate(booking: PricedBooking): number {
   const { subtotalCents, deliveryCents, hostPayoutCents } = booking.price;
   if (subtotalCents <= 0) return 0;
   return (subtotalCents + deliveryCents - hostPayoutCents) / subtotalCents;
@@ -130,4 +130,14 @@ export function platformCancellation(booking: PricedBooking, now = new Date()): 
     refundPct: 100,
     hoursBeforeStart: Math.max(0, Math.floor(hoursBefore(booking, now))),
   };
+}
+
+/**
+ * The commission on the Host's share of a kept fee (plan §5): the share is the kept rental less commission,
+ * so this is what the platform took from the Host's part. For statements and payouts.
+ */
+export function keptFeeCommission(booking: PricedBooking & { hostShareCents?: number }): number {
+  const rate = commissionRate(booking);
+  const share = booking.hostShareCents ?? 0;
+  return rate > 0 && rate < 1 ? Math.round((share * rate) / (1 - rate)) : 0;
 }

@@ -14,7 +14,10 @@ import { parseArgs } from 'node:util';
 import Stripe from 'stripe';
 import { env } from '../src/env.js';
 import { isStripeTestMode, stripe } from '../src/integrations/stripe.js';
-import { STRIPE_WEBHOOK_EVENTS } from '../src/modules/payments/stripe-webhook.js';
+import {
+  STRIPE_CONNECT_WEBHOOK_EVENTS,
+  STRIPE_WEBHOOK_EVENTS,
+} from '../src/modules/payments/stripe-webhook.js';
 import {
   DEFAULT_DOMAINS,
   DEFAULT_WEBHOOK_URL,
@@ -107,6 +110,32 @@ async function createWebhook(client: Stripe) {
   console.log("  Paste it; don't screenshot or share it. You can reveal it again in the Dashboard.");
 }
 
+/**
+ * The second endpoint, at the same URL, for events about Hosts' Connect accounts (plan §8.1, item 20).
+ * Stripe sends Connect events only to an endpoint made for them, with its own signing secret.
+ */
+async function createConnectWebhook(client: Stripe) {
+  console.log('\nConnect webhook (Host payout accounts)');
+  const { data: endpoints } = await client.webhookEndpoints.list({ limit: 100 });
+  const existing = endpoints.find(
+    (endpoint) => endpoint.url === webhookUrl && endpoint.description?.includes('Connect'),
+  );
+  if (existing) {
+    tick(`${webhookUrl} (Connect) already set up`);
+    return;
+  }
+  const endpoint = await client.webhookEndpoints.create({
+    url: webhookUrl,
+    connect: true,
+    enabled_events: [...STRIPE_CONNECT_WEBHOOK_EVENTS],
+    api_version: Stripe.API_VERSION,
+    description: 'Rento Vroom API: Connect (Host payout accounts)',
+  });
+  tick(`Created the Connect endpoint for ${STRIPE_CONNECT_WEBHOOK_EVENTS.join(', ')}`);
+  console.log(`\n  Signing secret (shown once): ${endpoint.secret}`);
+  console.log('  Put it in AWS Secrets Manager (rento-vroom/prod) as STRIPE_CONNECT_WEBHOOK_SECRET.');
+}
+
 async function main() {
   if (!env.STRIPE_SECRET_KEY) {
     console.error('STRIPE_SECRET_KEY is not set. Add your sandbox secret key (sk_test_…) to backend/.env.');
@@ -118,6 +147,7 @@ async function main() {
   await turnOnPaymentMethods(client);
   await registerDomains(client);
   await createWebhook(client);
+  await createConnectWebhook(client);
 
   console.log('\nDone. Run `npm run stripe:check` to see the whole account.\n');
 }

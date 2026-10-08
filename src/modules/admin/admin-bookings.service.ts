@@ -1,0 +1,426 @@
+import mongoose, { type Types } from 'mongoose';
+import type { z } from 'zod';
+import { withTransaction } from '../../db.js';
+import { env } from '../../env.js';
+import { HttpError } from '../../lib/http-error.js';
+import { forget } from '../../lib/memo.js';
+import { formatNzdExact } from '../../lib/format.js';
+import { fromNzWallClock } from '../../lib/nz-time.js';
+import { recordAudit } from '../audit/audit.service.js';
+import { AuditLogModel } from '../audit/audit-log.model.js';
+import { BookingModel, type Booking } from '../bookings/booking.model.js';
+import { refundIntent, statusAfterRefunds } from '../bookings/booking-payments.js';
+import { completeTrip, startTrip } from '../bookings/booking-transitions.js';
+import { bookingView, findBookingFor, type Actor } from '../bookings/booking.service.js';
+import { afterTripCompleted } from '../bookings/trip-completion.js';
+import { IncidentModel } from '../incidents/incident.model.js';
+import { notify } from '../notifications/notify.js';
+import { PaymentModel } from '../payments/payment.model.js';
+import { releaseHeldPayouts } from '../payouts/payouts.service.js';
+import { PayoutModel } from '../payouts/payout.model.js';
+import { SupportTicketModel } from '../support/support-ticket.model.js';
+import { UserModel } from '../users/user.model.js';
+import { VehicleModel, type VehicleStatus } from '../vehicles/vehicle.model.js';
+import { vehicleTitle } from '../vehicles/vehicle-view.js';
+import type {
+  adminBookingDetailSchema,
+  adminRefundSchema,
+  adminStatusEditSchema,
+  bookingListQuerySchema,
+} from './admin-ops.schemas.js';
+import { bookingRows } from './admin-users.service.js';
+import { paymentRows, payoutRows } from './admin-money.service.js';
+import { getPlatformSettings } from './platform-settings.service.js';
+
+/*
+ * Bookings in the staff portal (spec §18; plan §8.2, §9 Days 19–23): search, a booking's whole record,
+ * status edits that follow the allowed transitions with the same side effects, refunds with who funds them,
+ * and suspending a car.
+ */
+
+type Id = Types.ObjectId;
+type BookingRecord = Booking & { _id: Id };
+
+const PAGE_SIZE = 25;
+const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
+const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** The start of an NZ day given as 2026-10-07. */
+export function nzDayStart(date: string): Date {
+  const [year, month, day] = date.split('-').map(Number) as [number, number, number];
+  return fromNzWallClock(year, month, day);
+}
+
+/** GET /admin/bookings: by reference, a Guest's or Host's name or email, status and trip dates. */
+export async function listBookings(query: z.infer<typeof bookingListQuerySchema>) {
+  const filter: Record<string, unknown> = {
+    status: query.status ?? mongoose.trusted({ $ne: 'PAYMENT_PENDING' }),
+  };
+  if (query.q) {
+    if (/^RV-[A-Z0-9]{6}$/i.test(query.q)) {
+      filter.ref = query.q.toUpperCase();
+    } else {
+      const pattern = new RegExp(escape(query.q), 'i');
+      const people = await UserModel.find({
+        $or: [{ firstName: pattern }, { lastName: pattern }, { email: pattern }],
+      })
+        .select('_id')
+        .limit(200)
+        .lean();
+      const ids = people.map((person) => person._id);
+      filter.$or = [
+        { guestId: mongoose.trusted({ $in: ids }) },
+        { hostId: mongoose.trusted({ $in: ids }) },
+        { 'vehicleSnapshot.title': pattern },
+      ];
+    }
+  }
+  if (query.from || query.to) {
+    filter.startAt = mongoose.trusted({
+      ...(query.from && { $gte: nzDayStart(query.from) }),
+      ...(query.to && { $lt: new Date(nzDayStart(query.to).getTime() + 24 * 60 * 60 * 1000) }),
+    });
+  }
+  const [bookings, total] = await Promise.all([
+    BookingModel.find(filter)
+      .sort({ startAt: -1 })
+      .skip((query.page - 1) * PAGE_SIZE)
+      .limit(PAGE_SIZE)
+      .lean<BookingRecord[]>(),
+    BookingModel.countDocuments(filter),
+  ]);
+  return { bookings: await bookingRows(bookings), total, page: query.page };
+}
+
+const paidPayment = (bookingId: Id) =>
+  PaymentModel.findOne({
+    bookingId,
+    type: 'BOOKING',
+    status: mongoose.trusted({ $in: ['SUCCEEDED', 'PARTIALLY_REFUNDED'] }),
+  }).sort({ createdAt: -1 });
+
+/** GET /admin/bookings/{id}: everything about one booking, for staff. */
+export async function adminBookingDetail(
+  actor: Actor,
+  refOrId: string,
+): Promise<z.infer<typeof adminBookingDetailSchema>> {
+  const { booking } = await findBookingFor(actor, refOrId);
+  const [people, payments, payouts, incidents, tickets, paid] = await Promise.all([
+    UserModel.find({ _id: mongoose.trusted({ $in: [booking.guestId, booking.hostId] }) })
+      .select('firstName lastName email phone')
+      .lean(),
+    PaymentModel.find({ bookingId: booking._id }).sort({ createdAt: 1 }).lean(),
+    PayoutModel.find({ bookingId: booking._id }).sort({ createdAt: 1 }).lean(),
+    IncidentModel.find({ bookingId: booking._id })
+      .select('caseRef type status')
+      .sort({ createdAt: 1 })
+      .lean(),
+    SupportTicketModel.find({ bookingId: booking._id })
+      .select('ref subject status')
+      .sort({ createdAt: 1 })
+      .lean(),
+    paidPayment(booking._id).lean(),
+  ]);
+  const person = (id: Id) => {
+    const found = people.find((candidate) => candidate._id.equals(id));
+    return {
+      id: id.toString(),
+      name: found ? `${found.firstName} ${found.lastName}` : 'Former member',
+      email: found?.email ?? '',
+      ...(found?.phone && { phone: found.phone }),
+    };
+  };
+  const refunded = (paid?.refunds ?? [])
+    .filter((refund) => refund.status !== 'FAILED')
+    .reduce((sum, refund) => sum + refund.amountCents, 0);
+  return {
+    booking: await bookingView(booking, 'STAFF'),
+    guest: person(booking.guestId),
+    host: person(booking.hostId),
+    statusHistory: booking.statusHistory.map((change) => ({
+      status: change.status,
+      at: change.at.toISOString(),
+      ...(change.by && { by: change.by.toString() }),
+      ...(change.reason && { reason: change.reason }),
+    })),
+    extraCharges: booking.extraCharges.map((charge) => ({
+      id: charge._id!.toString(),
+      type: charge.type,
+      description: charge.description,
+      amountCents: charge.amountCents,
+      status: charge.status,
+    })),
+    payments: await paymentRows(payments),
+    payouts: await payoutRows(payouts),
+    incidents: incidents.map((incident) => ({
+      ref: incident.caseRef,
+      type: incident.type,
+      status: incident.status,
+    })),
+    tickets: tickets.map((ticket) => ({ ref: ticket.ref, subject: ticket.subject, status: ticket.status })),
+    refundableCents: paid ? Math.max(0, paid.amountCents - refunded) : 0,
+  };
+}
+
+/**
+ * POST /admin/bookings/{id}/status (plan §8.2): only the allowed transitions, with the same side effects as
+ * the app. ACTIVE: the trip started without a check-in in the app, so its payout can go. COMPLETED: the trip
+ * is over, so the review requests, extra-kilometre check and trip counts follow.
+ */
+export async function editBookingStatus(
+  actor: Actor,
+  refOrId: string,
+  input: z.infer<typeof adminStatusEditSchema>,
+  ip?: string,
+  now = new Date(),
+) {
+  const { booking } = await findBookingFor(actor, refOrId);
+  const allowed = input.to === 'ACTIVE' ? 'CONFIRMED' : 'ACTIVE';
+  if (booking.status !== allowed) {
+    throw new HttpError(
+      409,
+      'TRANSITION_NOT_ALLOWED',
+      input.to === 'ACTIVE'
+        ? 'Only a confirmed booking can be marked as started.'
+        : 'Only a trip under way can be marked as completed.',
+    );
+  }
+  if (input.to === 'ACTIVE' && booking.startAt.getTime() - now.getTime() > 24 * 60 * 60 * 1000) {
+    throw new HttpError(409, 'TOO_EARLY', 'This trip starts more than a day from now.');
+  }
+  const settings = await getPlatformSettings();
+  const reason = `Changed by support: ${input.reason}`;
+  await withTransaction(async (session) => {
+    if (input.to === 'ACTIVE') {
+      const started = await startTrip(booking, session, {
+        by: actor.userId,
+        graceMinutes: settings.trips.lateReturnGraceMinutes,
+        reason,
+        now,
+      });
+      if (!started)
+        throw new HttpError(409, 'ALREADY_CHANGED', 'This booking has just changed. Please refresh.');
+      await releaseHeldPayouts({ bookingId: booking._id }, 'TRIP_NOT_STARTED', { session, now });
+    } else {
+      const completed = await completeTrip(booking, session, { by: actor.userId, reason, now });
+      if (!completed)
+        throw new HttpError(409, 'ALREADY_CHANGED', 'This booking has just changed. Please refresh.');
+      await afterTripCompleted(completed.toObject() as BookingRecord, null, session, now);
+    }
+  });
+  await recordAudit({
+    actorId: actor.userId,
+    action: `booking.status-${input.to.toLowerCase()}`,
+    entity: 'booking',
+    entityId: booking.id,
+    before: { status: booking.status },
+    after: { status: input.to, reason: input.reason },
+    ...(ip && { ip }),
+  });
+  return adminBookingDetail(actor, booking.id);
+}
+
+/**
+ * POST /admin/bookings/{id}/refunds: a refund to the Guest's card, with the refunds permission (plan §6.2).
+ * A Host-funded refund comes off the trip's payout, or off the Host's next payout once it's paid (plan §8.1,
+ * item 15).
+ */
+export async function adminRefund(
+  actor: Actor,
+  refOrId: string,
+  input: z.infer<typeof adminRefundSchema>,
+  ip?: string,
+  now = new Date(),
+) {
+  const { booking } = await findBookingFor(actor, refOrId);
+  const payment = await paidPayment(booking._id);
+  if (!payment) throw new HttpError(409, 'NOT_PAID', 'This booking has no payment to refund.');
+  const refund = await refundIntent(
+    payment,
+    input.amountCents,
+    `refund-${payment.id}-admin-${new mongoose.Types.ObjectId().toString()}`,
+  );
+  await withTransaction(async (session) => {
+    const fresh = await PaymentModel.findById(payment._id).session(session);
+    if (!fresh) return;
+    fresh.refunds.push({
+      amountCents: refund.amountCents,
+      reason: input.reason,
+      issuedBy: new mongoose.Types.ObjectId(actor.userId),
+      fundedBy: input.fundedBy,
+      stripeRefundId: refund.stripeRefundId,
+      status: refund.status,
+      ...(refund.failureReason && { failureReason: refund.failureReason }),
+      createdAt: now,
+    });
+    fresh.status = statusAfterRefunds(fresh);
+    await fresh.save({ session });
+    if (input.fundedBy === 'HOST' && refund.status !== 'FAILED') {
+      // Paid already: the Host owes it, and it comes off their next payout.
+      const tripPaid = await PayoutModel.exists({
+        bookingId: booking._id,
+        type: 'TRIP',
+        status: 'PAID',
+      }).session(session);
+      if (tripPaid) {
+        await UserModel.updateOne(
+          { _id: booking.hostId },
+          { $inc: { 'hostProfile.feesOwedCents': refund.amountCents } },
+          { session },
+        );
+      }
+    }
+    await notify(
+      {
+        userId: booking.guestId,
+        type: 'REFUND_ISSUED',
+        title: 'Refund on its way',
+        body: `${formatNzdExact(refund.amountCents)} back to your card for ${booking.ref}.`,
+        link: `/trips/${booking.ref}`,
+        email: {
+          template: 'tripNotice',
+          props: {
+            firstName:
+              (await UserModel.findById(booking.guestId).select('firstName').session(session).lean())
+                ?.firstName ?? 'there',
+            heading: 'We’ve refunded you',
+            paragraphs: [
+              `We’ve refunded ${formatNzdExact(refund.amountCents)} to the card you paid with for your trip in the ${booking.vehicleSnapshot.title}.`,
+              'Refunds usually reach your account within 5 to 10 business days, depending on your bank.',
+            ],
+            rows: [
+              { label: 'Booking', value: booking.ref },
+              { label: 'Refund', value: formatNzdExact(refund.amountCents) },
+            ],
+            buttonLabel: 'View your trip',
+            url: `${siteUrl()}/trips/${booking.ref}`,
+          },
+        },
+        dedupeKey: `REFUND_ISSUED:${refund.stripeRefundId}`,
+      },
+      { session },
+    );
+  });
+  await recordAudit({
+    actorId: actor.userId,
+    action: 'refund.issued',
+    entity: 'booking',
+    entityId: booking.id,
+    after: {
+      amountCents: refund.amountCents,
+      fundedBy: input.fundedBy,
+      reason: input.reason,
+      status: refund.status,
+    },
+    ...(ip && { ip }),
+  });
+  return adminBookingDetail(actor, booking.id);
+}
+
+async function upcomingFor(filter: Record<string, unknown>, now: Date) {
+  const bookings = await BookingModel.find({
+    ...filter,
+    status: mongoose.trusted({ $in: ['PENDING', 'CONFIRMED', 'ACTIVE'] }),
+    endAt: mongoose.trusted({ $gt: now }),
+  })
+    .sort({ startAt: 1 })
+    .lean<BookingRecord[]>();
+  return bookingRows(bookings);
+}
+
+/** A car's state for staff, with what a suspension affects. */
+async function vehicleSuspension(vehicleId: Id, now = new Date()) {
+  const vehicle = await VehicleModel.findById(vehicleId).lean();
+  if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No such car.');
+  return {
+    vehicle: {
+      id: vehicle._id.toString(),
+      title: vehicleTitle(vehicle),
+      status: vehicle.status,
+    },
+    upcomingBookings: await upcomingFor({ vehicleId }, now),
+  };
+}
+
+async function findVehicle(id: string) {
+  const vehicle = mongoose.isValidObjectId(id) ? await VehicleModel.findById(id) : null;
+  if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No such car.');
+  return vehicle;
+}
+
+/**
+ * POST /admin/vehicles/{id}/suspend (plan §8.2): hidden at once. Its upcoming bookings come back for staff,
+ * who keep each one or cancel it as a platform cancellation.
+ */
+export async function suspendVehicle(staffId: string, vehicleId: string, reason: string, ip?: string) {
+  const vehicle = await findVehicle(vehicleId);
+  if (!['ACTIVE', 'INACTIVE'].includes(vehicle.status)) {
+    throw new HttpError(409, 'NOT_SUSPENDABLE', 'Only a live or deactivated car can be suspended.');
+  }
+  const before = vehicle.status;
+  vehicle.status = 'SUSPENDED';
+  vehicle.reviewNotes = reason;
+  await vehicle.save();
+  forget('vehicles:featured');
+  await recordAudit({
+    actorId: staffId,
+    action: 'vehicle.suspended',
+    entity: 'vehicle',
+    entityId: vehicle.id,
+    before: { status: before },
+    after: { status: 'SUSPENDED', reason },
+    ...(ip && { ip }),
+  });
+  const host = await UserModel.findById(vehicle.hostId).select('firstName').lean();
+  const title = vehicleTitle(vehicle);
+  await notify({
+    userId: vehicle.hostId,
+    type: 'VEHICLE_SUSPENDED',
+    title: `Your ${title} is suspended`,
+    body: reason,
+    link: '/host/vehicles',
+    email: {
+      template: 'tripNotice',
+      props: {
+        firstName: host?.firstName ?? 'there',
+        heading: `We’ve suspended your ${title}`,
+        paragraphs: [
+          `Your ${title} is hidden from search and can’t take new bookings: ${reason}`,
+          'Our team will be in touch about its upcoming bookings. If you have questions, reply to this email.',
+        ],
+        buttonLabel: 'Your cars',
+        url: `${siteUrl()}/host/vehicles`,
+      },
+    },
+    dedupeKey: `VEHICLE_SUSPENDED:${vehicle.id}:${Date.now()}`,
+  });
+  return vehicleSuspension(vehicle._id);
+}
+
+/** POST /admin/vehicles/{id}/unsuspend: back to how it was before the suspension. */
+export async function unsuspendVehicle(staffId: string, vehicleId: string, ip?: string) {
+  const vehicle = await findVehicle(vehicleId);
+  if (vehicle.status !== 'SUSPENDED') throw new HttpError(409, 'NOT_SUSPENDED', 'This car isn’t suspended.');
+  const last = await AuditLogModel.findOne({
+    entity: 'vehicle',
+    entityId: vehicle.id,
+    action: 'vehicle.suspended',
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+  const previous = (last?.before as { status?: VehicleStatus } | undefined)?.status;
+  vehicle.status = previous === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+  vehicle.reviewNotes = undefined;
+  await vehicle.save();
+  forget('vehicles:featured');
+  await recordAudit({
+    actorId: staffId,
+    action: 'vehicle.unsuspended',
+    entity: 'vehicle',
+    entityId: vehicle.id,
+    before: { status: 'SUSPENDED' },
+    after: { status: vehicle.status },
+    ...(ip && { ip }),
+  });
+  return vehicleSuspension(vehicle._id);
+}

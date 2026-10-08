@@ -30,15 +30,50 @@ export function isDbConnected(): boolean {
   return mongoose.connection.readyState === mongoose.ConnectionStates.connected;
 }
 
+/** What to do once a transaction commits, by session; see afterCommit(). */
+const commitCallbacks = new WeakMap<ClientSession, (() => void)[]>();
+
+/**
+ * Runs `callback` once the session's transaction commits, or straight away without one. For things a
+ * transaction can't take back, such as a live Socket.IO event: it's sent only if the change is saved,
+ * and only once however often MongoDB retries the transaction.
+ */
+export function afterCommit(session: ClientSession | null | undefined, callback: () => void): void {
+  if (!session?.inTransaction()) {
+    callback();
+    return;
+  }
+  const callbacks = commitCallbacks.get(session) ?? [];
+  callbacks.push(callback);
+  commitCallbacks.set(session, callbacks);
+}
+
 /**
  * Runs `work` in a MongoDB transaction: every write commits together, or none do if it throws.
  * Pass `session` to each query inside. When two transactions write the same document at once,
  * MongoDB aborts one and it runs again from the start (double-booking prevention, plan §3), so
- * `work` must be safe to repeat: database writes only, no emails or Stripe calls.
+ * `work` must be safe to repeat: database writes only, no emails or Stripe calls. Anything else
+ * waits for the commit through afterCommit().
  */
-export function withTransaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
-  return mongoose.connection.transaction(work, {
-    readConcern: { level: 'snapshot' },
-    writeConcern: { w: 'majority' },
-  });
+export async function withTransaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
+  let used: ClientSession | undefined;
+  const result = await mongoose.connection.transaction(
+    (session) => {
+      // A retried attempt starts again, without the callbacks of the attempt that was aborted.
+      used = session;
+      commitCallbacks.delete(session);
+      return work(session);
+    },
+    { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } },
+  );
+  const callbacks = used ? (commitCallbacks.get(used) ?? []) : [];
+  if (used) commitCallbacks.delete(used);
+  for (const callback of callbacks) {
+    try {
+      callback();
+    } catch (error) {
+      logger.error({ err: error }, 'An after-commit callback failed');
+    }
+  }
+  return result;
 }

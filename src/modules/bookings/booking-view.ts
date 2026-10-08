@@ -3,6 +3,7 @@ import { formatNzAddress } from '../../lib/format.js';
 import type { NzAddress } from '../../lib/model-fields.js';
 import { nzTripDays } from '../../lib/nz-time.js';
 import { PaymentModel, type Payment } from '../payments/payment.model.js';
+import { PayoutModel, type Payout } from '../payouts/payout.model.js';
 import { ReviewModel } from '../reviews/review.model.js';
 import { UserModel, type User } from '../users/user.model.js';
 import { VehicleModel, type DeliveryOption, type Vehicle } from '../vehicles/vehicle.model.js';
@@ -52,6 +53,8 @@ export interface BookingContext {
   guest: PartyUser | null;
   host: PartyUser | null;
   payment: (Payment & { _id: Id }) | null;
+  /** The booking's payouts: its trip's, or a kept fee's, and any extra charges'. */
+  payouts: (Payout & { _id: Id })[];
   guestStats: { rating: { avg: number; count: number }; tripCount: number };
 }
 
@@ -60,7 +63,7 @@ const PARTY_FIELDS =
 
 /** Everything a booking view needs besides the booking itself. */
 export async function loadBookingContext(booking: BookingRecord): Promise<BookingContext> {
-  const [vehicle, guest, host, payment, reviews, trips] = await Promise.all([
+  const [vehicle, guest, host, payment, reviews, trips, payouts] = await Promise.all([
     VehicleModel.findById(booking.vehicleId).select('slug deliveryOptions suburb city photos').lean(),
     UserModel.findById(booking.guestId).select(PARTY_FIELDS).lean<PartyUser>(),
     UserModel.findById(booking.hostId).select(PARTY_FIELDS).lean<PartyUser>(),
@@ -70,12 +73,14 @@ export async function loadBookingContext(booking: BookingRecord): Promise<Bookin
       { $group: { _id: null, avg: { $avg: '$overall' }, count: { $sum: 1 } } },
     ]),
     BookingModel.countDocuments({ guestId: booking.guestId, status: 'COMPLETED' }),
+    PayoutModel.find({ bookingId: booking._id }).lean<(Payout & { _id: Id })[]>(),
   ]);
   return {
     vehicle,
     guest,
     host,
     payment,
+    payouts,
     guestStats: {
       rating: { avg: Math.round((reviews[0]?.avg ?? 0) * 100) / 100, count: reviews[0]?.count ?? 0 },
       tripCount: trips,
@@ -130,6 +135,27 @@ function party(
     rating: stats.rating,
     tripCount: stats.tripCount,
     ...(showPhone && user?.phone && user.phoneVerifiedAt && { phone: user.phone }),
+  };
+}
+
+/** What the Host earns from the booking, and where its payout stands (plan §8.1, item 19). */
+function payoutView(booking: BookingRecord, context: BookingContext) {
+  const main = context.payouts.find(
+    (payout) => payout.type !== 'EXTRA_CHARGE' && payout.status !== 'CANCELLED',
+  );
+  const paid = context.payouts
+    .filter((payout) => payout.status === 'PAID')
+    .reduce((sum, payout) => sum + payout.amountCents, 0);
+  return {
+    hostPayoutCents: booking.price.hostPayoutCents,
+    platformFeeCents: booking.price.platformFeeCents,
+    ...(main && {
+      status: main.status,
+      ...(main.holdReason && { holdReason: main.holdReason }),
+      scheduledFor: main.scheduledFor.toISOString(),
+      ...(main.paidAt && { paidAt: main.paidAt.toISOString() }),
+    }),
+    ...(paid > 0 && { paidCents: paid }),
   };
 }
 
@@ -207,9 +233,7 @@ export function toBookingView(
       mandatoryCents,
       optionalCents: price.totalCents - mandatoryCents,
     },
-    ...(viewer !== 'GUEST' && {
-      payout: { hostPayoutCents: price.hostPayoutCents, platformFeeCents: price.platformFeeCents },
-    }),
+    ...(viewer !== 'GUEST' && { payout: payoutView(booking, context) }),
     ...(booking.status === 'PAYMENT_PENDING' &&
       booking.holdExpiresAt && { holdExpiresAt: booking.holdExpiresAt.toISOString() }),
     ...(booking.status === 'PENDING' &&

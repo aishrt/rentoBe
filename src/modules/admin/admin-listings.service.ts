@@ -50,6 +50,7 @@ export async function listHostApplications(status: HostStatus = 'APPLIED') {
       emailVerified: Boolean(user.emailVerifiedAt),
       ...(user.phone && { phone: user.phone }),
       phoneVerified: Boolean(user.phoneVerifiedAt),
+      identityStatus: user.identityVerification?.status ?? 'NONE',
       status: profile.status,
       appliedAt: profile.appliedAt.toISOString(),
       ...(profile.bio && { bio: profile.bio }),
@@ -196,7 +197,9 @@ export async function decideListing(
   ip?: string,
 ) {
   const vehicle = await findVehicle(id);
-  const host = await UserModel.findById(vehicle.hostId).select('firstName hostProfile.status');
+  const host = await UserModel.findById(vehicle.hostId).select(
+    'firstName hostProfile.status hostProfile.payoutsEnabled',
+  );
   const before = vehicle.status;
   const live = before === 'ACTIVE' || before === 'INACTIVE';
 
@@ -215,7 +218,11 @@ export async function decideListing(
         document.reviewedBy = staff;
       }
     }
-    if (before === 'UNDER_REVIEW') vehicle.status = 'ACTIVE';
+    if (before === 'UNDER_REVIEW') {
+      vehicle.status = 'ACTIVE';
+      // It goes live once the Host's payout setup is done (plan §8.2); until then it waits, approved.
+      vehicle.payoutsReady = host.hostProfile.payoutsEnabled;
+    }
   } else {
     if (before !== 'UNDER_REVIEW')
       throw new HttpError(409, 'NOT_UNDER_REVIEW', 'Only a listing under review can be sent back.');

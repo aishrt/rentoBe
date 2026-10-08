@@ -43,6 +43,8 @@ export interface Dispute {
 export interface Payment {
   bookingId: Types.ObjectId;
   type: (typeof PAYMENT_TYPES)[number];
+  /** EXTRA_CHARGE: which of the booking's extra charges it pays. */
+  extraChargeId?: Types.ObjectId;
   stripePaymentIntentId: string;
   amountCents: number;
   status: PaymentStatus;
@@ -69,6 +71,7 @@ const paymentSchema = new Schema<Payment>(
   {
     bookingId: { type: Schema.Types.ObjectId, ref: 'Booking', required: true },
     type: { type: String, enum: PAYMENT_TYPES, required: true },
+    extraChargeId: Schema.Types.ObjectId,
     stripePaymentIntentId: { type: String, required: true },
     amountCents: cents({ required: true }),
     status: { type: String, enum: PAYMENT_STATUSES, default: 'PENDING' },

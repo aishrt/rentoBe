@@ -22,6 +22,14 @@ import {
   preparePaymentSchema,
 } from './bookings.schemas.js';
 import { bookingReceipt, receiptPdf } from './receipt.service.js';
+import { INSPECTION_STAGES, type InspectionStage } from '../inspections/condition-report.model.js';
+import { flagDamageSchema, inspectionInputSchema } from '../inspections/inspections.schemas.js';
+import {
+  confirmInspection,
+  flagDamage,
+  getHandover,
+  submitInspection,
+} from '../inspections/inspections.service.js';
 
 /** Mounted at /api/v1/bookings (plan §11): the booking flow, trips and the Host's answers. */
 export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: true }) {
@@ -95,6 +103,37 @@ export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: tr
       throw new HttpError(403, 'FORBIDDEN', 'Staff cancel bookings from the staff portal.');
     const cancelled = await cancelBooking(booking, viewer, req.auth!.userId, reason);
     res.json({ booking: await bookingView(cancelled, viewer) });
+  });
+
+  // The digital vehicle handover (spec §14): check-in starts the trip, check-out ends it.
+  router.get('/:id/inspections', async (req, res) => {
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    res.json({ handover: await getHandover(booking, viewer) });
+  });
+
+  router.post('/:id/inspections', async (req, res) => {
+    const input = validate(inspectionInputSchema, req.body);
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    if (viewer === 'STAFF')
+      throw new HttpError(403, 'FORBIDDEN', 'Staff complete trips from the staff portal.');
+    await submitInspection(booking, viewer, req.auth!.userId, input);
+    const { booking: fresh } = await findBookingFor(actor(req), booking.id);
+    res.status(201).json({ handover: await getHandover(fresh, viewer) });
+  });
+
+  router.post('/:id/inspections/:stage/confirm', async (req, res) => {
+    const stage = String(req.params.stage).toUpperCase() as InspectionStage;
+    if (!INSPECTION_STAGES.includes(stage)) throw new HttpError(404, 'NOT_FOUND', 'No such report.');
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    await confirmInspection(booking, viewer, stage);
+    res.json({ handover: await getHandover(booking, viewer) });
+  });
+
+  router.post('/:id/inspections/CHECK_OUT/damage', async (req, res) => {
+    const input = validate(flagDamageSchema, req.body);
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    await flagDamage(booking, viewer, req.auth!.userId, input);
+    res.json({ handover: await getHandover(booking, viewer) });
   });
 
   router.post('/:id/accept', async (req, res) => {

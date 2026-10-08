@@ -2,7 +2,10 @@ import type { ClientSession } from 'mongoose';
 import type Stripe from 'stripe';
 import { logger } from '../../integrations/logger.js';
 import { reportError } from '../../integrations/sentry.js';
+import { applyExtraChargeIntent } from '../payments/extra-charges.service.js';
 import { PaymentModel } from '../payments/payment.model.js';
+import { holdBookingPayouts, releaseHeldPayouts } from '../payouts/payouts.service.js';
+import { alertStaff } from '../staff/staff-alerts.js';
 import type { StripeEventHandler } from '../payments/stripe-webhook.js';
 import { applyPaymentIntent, statusAfterRefunds } from './booking-payments.js';
 
@@ -12,8 +15,12 @@ import { applyPaymentIntent, statusAfterRefunds } from './booking-payments.js';
  * run twice.
  */
 
-const intentEvent: StripeEventHandler = (event, session) =>
-  applyPaymentIntent(event.data.object as Stripe.PaymentIntent, session);
+/** A booking's payment, or an extra charge's: each applies only to its own kind of payment. */
+const intentEvent: StripeEventHandler = async (event, session) => {
+  const intent = event.data.object as Stripe.PaymentIntent;
+  await applyPaymentIntent(intent, session);
+  await applyExtraChargeIntent(intent, session);
+};
 
 const intentId = (value: string | { id: string } | null | undefined) =>
   typeof value === 'string' ? value : value?.id;
@@ -49,6 +56,16 @@ async function refundFailed(event: Stripe.Event, session: ClientSession) {
   const error = new Error(`Refund ${refund.id} failed: ${record.failureReason}`);
   logger.error({ paymentId: payment.id, refundId: refund.id }, error.message);
   reportError(error, { tags: { area: 'refund' }, extra: { paymentId: payment.id } });
+  await alertStaff(
+    {
+      type: 'REFUND_FAILED',
+      title: 'A refund failed',
+      body: `a refund of $${(record.amountCents / 100).toFixed(2)} failed (${record.failureReason}). Please return the money to the guest another way.`,
+      link: `/admin/payments`,
+      dedupeKey: `REFUND_FAILED:${refund.id}`,
+    },
+    { session },
+  );
 }
 
 /** A card dispute (chargeback) is linked to its payment (plan §8.1, item 12). Payout holds join in Phase 3. */
@@ -69,6 +86,20 @@ async function disputeChanged(event: Stripe.Event, session: ClientSession) {
     const error = new Error(`Card dispute ${dispute.id} opened on payment ${payment.id}`);
     logger.error({ paymentId: payment.id, disputeId: dispute.id }, error.message);
     reportError(error, { tags: { area: 'dispute' }, extra: { paymentId: payment.id } });
+    // Unpaid payouts for the booking wait until it's settled (plan §8.1, item 12).
+    await holdBookingPayouts(payment.bookingId, 'DISPUTE', session);
+    await alertStaff(
+      {
+        type: 'CARD_DISPUTE',
+        title: 'A guest disputed a card payment',
+        body: `a card dispute (${dispute.reason}) was opened on a booking payment. Answer it in Stripe with the inspection photos, messages and agreement acceptance${dispute.evidence_details?.due_by ? `, by ${new Date(dispute.evidence_details.due_by * 1000).toISOString().slice(0, 10)}` : ''}.`,
+        link: `/admin/payments`,
+        dedupeKey: `CARD_DISPUTE:${dispute.id}`,
+      },
+      { session },
+    );
+  } else if (['won', 'lost', 'warning_closed'].includes(dispute.status)) {
+    await releaseHeldPayouts({ bookingId: payment.bookingId }, 'DISPUTE', { session });
   }
 }
 

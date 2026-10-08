@@ -8,6 +8,7 @@ import { enqueue } from '../../jobs/queue.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
 import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
 import { ensureCustomer } from '../payments/stripe-customer.js';
+import { checkFailedPayments, queuePaymentRiskCheck } from '../risk/risk-signals.js';
 import { AGREEMENT_VERSIONS } from '../users/agreements.js';
 import { verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel } from '../users/user.model.js';
@@ -171,6 +172,8 @@ export async function applyPaymentIntent(
   switch (intent.status) {
     case 'succeeded': {
       if (payment.status === 'PENDING' || payment.status === 'AUTHORISED' || payment.status === 'FAILED') {
+        // An authorised request was checked when it was authorised.
+        if (payment.status !== 'AUTHORISED') await queuePaymentRiskCheck(payment.id, session);
         payment.status = 'SUCCEEDED';
         payment.failureReason = undefined;
         await payment.save({ session });
@@ -192,6 +195,7 @@ export async function applyPaymentIntent(
     }
     case 'requires_capture': {
       if (payment.status === 'PENDING' || payment.status === 'FAILED') {
+        await queuePaymentRiskCheck(payment.id, session);
         payment.status = 'AUTHORISED';
         payment.failureReason = undefined;
         await payment.save({ session });
@@ -211,6 +215,7 @@ export async function applyPaymentIntent(
       if (reason && payment.status === 'PENDING') {
         payment.failureReason = reason.slice(0, 300);
         await payment.save({ session });
+        await checkFailedPayments(booking.guestId, session, now);
         if (booking.status === 'PAYMENT_PENDING') {
           await notifyPaymentFailed(
             booking.toObject() as BookingRecord,

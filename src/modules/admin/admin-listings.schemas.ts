@@ -14,6 +14,9 @@ export const hostApplicationSchema = z
     emailVerified: z.boolean(),
     phone: z.string().optional(),
     phoneVerified: z.boolean(),
+    identityStatus: z
+      .enum(['NONE', 'PENDING', 'APPROVED', 'REJECTED'])
+      .meta({ description: 'The Host’s identity check (plan §9, Days 19–20)' }),
     status: z.enum(HOST_STATUSES),
     appliedAt: z.iso.datetime(),
     bio: z.string().optional(),

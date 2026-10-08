@@ -24,6 +24,14 @@ import {
   removeSavedCard,
   startCardSetup,
 } from '../payments/guest-payments.service.js';
+import { listBlockedUsers } from '../moderation/reports.service.js';
+import { myReviews } from '../reviews/reviews.service.js';
+import { identityStatus, startIdentityCheck } from './identity.service.js';
+import {
+  getNotificationPrefs,
+  notificationPrefsPatchSchema,
+  updateNotificationPrefs,
+} from './notification-prefs.js';
 import { privacyRequestSchema } from './privacy.schemas.js';
 import { accountClosure, requestPrivacy } from './privacy.service.js';
 import { lastSearchSchema } from './saved.schemas.js';
@@ -128,6 +136,16 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
     res.json(await checkoutReadiness(req.auth!.userId, end ?? undefined));
   });
 
+  // The identity check (plan §9, Days 19–20): Stripe Identity's page, and where the check stands.
+  router.post('/verification', ...limit(accountChangeRateLimit), async (req, res) => {
+    const returnTo = typeof req.body?.returnTo === 'string' ? req.body.returnTo : undefined;
+    res.json(await startIdentityCheck(req.auth!.userId, returnTo));
+  });
+
+  router.get('/verification', async (req, res) => {
+    res.json({ identity: await identityStatus(req.auth!.userId) });
+  });
+
   router.put('/driver-licence', async (req, res) => {
     const input = validate(driverLicenceInputSchema, req.body);
     res.json(await saveDriverLicence(req.auth!.userId, input, req.ip));
@@ -159,6 +177,26 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
 
   router.get('/payments', async (req, res) => {
     res.json({ payments: await listPaymentHistory(req.auth!.userId) });
+  });
+
+  // Which non-essential emails and texts the user gets (plan §7).
+  router.get('/notification-prefs', async (req, res) => {
+    res.json({ prefs: await getNotificationPrefs(req.auth!.userId) });
+  });
+
+  router.patch('/notification-prefs', async (req, res) => {
+    const patch = validate(notificationPrefsPatchSchema, req.body);
+    res.json({ prefs: await updateNotificationPrefs(req.auth!.userId, patch) });
+  });
+
+  // Reviews to write, written and received (spec §8, §9, §16).
+  router.get('/reviews', async (req, res) => {
+    res.json(await myReviews(req.auth!.userId));
+  });
+
+  // The people the user has blocked from messaging them (spec §13).
+  router.get('/blocked-users', async (req, res) => {
+    res.json({ users: await listBlockedUsers(req.auth!.userId) });
   });
 
   // Privacy requests and closing the account (plan §8.2, §14).

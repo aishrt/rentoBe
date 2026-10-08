@@ -6,7 +6,8 @@ import { cents } from '../../lib/model-fields.js';
  * charge that succeeds (plan §3).
  */
 export const PAYOUT_TYPES = ['TRIP', 'CANCELLATION_FEE', 'EXTRA_CHARGE'] as const;
-export const PAYOUT_STATUSES = ['SCHEDULED', 'HELD', 'PAID', 'FAILED'] as const;
+/** CANCELLED: the booking was cancelled before its trip payout was sent. */
+export const PAYOUT_STATUSES = ['SCHEDULED', 'HELD', 'PAID', 'FAILED', 'CANCELLED'] as const;
 export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
 
 export const PAYOUT_HOLD_REASONS = [
@@ -15,7 +16,10 @@ export const PAYOUT_HOLD_REASONS = [
   'PAYOUT_SETUP',
   'TRIP_NOT_STARTED',
   'SUSPENDED',
+  /** Held by staff, e.g. while they look into something with the Host. */
+  'MANUAL',
 ] as const;
+export type PayoutHoldReason = (typeof PAYOUT_HOLD_REASONS)[number];
 
 export const DEDUCTION_TYPES = ['HOST_CANCELLATION_FEE', 'HOST_FUNDED_REFUND', 'OTHER'] as const;
 
@@ -32,9 +36,16 @@ export interface Payout {
   bookingId: Types.ObjectId;
   type: (typeof PAYOUT_TYPES)[number];
   extraChargeId?: Types.ObjectId;
+  /** What's transferred: the gross less commission and deductions, never below zero. */
   amountCents: number;
+  /** What the Guest paid for the Host's part: rental and delivery, the kept fee or the extra charge. */
+  grossCents?: number;
+  /** The platform's commission on it, with its GST, for GST-registered Hosts' statements (plan §8.1, item 22). */
+  commissionCents?: number;
+  commissionGstCents?: number;
   stripeTransferId?: string;
   status: PayoutStatus;
+  failureReason?: string;
   holdReason?: (typeof PAYOUT_HOLD_REASONS)[number];
   scheduledFor: Date;
   paidAt?: Date;
@@ -60,8 +71,12 @@ const payoutSchema = new Schema<Payout>(
     extraChargeId: Schema.Types.ObjectId,
     // Never below zero: anything left over is carried to the next payout as fees owed (plan §3).
     amountCents: cents({ required: true }),
+    grossCents: cents(),
+    commissionCents: cents(),
+    commissionGstCents: cents(),
     stripeTransferId: String,
     status: { type: String, enum: PAYOUT_STATUSES, default: 'SCHEDULED' },
+    failureReason: String,
     holdReason: { type: String, enum: PAYOUT_HOLD_REASONS },
     scheduledFor: { type: Date, required: true },
     paidAt: Date,

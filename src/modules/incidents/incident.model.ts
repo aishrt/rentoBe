@@ -26,6 +26,9 @@ export const INCIDENT_STATUSES = [
 ] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 
+/** A case still being worked on: it holds payouts and keeps the booking's messages open (plan §3, §8). */
+export const OPEN_INCIDENT_STATUSES = ['OPEN', 'INVESTIGATING', 'AWAITING_RESPONSE'] as const;
+
 /** Who can see an event on the case: both parties, one of them, or support staff only. */
 export const EVENT_VISIBILITIES = ['BOTH', 'GUEST', 'HOST', 'INTERNAL'] as const;
 
@@ -38,6 +41,8 @@ export interface IncidentEvent {
   note?: string;
   attachments: FileAttachment[];
   visibility: (typeof EVENT_VISIBILITIES)[number];
+  /** The case's status after this event, when it changed it. */
+  status?: IncidentStatus;
   createdAt: Date;
 }
 
@@ -65,6 +70,7 @@ const incidentEventSchema = new Schema<IncidentEvent>(
     note: { type: String, maxlength: 5000 },
     attachments: { type: [attachmentSchema], default: [] },
     visibility: { type: String, enum: EVENT_VISIBILITIES, default: 'BOTH' },
+    status: { type: String, enum: INCIDENT_STATUSES },
     createdAt: { type: Date, required: true, default: Date.now },
   },
   { _id: false },

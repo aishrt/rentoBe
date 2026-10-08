@@ -51,6 +51,17 @@ import {
 } from './templates/host-emails.js';
 import { StaffInviteEmail, type StaffInviteProps } from './templates/staff-emails.js';
 import { SupportTicketReceivedEmail, type SupportTicketReceivedProps } from './templates/support-emails.js';
+import {
+  NewMessageEmail,
+  StaffAlertEmail,
+  TripNoticeEmail,
+  TripReminderEmail,
+  tripReminderSubjects,
+  type NewMessageProps,
+  type StaffAlertProps,
+  type TripNoticeProps,
+  type TripReminderProps,
+} from './templates/trip-emails.js';
 import { VerifyEmail, type VerifyEmailProps } from './templates/verify-email.js';
 import { WelcomeEmail, type WelcomeEmailProps } from './templates/welcome-email.js';
 
@@ -166,6 +177,23 @@ export const emailTemplates = {
   refundIssued: defineTemplate<RefundIssuedProps>({
     subject: ({ ref }) => `Refund for booking ${ref}`,
     component: RefundIssuedEmail,
+  }),
+  newMessage: defineTemplate<NewMessageProps>({
+    subject: ({ senderFirstName, count }) =>
+      count > 1 ? `${count} new messages from ${senderFirstName}` : `New message from ${senderFirstName}`,
+    component: NewMessageEmail,
+  }),
+  tripReminder: defineTemplate<TripReminderProps>({
+    subject: tripReminderSubjects,
+    component: TripReminderEmail,
+  }),
+  tripNotice: defineTemplate<TripNoticeProps>({
+    subject: ({ heading }) => heading,
+    component: TripNoticeEmail,
+  }),
+  staffAlert: defineTemplate<StaffAlertProps>({
+    subject: ({ title }) => `Staff alert: ${title}`,
+    component: StaffAlertEmail,
   }),
 };
 

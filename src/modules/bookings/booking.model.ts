@@ -172,6 +172,8 @@ export interface Booking {
   lineItems: LineItem[];
   statusHistory: StatusChange[];
   extraCharges: ExtraCharge[];
+  /** When its messages, inspection photos and incident evidence were deleted after the retention period. */
+  tripRecordsClearedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -332,6 +334,7 @@ const bookingSchema = new Schema<Booking>(
     lineItems: { type: [lineItemSchema], default: [] },
     statusHistory: { type: [statusChangeSchema], default: [] },
     extraCharges: { type: [extraChargeSchema], default: [] },
+    tripRecordsClearedAt: Date,
   },
   { timestamps: true },
 );
