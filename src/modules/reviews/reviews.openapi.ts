@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import {
   moderateReviewSchema,
+  moderationReviewSchema,
   myReviewsResponseSchema,
   reviewInputSchema,
   reviewResponseSchema,
-  reviewViewSchema,
   userReviewsResponseSchema,
 } from './reviews.schemas.js';
 
@@ -51,15 +51,15 @@ export function registerReviewPaths(registry: OpenAPIRegistry) {
     method: 'get',
     path: '/admin/reviews',
     tags: ['Admin'],
-    summary: 'Staff: reviews held for moderation, or hidden ones',
+    summary: 'Staff: reviews held for moderation, published ones, or hidden ones',
+    description:
+      'HELD (the default) oldest first; PUBLISHED and HIDDEN newest first, 100 at most. A published review that breaks the rules can be hidden with a reason.',
     security: signedIn,
-    request: { query: z.object({ state: z.enum(['HELD', 'HIDDEN']).optional() }) },
+    request: { query: z.object({ state: z.enum(['HELD', 'PUBLISHED', 'HIDDEN']).optional() }) },
     responses: {
       200: jsonResponse(
         'Reviews',
-        z
-          .object({ reviews: z.array(reviewViewSchema.extend({ moderationReason: z.string() })) })
-          .meta({ id: 'ModerationReviews' }),
+        z.object({ reviews: z.array(moderationReviewSchema) }).meta({ id: 'ModerationReviews' }),
       ),
       ...errorResponses(401, 403),
     },

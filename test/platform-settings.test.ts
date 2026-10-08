@@ -64,7 +64,7 @@ describe('PATCH /api/v1/admin/settings', () => {
     expect(before).toMatchObject({ subtotalCents: 17_800, serviceFeeCents: 1_780, protectionCents: 5_800 });
 
     const plans = DEFAULT_SETTINGS.protectionPlans.map((plan) =>
-      plan.code === 'STANDARD' ? { ...plan, dailyPriceCents: 3_100 } : plan,
+      plan.code === 'STANDARD' ? { ...plan, dailyPriceCents: 3_100, roadsidePhone: '0800 765 432' } : plan,
     );
     const response = await admin
       .patch('/api/v1/admin/settings')
@@ -78,6 +78,10 @@ describe('PATCH /api/v1/admin/settings', () => {
 
     const policies = await request(testApp()).get('/api/v1/policies');
     expect(policies.body.fees.guestServiceFeePct).toBe(12);
+    // A plan can have its own roadside number; the others use the platform-wide one.
+    expect(
+      policies.body.protectionPlans.map((plan: { roadsidePhone?: string }) => plan.roadsidePhone),
+    ).toEqual([undefined, '0800 765 432', undefined]);
   });
 
   it('changes only the decisions sent, and records the change in the audit log', async () => {
@@ -116,6 +120,14 @@ describe('PATCH /api/v1/admin/settings', () => {
 
     const badFee = await send({ fees: { ...DEFAULT_SETTINGS.fees, guestServiceFeePct: 150 } });
     expect(badFee.body.error.fields).toHaveProperty(['fees.guestServiceFeePct']);
+
+    const badPhone = await send({
+      protectionPlans: DEFAULT_SETTINGS.protectionPlans.map((plan) => ({
+        ...plan,
+        roadsidePhone: 'call us',
+      })),
+    });
+    expect(badPhone.body.error.fields['protectionPlans.0.roadsidePhone']).toMatch(/phone number/);
 
     const unknown = await send({ somethingElse: true });
     expect(unknown.status).toBe(400);

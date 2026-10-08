@@ -42,10 +42,16 @@ import { getPlatformSettingsForAdmin, updatePlatformSettings } from './platform-
 import { reviewIdentity } from './admin-verification.service.js';
 import { licenceReviewSchema, reviewLicence, verificationQueue } from './verification-queue.service.js';
 import { INCIDENT_STATUSES, type IncidentStatus } from '../incidents/incident.model.js';
-import { incidentChargeSchema, staffIncidentUpdateSchema } from '../incidents/incidents.schemas.js';
 import {
+  incidentAssigneeSchema,
+  incidentChargeSchema,
+  staffIncidentUpdateSchema,
+} from '../incidents/incidents.schemas.js';
+import {
+  assignIncident,
   chargeFromIncident,
   getIncident,
+  listIncidentAssignees,
   listIncidentsForStaff,
   updateIncidentAsStaff,
 } from '../incidents/incidents.service.js';
@@ -238,6 +244,11 @@ export function adminRouter() {
     res.json({ incidents: await listIncidentsForStaff(status) });
   });
 
+  // Who a case can be handed to: before /incidents/:ref, which would take "assignees" for a case number.
+  router.get('/incidents/assignees', async (req, res) => {
+    res.json(await listIncidentAssignees(req.auth!.userId));
+  });
+
   router.get('/incidents/:ref', async (req, res) => {
     res.json({
       incident: await getIncident(
@@ -251,6 +262,19 @@ export function adminRouter() {
     const input = validate(staffIncidentUpdateSchema, req.body);
     res.json({
       incident: await updateIncidentAsStaff(
+        req.auth!.userId,
+        req.auth!.roles,
+        String(req.params.ref),
+        input,
+        req.ip,
+      ),
+    });
+  });
+
+  router.post('/incidents/:ref/assignee', async (req, res) => {
+    const input = validate(incidentAssigneeSchema, req.body);
+    res.json({
+      incident: await assignIncident(
         req.auth!.userId,
         req.auth!.roles,
         String(req.params.ref),
@@ -274,9 +298,10 @@ export function adminRouter() {
     });
   });
 
-  // Review moderation (spec §16): held reviews to clear or hide, with a recorded reason.
+  // Review moderation (spec §16): held reviews to clear or hide, and published ones to hide, with a
+  // recorded reason.
   router.get('/reviews', async (req, res) => {
-    const state = req.query.state === 'HIDDEN' ? 'HIDDEN' : 'HELD';
+    const state = (['PUBLISHED', 'HIDDEN'] as const).find((value) => value === req.query.state) ?? 'HELD';
     res.json({ reviews: await reviewsForModeration(state) });
   });
 

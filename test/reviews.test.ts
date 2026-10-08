@@ -186,4 +186,73 @@ describe('two-way reviews', () => {
       .send({ action: 'CLEAR', reason: 'The number was the Host’s business line' });
     expect(restored.body.review.status).toBe('PUBLISHED');
   });
+
+  it('can be reported by anyone but their author, and staff hide a published one with a reason', async () => {
+    const { booking, guestAgent, hostAgent, guest, vehicle } = await completedTrip();
+    await guestAgent.post('/api/v1/reviews').send(guestReview(booking.ref, 'The host was rude to me.'));
+    await hostAgent
+      .post('/api/v1/reviews')
+      .send({ bookingRef: booking.ref, overall: 5, communication: 5, pickupReturn: 5, care: 5 });
+    const id = (await ReviewModel.findOne({ authorId: guest._id, status: 'PUBLISHED' }))!.id as string;
+
+    // The listing says who wrote each review, so the website leaves Report off the reader's own.
+    const listing = await browserAgent().get(`/api/v1/vehicles/${vehicle.id}/reviews`);
+    expect(listing.body.reviews).toEqual([
+      expect.objectContaining({ id, author: expect.objectContaining({ id: guest.id, firstName: 'Kiri' }) }),
+    ]);
+
+    const report = { targetType: 'REVIEW', targetId: id, reason: 'FAKE', note: 'This never happened.' };
+    expect((await guestAgent.post('/api/v1/reports').send(report)).body.error.code).toBe('OWN_CONTENT');
+    expect((await hostAgent.post('/api/v1/reports').send(report)).status).toBe(201);
+    await createUser({ email: 'tama@example.co.nz', firstName: 'Tama' });
+    const reader = await signIn('tama@example.co.nz');
+    expect((await reader.post('/api/v1/reports').send({ ...report, reason: 'HARASSMENT' })).status).toBe(201);
+
+    await createStaff('aroha@example.co.nz', 'SUPPORT');
+    const staff = await staffAgent();
+    const queue = await staff.get('/api/v1/admin/moderation/reports');
+    expect(queue.body.reports).toHaveLength(2);
+    expect(queue.body.reports[0]).toMatchObject({
+      targetType: 'REVIEW',
+      subject: { id: guest.id },
+      preview: '5★ The host was rude to me.',
+      review: {
+        id,
+        bookingRef: booking.ref,
+        author: { id: guest.id, firstName: 'Kiri' },
+        subject: { firstName: 'Hana' },
+        vehicleTitle: expect.any(String),
+        overall: 5,
+        body: 'The host was rude to me.',
+        status: 'PUBLISHED',
+        moderation: 'CLEAR',
+      },
+    });
+
+    // Published reviews are listed for staff too, newest first, both sides of the trip.
+    const published = await staff.get('/api/v1/admin/reviews?state=PUBLISHED');
+    expect(published.body.reviews).toHaveLength(2);
+    expect(published.body.reviews).toContainEqual(
+      expect.objectContaining({ id, status: 'PUBLISHED', moderation: 'CLEAR' }),
+    );
+
+    const hidden = await staff
+      .post(`/api/v1/admin/reviews/${id}/moderate`)
+      .send({ action: 'HIDE', reason: 'Reported as fake; the Host’s messages show otherwise' });
+    expect(hidden.body.review).toMatchObject({ status: 'HIDDEN', moderation: 'HIDDEN' });
+    expect(await AuditLogModel.countDocuments({ action: 'review.hidden' })).toBe(1);
+    // Out of the car's rating and off the listing.
+    expect((await VehicleModel.findById(vehicle._id).lean())!.rating).toEqual({ avg: 0, count: 0 });
+    expect((await browserAgent().get(`/api/v1/vehicles/${vehicle.id}/reviews`)).body.reviews).toEqual([]);
+
+    expect((await staff.get('/api/v1/admin/reviews?state=PUBLISHED')).body.reviews).toHaveLength(1);
+    expect((await staff.get('/api/v1/admin/reviews?state=HIDDEN')).body.reviews).toEqual([
+      expect.objectContaining({
+        id,
+        moderationReason: 'Reported as fake; the Host’s messages show otherwise',
+      }),
+    ]);
+    const after = await staff.get('/api/v1/admin/moderation/reports');
+    expect(after.body.reports[0].review).toMatchObject({ status: 'HIDDEN', moderation: 'HIDDEN' });
+  });
 });

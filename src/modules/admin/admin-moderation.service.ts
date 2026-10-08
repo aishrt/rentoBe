@@ -6,7 +6,8 @@ import { BookingModel } from '../bookings/booking.model.js';
 import { MessageModel } from '../messages/message.model.js';
 import { ThreadModel } from '../messages/thread.model.js';
 import { ReportModel, type Report, type ReportStatus } from '../moderation/report.model.js';
-import { ReviewModel } from '../reviews/review.model.js';
+import type { ModerationReviewView } from '../reviews/reviews.schemas.js';
+import { reviewsForReports } from '../reviews/reviews.service.js';
 import { UserModel } from '../users/user.model.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
@@ -15,7 +16,8 @@ import type { adminReportSchema } from './admin-ops.schemas.js';
 /*
  * The moderation queue (spec §18; plan §9 Days 20–22): what members reported, with what was reported, so
  * support can act on it (hide a review, suspend someone, take a car down) or dismiss it, with a recorded
- * reason. A reported message's booking is given so its thread can be opened from the report.
+ * reason. A reported message's booking is given so its thread can be opened from the report, and a
+ * reported review comes whole, so it can be hidden from there.
  */
 
 type Id = Types.ObjectId;
@@ -32,9 +34,7 @@ async function previews(reports: ReportRecord[]) {
     MessageModel.find({ _id: mongoose.trusted({ $in: ids('MESSAGE') }) })
       .select('threadId body attachments')
       .lean(),
-    ReviewModel.find({ _id: mongoose.trusted({ $in: ids('REVIEW') }) })
-      .select('overall body')
-      .lean(),
+    reviewsForReports(ids('REVIEW')),
     VehicleModel.find({ _id: mongoose.trusted({ $in: ids('VEHICLE') }) })
       .select('year make model status')
       .lean(),
@@ -66,7 +66,7 @@ async function previews(reports: ReportRecord[]) {
   };
   const find = <T extends { _id: Id }>(list: T[], id: Id) => list.find((item) => item._id.equals(id));
 
-  return (report: ReportRecord): { preview: string; bookingRef?: string } => {
+  return (report: ReportRecord): { preview: string; bookingRef?: string; review?: ModerationReviewView } => {
     switch (report.targetType) {
       case 'MESSAGE': {
         const message = find(messages, report.targetId);
@@ -77,12 +77,10 @@ async function previews(reports: ReportRecord[]) {
         return { preview: clip(`${message.body}${photos}`), ...(booking && { bookingRef: booking.ref }) };
       }
       case 'REVIEW': {
-        const review = find(reviews, report.targetId);
-        return {
-          preview: review
-            ? clip(`${review.overall}★ ${review.body ?? ''}`.trim())
-            : 'The review has been deleted.',
-        };
+        const review = reviews.find((candidate) => candidate.id === report.targetId.toString());
+        return review
+          ? { preview: clip(`${review.overall}★ ${review.body ?? ''}`.trim()), review }
+          : { preview: 'The review has been deleted.' };
       }
       case 'VEHICLE': {
         const vehicle = find(vehicles, report.targetId);

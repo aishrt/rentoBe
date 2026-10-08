@@ -99,6 +99,16 @@ export const userReviewsResponseSchema = z
   .object({ profile: publicProfileSchema, reviews: z.array(reviewViewSchema) })
   .meta({ id: 'UserReviews' });
 
+/** A review as staff see it: with its moderation state and the reason recorded for it. */
+export const moderationReviewSchema = reviewViewSchema
+  .extend({
+    moderationReason: z
+      .string()
+      .meta({ description: 'Why it was held or hidden, or the moderator’s note when it was cleared' }),
+  })
+  .meta({ id: 'ModerationReview' });
+export type ModerationReviewView = z.infer<typeof moderationReviewSchema>;
+
 export const moderateReviewSchema = z
   .object({
     action: z.enum(['CLEAR', 'HIDE']),

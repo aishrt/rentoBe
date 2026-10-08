@@ -10,7 +10,12 @@ import {
   lineItemSchema,
   protectionPlanSummarySchema,
 } from '../vehicles/vehicles.schemas.js';
-import { BOOKING_STATUSES, CANCELLATION_REASONS, VERIFICATION_REVIEW_STATUSES } from './booking.model.js';
+import {
+  BOOKING_STATUSES,
+  CANCELLATION_REASONS,
+  EXTRA_CHARGE_TYPES,
+  VERIFICATION_REVIEW_STATUSES,
+} from './booking.model.js';
 
 /* The booking flow (plan §9, Days 11–14; spec §7) and the booking lifecycle (plan §8.2). */
 
@@ -112,6 +117,25 @@ const hostAcceptedSchema = z.boolean().optional().meta({
   description: 'PENDING: the Host has accepted, and the booking now waits only for the Guest’s verification',
 });
 
+/** Where a charge after the trip stands, as both parties see it. */
+export const BOOKING_EXTRA_CHARGE_STATUSES = ['PENDING', 'PAID', 'UNPAID', 'FAILED', 'CANCELLED'] as const;
+
+const bookingExtraChargeSchema = z.object({
+  id: z.string(),
+  type: z.enum(EXTRA_CHARGE_TYPES),
+  description: z.string().meta({ description: 'What it’s for, e.g. "50 km over the 750 km included"' }),
+  amountCents: z.number().int().meta({ description: 'Including GST' }),
+  status: z.enum(BOOKING_EXTRA_CHARGE_STATUSES).meta({
+    description:
+      'PENDING: being charged to the saved card. UNPAID: the saved card didn’t go through, so the Guest has a link to pay it, and it’s tried again. FAILED: it couldn’t be collected. CANCELLED: taken off by support',
+  }),
+  addedAt: z.iso.datetime(),
+  payPath: z
+    .string()
+    .optional()
+    .meta({ description: 'The Guest’s view of an UNPAID charge: /pay/{paymentId}' }),
+});
+
 export const bookingViewSchema = z
   .object({
     id: z.string(),
@@ -151,6 +175,10 @@ export const bookingViewSchema = z
         holdReason: z.enum(PAYOUT_HOLD_REASONS).optional(),
         scheduledFor: z.iso.datetime().optional(),
         paidAt: z.iso.datetime().optional(),
+        expectedInBankBy: z.iso
+          .datetime()
+          .optional()
+          .meta({ description: 'Once paid: usually in the Host’s bank by then' }),
         paidCents: z
           .number()
           .int()
@@ -180,6 +208,9 @@ export const bookingViewSchema = z
         hostFeeCents: z.number().int().optional(),
       })
       .nullable(),
+    extraCharges: z.array(bookingExtraChargeSchema).optional().meta({
+      description: 'Charges after the trip, such as extra kilometres or from an incident, oldest first',
+    }),
     actions: z.object({
       pay: z.boolean(),
       cancel: z.boolean(),
@@ -269,6 +300,21 @@ export const receiptSchema = z
     refunds: z.array(receiptRefundSchema),
     refundedCents: z.number().int(),
     netPaidCents: z.number().int().meta({ description: 'The total less refunds that went through' }),
+    extraCharges: z
+      .array(
+        z.object({
+          description: z.string(),
+          amountCents: z.number().int(),
+          gstCents: z.number().int().meta({ description: 'The GST included in the charge' }),
+          paidAt: z.iso.datetime(),
+          paidWith: z.string(),
+        }),
+      )
+      .optional()
+      .meta({
+        description:
+          'Charges after the trip that were paid (plan §8.1, items 6 and 11), each charged on its own; left out when there are none',
+      }),
   })
   .meta({
     id: 'Receipt',

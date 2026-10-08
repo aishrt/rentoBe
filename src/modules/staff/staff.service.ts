@@ -55,12 +55,13 @@ function findOpenInvite(token: string) {
   });
 }
 
+/** Everyone on the staff: the support team, and the admin set by ADMIN_EMAIL. */
+const staffFilter = () => ({ $or: [{ roles: 'SUPPORT' }, { roles: 'ADMIN', email: env.ADMIN_EMAIL }] });
+
 /** The admin, then the support team by name, and the invitations not yet accepted, newest first. */
 export async function listStaff(): Promise<StaffList> {
   const [users, invites] = await Promise.all([
-    UserModel.find({ $or: [{ roles: 'SUPPORT' }, { roles: 'ADMIN', email: env.ADMIN_EMAIL }] }).select(
-      'email firstName lastName roles status mfa.enabledAt lastLoginAt',
-    ),
+    UserModel.find(staffFilter()).select('email firstName lastName roles status mfa.enabledAt lastLoginAt'),
     StaffInviteModel.find({ expiresAt: mongoose.trusted({ $gt: new Date() }) }).sort({ createdAt: -1 }),
   ]);
 
@@ -82,6 +83,32 @@ export async function listStaff(): Promise<StaffList> {
     );
 
   return { staff, invites: invites.map(toInviteView) };
+}
+
+/**
+ * The staff who can take work, such as an incident case: the admin first, then the active support team
+ * by name. Suspended accounts are left out.
+ */
+export async function listActiveStaff(): Promise<{ id: string; firstName: string; lastName: string }[]> {
+  const users = await UserModel.find({ ...staffFilter(), status: 'ACTIVE' })
+    .select('email firstName lastName roles')
+    .lean();
+  return users
+    .map((user) => ({ user, admin: effectiveRoles(user).includes('ADMIN') }))
+    .sort(
+      (a, b) =>
+        Number(b.admin) - Number(a.admin) ||
+        `${a.user.firstName} ${a.user.lastName}`.localeCompare(`${b.user.firstName} ${b.user.lastName}`),
+    )
+    .map(({ user }) => ({ id: user._id.toString(), firstName: user.firstName, lastName: user.lastName }));
+}
+
+/** An active staff member by id, or null when the id isn't one. */
+export async function findActiveStaff(userId: string) {
+  if (!mongoose.isValidObjectId(userId)) return null;
+  return UserModel.findOne({ _id: userId, ...staffFilter(), status: 'ACTIVE' })
+    .select('firstName lastName')
+    .lean();
 }
 
 /**

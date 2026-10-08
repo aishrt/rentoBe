@@ -232,6 +232,87 @@ describe('check-out', () => {
     expect(closed.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
   });
 
+  it('opens a damage case with the damage flagged at check-out, once', async () => {
+    const { booking, guestAgent, hostAgent } = await checkedIn();
+    const shots = await photos(guestAgent, booking.ref, [...REQUIRED_INSPECTION_ANGLES, 'DAMAGE']);
+    await guestAgent.post(`/api/v1/bookings/${booking.ref}/inspections`).send({
+      stage: 'CHECK_OUT',
+      odometer: 45100,
+      fuelOrBatteryPct: 80,
+      photos: shots,
+      damagePins: [{ x: 50, y: 6, note: 'Chip in the front bumper' }],
+    });
+    const dent = await photos(hostAgent, booking.ref, ['DAMAGE']);
+    await hostAgent
+      .post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/damage`)
+      .send({ damagePins: [{ x: 80, y: 62 }], photos: dent, note: 'Dent in the rear door' });
+
+    // Only a damage report can take it.
+    const toll = await hostAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: booking.ref, type: 'TOLL', fromCheckOutDamage: true });
+    expect(toll.body.error.fields.fromCheckOutDamage).toMatch(/damage report/);
+
+    const opened = await hostAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: booking.ref, type: 'DAMAGE', fromCheckOutDamage: true });
+    expect(opened.status).toBe(201);
+    const incident = opened.body.incident;
+    expect(incident).toMatchObject({ type: 'DAMAGE', reportedBy: 'HOST', status: 'OPEN' });
+    expect(incident.description).toBe(
+      [
+        'New damage flagged on the check-out record: 2 marks on the car diagram and 2 photos.',
+        '- Chip in the front bumper (flagged by the guest)',
+        '- Dent in the rear door (flagged by the host)',
+      ].join('\n'),
+    );
+    expect(incident.events[0].attachments).toEqual([
+      expect.objectContaining({
+        name: 'Check-out damage photo 1',
+        url: expect.stringMatching(/inspections/),
+      }),
+      expect.objectContaining({ name: 'Check-out damage photo 2' }),
+    ]);
+
+    // That damage is in a case now; the next one takes only what's flagged after it.
+    const again = await guestAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: booking.ref, type: 'DAMAGE', fromCheckOutDamage: true });
+    expect(again.body.error.code).toBe('NO_NEW_DAMAGE');
+    await hostAgent
+      .post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/damage`)
+      .send({ damagePins: [{ x: 13, y: 79, note: 'Kerbed rear wheel' }] });
+    const next = await hostAgent.post('/api/v1/incidents').send({
+      bookingRef: booking.ref,
+      type: 'DAMAGE',
+      description: 'Found this one after washing the car.',
+      fromCheckOutDamage: true,
+    });
+    expect(next.status).toBe(201);
+    expect(next.body.incident.description).toBe(
+      [
+        'Found this one after washing the car.',
+        '',
+        'New damage flagged on the check-out record: 1 mark on the car diagram.',
+        '- Kerbed rear wheel (flagged by the host)',
+      ].join('\n'),
+    );
+    expect(next.body.incident.events[0].attachments).toEqual([]);
+
+    // The damage-report window still applies.
+    await hostAgent
+      .post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/damage`)
+      .send({ damagePins: [{ x: 50, y: 95 }] });
+    await ConditionReportModel.collection.updateOne(
+      { bookingId: booking._id, stage: 'CHECK_OUT' },
+      { $set: { createdAt: new Date(Date.now() - 49 * HOUR_MS) } },
+    );
+    const late = await hostAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: booking.ref, type: 'DAMAGE', fromCheckOutDamage: true });
+    expect(late.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
+  });
+
   it('lets support complete a trip whose check-out is missing', async () => {
     const { booking } = await checkedIn();
     await createStaff('aroha@example.co.nz', 'ADMIN');

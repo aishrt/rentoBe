@@ -1,6 +1,7 @@
 import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
+import type { FileAttachment } from '../../lib/model-fields.js';
 import { randomRef } from '../../lib/refs.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
@@ -11,6 +12,7 @@ import { notify } from '../notifications/notify.js';
 import { addExtraCharge } from '../payments/extra-charges.service.js';
 import { holdBookingPayouts, releaseHeldPayouts } from '../payouts/payouts.service.js';
 import { alertStaff } from '../staff/staff-alerts.js';
+import { findActiveStaff, listActiveStaff } from '../staff/staff.service.js';
 import { attachmentView, confirmBookingFiles } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import { isStaff } from '../users/user.service.js';
@@ -22,6 +24,8 @@ import {
   type IncidentStatus,
 } from './incident.model.js';
 import type {
+  IncidentAssigneeInput,
+  IncidentAssignees,
   IncidentChargeInput,
   IncidentReplyInput,
   IncidentView,
@@ -81,7 +85,11 @@ async function toView(
   viewerId: string,
 ): Promise<IncidentView> {
   const actorIds = [
-    ...new Set(incident.events.flatMap((event) => (event.actorId ? [event.actorId.toString()] : []))),
+    ...new Set(
+      incident.events.flatMap((event) =>
+        [event.actorId, event.assigneeId].flatMap((id) => (id ? [id.toString()] : [])),
+      ),
+    ),
   ];
   const people = await UserModel.find({ _id: mongoose.trusted({ $in: actorIds }) })
     .select('firstName')
@@ -99,6 +107,7 @@ async function toView(
     reportedBy: reporterRole === 'STAFF' ? 'SUPPORT' : reporterRole,
     role,
     ...(role === 'STAFF' && staffName && { assignedTo: staffName }),
+    ...(role === 'STAFF' && incident.assignedTo && { assignedToId: incident.assignedTo.toString() }),
     createdAt: incident.createdAt.toISOString(),
     updatedAt: incident.updatedAt.toISOString(),
     description: incident.description,
@@ -122,6 +131,13 @@ async function toView(
           attachments: event.attachments.map(attachmentView),
           visibility: event.visibility,
           ...(event.status && { status: event.status }),
+          // Taking a case yourself needs no name; handing it to someone else does.
+          ...(role === 'STAFF' &&
+            event.assigneeId &&
+            !event.assigneeId.equals(event.actorId) && {
+              assignedTo:
+                people.find((person) => person._id.equals(event.assigneeId!))?.firstName ?? 'Former staff',
+            }),
           createdAt: event.createdAt.toISOString(),
         };
       }),
@@ -189,9 +205,65 @@ async function tellParties(
   }
 }
 
+const FLAGGED_BY: Record<Role, string> = { GUEST: 'the guest', HOST: 'the host', STAFF: 'support' };
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/**
+ * The new damage on the booking's check-out record that no case has yet: the pins on the car diagram,
+ * and the damage photos taken at check-out or flagged since. A case opened with it keeps the photos as
+ * evidence and the pins' notes in its description, so nobody has to describe the damage twice.
+ */
+async function unclaimedCheckOutDamage(booking: BookingRecord) {
+  const [checkOut, cases] = await Promise.all([
+    ConditionReportModel.findOne({ bookingId: booking._id, stage: 'CHECK_OUT' })
+      .select('damagePins photos')
+      .lean(),
+    IncidentModel.find({ bookingId: booking._id })
+      .select('damagePinIds events.attachments.url')
+      .lean<Pick<IncidentRecord, 'damagePinIds' | 'events'>[]>(),
+  ]);
+  const claimedPins = new Set(cases.flatMap((other) => (other.damagePinIds ?? []).map(String)));
+  const claimedFiles = new Set(
+    cases.flatMap((other) => other.events.flatMap((event) => event.attachments.map((file) => file.url))),
+  );
+  const pins = (checkOut?.damagePins ?? []).filter(
+    (pin) => pin.newDamage && pin._id && !claimedPins.has(pin._id.toString()),
+  );
+  const photos = (checkOut?.photos ?? []).filter(
+    (photo) => photo.angle === 'DAMAGE' && !claimedFiles.has(photo.url),
+  );
+  if (pins.length === 0 && photos.length === 0) {
+    throw new HttpError(
+      409,
+      'NO_NEW_DAMAGE',
+      'There’s no new damage on the check-out record that isn’t already in a case. Describe the damage instead.',
+    );
+  }
+  return {
+    pinIds: pins.map((pin) => pin._id!),
+    attachments: photos.map((photo, index): FileAttachment => ({
+      url: photo.url,
+      name: `Check-out damage photo ${index + 1}`,
+    })),
+    summary: [
+      `New damage flagged on the check-out record: ${[
+        pins.length > 0 && `${plural(pins.length, 'mark')} on the car diagram`,
+        photos.length > 0 && plural(photos.length, 'photo'),
+      ]
+        .filter(Boolean)
+        .join(' and ')}.`,
+      ...pins.map(
+        (pin) =>
+          `- ${pin.note || 'Marked on the car diagram'} (flagged by ${FLAGGED_BY[roleIn(booking, pin.flaggedBy)]})`,
+      ),
+    ].join('\n'),
+  };
+}
+
 /**
  * POST /incidents: the Guest or Host reports an incident on their booking. A damage report must arrive
- * within the damage-report window after check-out (plan §3, validation rules).
+ * within the damage-report window after check-out (plan §3, validation rules). With fromCheckOutDamage,
+ * a damage report opens with the damage flagged at check-out: its photos, pins and notes.
  */
 export async function reportIncident(
   actor: Actor,
@@ -223,7 +295,12 @@ export async function reportIncident(
       );
     }
   }
-  const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
+  const flagged = input.fromCheckOutDamage ? await unclaimedCheckOutDamage(booking) : undefined;
+  const attachments = [
+    ...(await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments)),
+    ...(flagged?.attachments ?? []),
+  ];
+  const description = [input.description, flagged?.summary].filter(Boolean).join('\n\n').slice(0, 5000);
 
   let incident: IncidentRecord | null = null;
   for (let attempt = 0; !incident; attempt += 1) {
@@ -233,13 +310,14 @@ export async function reportIncident(
         bookingId: booking._id,
         reporterId: actor.userId,
         type: input.type,
-        description: input.description,
+        description,
         status: 'OPEN',
+        ...(flagged && { damagePinIds: flagged.pinIds }),
         events: [
           {
             actorId: actor.userId,
             action: 'OPENED',
-            note: input.description,
+            note: description,
             attachments,
             visibility: 'BOTH',
             status: 'OPEN',
@@ -286,7 +364,7 @@ export async function reportIncident(
   await alertStaff({
     type: 'INCIDENT_OPENED',
     title: `New ${TYPE_WORDS[incident.type].toLowerCase()} case ${incident.caseRef}`,
-    body: `${role === 'GUEST' ? 'the guest' : 'the host'} reported ${TYPE_WORDS[incident.type].toLowerCase()} on booking ${booking.ref}: ${input.description.slice(0, 200)}`,
+    body: `${role === 'GUEST' ? 'the guest' : 'the host'} reported ${TYPE_WORDS[incident.type].toLowerCase()} on booking ${booking.ref}: ${description.slice(0, 200)}`,
     link: `/admin/incidents/${incident.caseRef}`,
     dedupeKey: `INCIDENT_OPENED:${incident._id.toString()}`,
   });
@@ -335,10 +413,19 @@ export async function getIncident(actor: Actor, caseRef: string): Promise<Incide
   return toView(incident, booking, role, actor.userId);
 }
 
-async function appendEvent(incidentId: Id, event: IncidentEvent, set: Record<string, unknown> = {}) {
+async function appendEvent(
+  incidentId: Id,
+  event: IncidentEvent,
+  set: Record<string, unknown> = {},
+  unset: string[] = [],
+) {
   const updated = await IncidentModel.findOneAndUpdate(
     { _id: incidentId },
-    { $push: { events: event }, ...(Object.keys(set).length > 0 && { $set: set }) },
+    {
+      $push: { events: event },
+      ...(Object.keys(set).length > 0 && { $set: set }),
+      ...(unset.length > 0 && { $unset: Object.fromEntries(unset.map((field) => [field, 1])) }),
+    },
     { new: true },
   ).lean<IncidentRecord>();
   return updated!;
@@ -414,6 +501,7 @@ export async function listIncidentsForStaff(status?: IncidentStatus) {
         ...summary(incident, booking, ''),
         role: 'STAFF' as const,
         ...(assigned && { assignedTo: assigned.firstName }),
+        ...(incident.assignedTo && { assignedToId: incident.assignedTo.toString() }),
       },
     ];
   });
@@ -478,6 +566,75 @@ export async function updateIncidentAsStaff(
       updated.events.length - 1,
       statusChanged ? `Case ${updated.status.replace('_', ' ').toLowerCase()}` : 'New update',
     );
+  }
+  return toView(updated, booking, 'STAFF', staffId);
+}
+
+/** GET /admin/incidents/assignees: who a case can be handed to, the admin first. */
+export async function listIncidentAssignees(staffId: string): Promise<IncidentAssignees> {
+  const staff = await listActiveStaff();
+  return {
+    assignees: staff.map((member) => ({
+      id: member.id,
+      name: `${member.firstName} ${member.lastName}`,
+      you: member.id === staffId,
+    })),
+  };
+}
+
+/**
+ * POST /admin/incidents/{ref}/assignee: support hands the case to a staff member (the admin or an active
+ * support member), or to nobody. It's an internal event on the case and in the audit log, and whoever
+ * gets the case is told. Choosing whoever has it already changes nothing.
+ */
+export async function assignIncident(
+  staffId: string,
+  roles: Actor['roles'],
+  caseRef: string,
+  input: IncidentAssigneeInput,
+  ip?: string,
+  now = new Date(),
+): Promise<IncidentView> {
+  const { incident, booking } = await findCase({ userId: staffId, roles }, caseRef);
+  const assignee = input.userId ? await findActiveStaff(input.userId) : null;
+  if (input.userId && !assignee) {
+    throw new HttpError(409, 'NOT_STAFF', 'Choose someone on the support team.', {
+      userId: 'Choose someone on the support team',
+    });
+  }
+  const unchanged = assignee ? incident.assignedTo?.equals(assignee._id) : !incident.assignedTo;
+  if (unchanged) return toView(incident, booking, 'STAFF', staffId);
+
+  const event: IncidentEvent = {
+    actorId: new mongoose.Types.ObjectId(staffId),
+    action: assignee ? 'ASSIGNED' : 'UNASSIGNED',
+    attachments: [],
+    visibility: 'INTERNAL',
+    ...(assignee && { assigneeId: assignee._id }),
+    createdAt: now,
+  };
+  const updated = assignee
+    ? await appendEvent(incident._id, event, { assignedTo: assignee._id })
+    : await appendEvent(incident._id, event, {}, ['assignedTo']);
+  await recordAudit({
+    actorId: staffId,
+    action: 'incident.assigned',
+    entity: 'incident',
+    entityId: incident._id.toString(),
+    before: { assignedTo: incident.assignedTo?.toString() ?? null },
+    after: { assignedTo: assignee?._id.toString() ?? null },
+    ...(ip && { ip }),
+  });
+  if (assignee && !assignee._id.equals(staffId)) {
+    const by = await UserModel.findById(staffId).select('firstName').lean();
+    await notify({
+      userId: assignee._id,
+      type: 'INCIDENT_ASSIGNED',
+      title: `Case ${incident.caseRef} is assigned to you`,
+      body: `${by?.firstName ?? 'Support'} handed you the ${TYPE_WORDS[incident.type].toLowerCase()} case on booking ${booking.ref}.`,
+      link: `/admin/incidents/${incident.caseRef}`,
+      dedupeKey: `INCIDENT_ASSIGNED:${incident._id.toString()}:${updated.events.length - 1}`,
+    });
   }
   return toView(updated, booking, 'STAFF', staffId);
 }

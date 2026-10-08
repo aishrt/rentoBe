@@ -222,6 +222,24 @@ describe('data retention', () => {
         },
       },
     );
+    // Checks that never passed go 90 days after they began, unless support is still reviewing one.
+    const turnedDown = await createUser({ email: 'turned.down@example.co.nz' });
+    const reviewing = await createUser({ email: 'reviewing@example.co.nz' });
+    const recent = await createUser({ email: 'recent@example.co.nz' });
+    for (const [person, status, providerRef, days] of [
+      [turnedDown, 'REJECTED', 'vs_rejected', 91],
+      [reviewing, 'PENDING', 'vs_reviewing', 91],
+      [recent, 'NONE', 'vs_recent', 10],
+    ] as const) {
+      await UserModel.updateOne(
+        { _id: person._id },
+        {
+          $set: {
+            identityVerification: { status, providerRef, startedAt: new Date(Date.now() - days * DAY_MS) },
+          },
+        },
+      );
+    }
     const host = await createHost();
     const vehicle = await createVehicle(host._id);
     const ended = new Date(Date.now() - 800 * DAY_MS);
@@ -242,8 +260,10 @@ describe('data retention', () => {
     });
 
     const result = await runDataRetention();
-    expect(result).toMatchObject({ identitiesRedacted: 1, tripsCleared: 1 });
+    expect(result).toMatchObject({ identitiesRedacted: 2, tripsCleared: 1 });
     expect(client.identity.verificationSessions.redact).toHaveBeenCalledWith('vs_old');
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledWith('vs_rejected');
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledTimes(2);
     expect(await MessageModel.countDocuments({})).toBe(0);
     expect((await ConditionReportModel.findOne({ bookingId: booking._id }))!.photos).toEqual([]);
     expect(await JobModel.countDocuments({ type: 'daily.dataRetention' })).toBe(1);

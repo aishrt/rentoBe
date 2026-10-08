@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import type Stripe from 'stripe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { stripe } from '../src/integrations/stripe.js';
@@ -7,6 +8,7 @@ import { parseNzDateTime } from '../src/lib/nz-time.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
+import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { HelpArticleModel } from '../src/modules/help/help-article.model.js';
 import { articleSummary } from '../src/modules/help/help.routes.js';
 import { IncidentModel } from '../src/modules/incidents/incident.model.js';
@@ -344,6 +346,51 @@ describe('Receipts', () => {
     await createPaymentRecord(booking);
     const receipt = await (await signIn(guest.email)).get(`/api/v1/bookings/${booking.ref}/receipt`);
     expect(receipt.body.receipt.supplier.gstNumber).toBe('123-456-789');
+  });
+
+  it('lists the charges after the trip that were paid, with their GST, on the page and in the PDF', async () => {
+    const { guest, booking } = await bookedTrip();
+    await createPaymentRecord(booking);
+    const [paid, waiting] = [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()];
+    await BookingModel.updateOne(
+      { _id: booking._id },
+      {
+        $set: {
+          extraCharges: [
+            {
+              _id: paid,
+              type: 'EXTRA_KM',
+              description: '100 km over',
+              amountCents: 3500,
+              status: 'SUCCEEDED',
+            },
+            { _id: waiting, type: 'CLEANING', description: 'Cleaning', amountCents: 8000, status: 'PENDING' },
+          ],
+        },
+      },
+    );
+    await createPaymentRecord(booking, {
+      type: 'EXTRA_CHARGE',
+      extraChargeId: paid,
+      amountCents: 3500,
+      method: 'Mastercard ending 4444',
+    });
+    const agent = await signIn(guest.email);
+
+    const receipt = (await agent.get(`/api/v1/bookings/${booking.ref}/receipt`)).body.receipt;
+    expect(receipt.extraCharges).toEqual([
+      expect.objectContaining({
+        description: '100 km over',
+        amountCents: 3500,
+        gstCents: 457,
+        paidWith: 'Mastercard ending 4444',
+      }),
+    ]);
+    const pdf = await agent.get(`/api/v1/bookings/${booking.ref}/receipt.pdf`).buffer(true);
+    expect(pdf.status).toBe(200);
+    // Payment history offers that receipt for the charge too.
+    const history = (await agent.get('/api/v1/me/payments')).body.payments as { type: string }[];
+    expect(history.find((payment) => payment.type === 'EXTRA_CHARGE')).toMatchObject({ hasReceipt: true });
   });
 
   it('downloads as a PDF, which handles macrons in names', async () => {

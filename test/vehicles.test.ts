@@ -167,7 +167,7 @@ describe('Vehicle listing', () => {
     const response = await request(app).get(`/api/v1/vehicles/${vehicle.id}/reviews`);
     expect(response.body).toMatchObject({
       total: 1,
-      reviews: [{ author: { firstName: 'Kiri' }, overall: 5, body: 'Spotless car.' }],
+      reviews: [{ author: { id: guest.id, firstName: 'Kiri' }, overall: 5, body: 'Spotless car.' }],
       categories: { cleanliness: 4, communication: 5, pickupReturn: 5 },
     });
   });

@@ -46,6 +46,8 @@ export interface Payout {
   stripeTransferId?: string;
   status: PayoutStatus;
   failureReason?: string;
+  /** Transfers Stripe refused so far: each try after a refusal uses a new idempotency key. */
+  transferAttempts?: number;
   holdReason?: (typeof PAYOUT_HOLD_REASONS)[number];
   scheduledFor: Date;
   paidAt?: Date;
@@ -77,6 +79,7 @@ const payoutSchema = new Schema<Payout>(
     stripeTransferId: String,
     status: { type: String, enum: PAYOUT_STATUSES, default: 'SCHEDULED' },
     failureReason: String,
+    transferAttempts: Number,
     holdReason: { type: String, enum: PAYOUT_HOLD_REASONS },
     scheduledFor: { type: Date, required: true },
     paidAt: Date,

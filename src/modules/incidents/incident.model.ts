@@ -43,6 +43,8 @@ export interface IncidentEvent {
   visibility: (typeof EVENT_VISIBILITIES)[number];
   /** The case's status after this event, when it changed it. */
   status?: IncidentStatus;
+  /** On an ASSIGNED event: the staff member the case went to. */
+  assigneeId?: Types.ObjectId;
   createdAt: Date;
 }
 
@@ -58,6 +60,8 @@ export interface Incident {
   description: string;
   status: IncidentStatus;
   assignedTo?: Types.ObjectId;
+  /** The check-out damage pins the case was opened with, so another case doesn't take them again. */
+  damagePinIds?: Types.ObjectId[];
   events: IncidentEvent[];
   createdAt: Date;
   updatedAt: Date;
@@ -71,6 +75,7 @@ const incidentEventSchema = new Schema<IncidentEvent>(
     attachments: { type: [attachmentSchema], default: [] },
     visibility: { type: String, enum: EVENT_VISIBILITIES, default: 'BOTH' },
     status: { type: String, enum: INCIDENT_STATUSES },
+    assigneeId: { type: Schema.Types.ObjectId, ref: 'User' },
     createdAt: { type: Date, required: true, default: Date.now },
   },
   { _id: false },
@@ -85,6 +90,7 @@ const incidentSchema = new Schema<Incident>(
     description: { type: String, required: true, maxlength: 5000 },
     status: { type: String, enum: INCIDENT_STATUSES, default: 'OPEN' },
     assignedTo: { type: Schema.Types.ObjectId, ref: 'User' },
+    damagePinIds: { type: [Schema.Types.ObjectId], default: undefined },
     events: { type: [incidentEventSchema], default: [] },
   },
   { timestamps: true },

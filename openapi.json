@@ -785,7 +785,7 @@
           },
           "hasReceipt": {
             "type": "boolean",
-            "description": "GET /bookings/{id}/receipt has a receipt for it"
+            "description": "GET /bookings/{id}/receipt has a receipt for it (a paid extra charge is on its booking’s)"
           }
         },
         "required": [
@@ -1279,6 +1279,11 @@
                 },
                 "mandatory": {
                   "type": "boolean"
+                },
+                "roadsidePhone": {
+                  "type": "string",
+                  "pattern": "^(\\+?[\\d ()-]{6,20})?$",
+                  "description": "The plan’s own roadside assistance number; empty or missing means roadsideAssistance.phone"
                 }
               },
               "required": [
@@ -2149,6 +2154,11 @@
                 },
                 "mandatory": {
                   "type": "boolean"
+                },
+                "roadsidePhone": {
+                  "type": "string",
+                  "pattern": "^(\\+?[\\d ()-]{6,20})?$",
+                  "description": "The plan’s own roadside assistance number; empty or missing means roadsideAssistance.phone"
                 }
               },
               "required": [
@@ -4344,6 +4354,10 @@
           "author": {
             "type": "object",
             "properties": {
+              "id": {
+                "type": "string",
+                "description": "Who wrote it, so readers can report a review but not their own"
+              },
               "firstName": {
                 "type": "string"
               },
@@ -4352,6 +4366,7 @@
               }
             },
             "required": [
+              "id",
               "firstName"
             ]
           },
@@ -5028,6 +5043,11 @@
                 },
                 "mandatory": {
                   "type": "boolean"
+                },
+                "roadsidePhone": {
+                  "type": "string",
+                  "pattern": "^(\\+?[\\d ()-]{6,20})?$",
+                  "description": "The plan’s own roadside assistance number; empty or missing means roadsideAssistance.phone"
                 }
               },
               "required": [
@@ -8503,6 +8523,11 @@
                 "type": "string",
                 "format": "date-time"
               },
+              "expectedInBankBy": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Once paid: usually in the Host’s bank by then"
+              },
               "paidCents": {
                 "type": "integer",
                 "description": "Everything paid out for the booking so far"
@@ -8674,6 +8699,66 @@
               "at",
               "by"
             ]
+          },
+          "extraCharges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "EXTRA_KM",
+                    "FUEL",
+                    "CLEANING",
+                    "LATE_RETURN",
+                    "DAMAGE",
+                    "TOLL",
+                    "FINE",
+                    "OTHER"
+                  ]
+                },
+                "description": {
+                  "type": "string",
+                  "description": "What it’s for, e.g. \"50 km over the 750 km included\""
+                },
+                "amountCents": {
+                  "type": "integer",
+                  "description": "Including GST"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "PAID",
+                    "UNPAID",
+                    "FAILED",
+                    "CANCELLED"
+                  ],
+                  "description": "PENDING: being charged to the saved card. UNPAID: the saved card didn’t go through, so the Guest has a link to pay it, and it’s tried again. FAILED: it couldn’t be collected. CANCELLED: taken off by support"
+                },
+                "addedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "payPath": {
+                  "type": "string",
+                  "description": "The Guest’s view of an UNPAID charge: /pay/{paymentId}"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "description",
+                "amountCents",
+                "status",
+                "addedAt"
+              ]
+            },
+            "description": "Charges after the trip, such as extra kilometres or from an incident, oldest first"
           },
           "actions": {
             "type": "object",
@@ -9148,6 +9233,39 @@
           "netPaidCents": {
             "type": "integer",
             "description": "The total less refunds that went through"
+          },
+          "extraCharges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "amountCents": {
+                  "type": "integer"
+                },
+                "gstCents": {
+                  "type": "integer",
+                  "description": "The GST included in the charge"
+                },
+                "paidAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "paidWith": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "description",
+                "amountCents",
+                "gstCents",
+                "paidAt",
+                "paidWith"
+              ]
+            },
+            "description": "Charges after the trip that were paid (plan §8.1, items 6 and 11), each charged on its own; left out when there are none"
           }
         },
         "required": [
@@ -11150,122 +11268,126 @@
           "reviews": {
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "bookingRef": {
-                  "type": "string"
-                },
-                "direction": {
-                  "type": "string",
-                  "enum": [
-                    "GUEST_TO_HOST",
-                    "HOST_TO_GUEST"
-                  ]
-                },
-                "author": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "firstName": {
-                      "type": "string"
-                    },
-                    "avatarUrl": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "firstName"
-                  ]
-                },
-                "subject": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "firstName": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "firstName"
-                  ]
-                },
-                "vehicleTitle": {
-                  "type": "string"
-                },
-                "overall": {
-                  "type": "integer"
-                },
-                "communication": {
-                  "type": "integer"
-                },
-                "pickupReturn": {
-                  "type": "integer"
-                },
-                "cleanliness": {
-                  "type": "integer"
-                },
-                "care": {
-                  "type": "integer"
-                },
-                "body": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "AWAITING_REVEAL",
-                    "PUBLISHED",
-                    "HIDDEN"
-                  ]
-                },
-                "moderation": {
-                  "type": "string",
-                  "enum": [
-                    "CLEAR",
-                    "HELD",
-                    "HIDDEN"
-                  ],
-                  "description": "The author’s and staff’s view only"
-                },
-                "revealAt": {
-                  "type": "string",
-                  "format": "date-time",
-                  "description": "Waiting: when it’s published at the latest"
-                },
-                "createdAt": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "moderationReason": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "bookingRef",
-                "direction",
-                "author",
-                "subject",
-                "vehicleTitle",
-                "overall",
-                "status",
-                "createdAt",
-                "moderationReason"
-              ]
+              "$ref": "#/components/schemas/ModerationReview"
             }
           }
         },
         "required": [
           "reviews"
+        ]
+      },
+      "ModerationReview": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "GUEST_TO_HOST",
+              "HOST_TO_GUEST"
+            ]
+          },
+          "author": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "firstName": {
+                "type": "string"
+              },
+              "avatarUrl": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "firstName"
+            ]
+          },
+          "subject": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "firstName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "firstName"
+            ]
+          },
+          "vehicleTitle": {
+            "type": "string"
+          },
+          "overall": {
+            "type": "integer"
+          },
+          "communication": {
+            "type": "integer"
+          },
+          "pickupReturn": {
+            "type": "integer"
+          },
+          "cleanliness": {
+            "type": "integer"
+          },
+          "care": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "AWAITING_REVEAL",
+              "PUBLISHED",
+              "HIDDEN"
+            ]
+          },
+          "moderation": {
+            "type": "string",
+            "enum": [
+              "CLEAR",
+              "HELD",
+              "HIDDEN"
+            ],
+            "description": "The author’s and staff’s view only"
+          },
+          "revealAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Waiting: when it’s published at the latest"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "moderationReason": {
+            "type": "string",
+            "description": "Why it was held or hidden, or the moderator’s note when it was cleared"
+          }
+        },
+        "required": [
+          "id",
+          "bookingRef",
+          "direction",
+          "author",
+          "subject",
+          "vehicleTitle",
+          "overall",
+          "status",
+          "createdAt",
+          "moderationReason"
         ]
       },
       "ModerateReviewRequest": {
@@ -11360,6 +11482,10 @@
             "type": "string",
             "description": "Staff only: the support member handling it"
           },
+          "assignedToId": {
+            "type": "string",
+            "description": "Staff only: their user id"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -11449,7 +11575,7 @@
           },
           "action": {
             "type": "string",
-            "description": "OPENED, COMMENT, STATUS, ASSIGNED, CHARGE_ADDED"
+            "description": "OPENED, COMMENT, STATUS, ASSIGNED, UNASSIGNED, CHARGE_ADDED"
           },
           "by": {
             "type": "string",
@@ -11490,6 +11616,10 @@
               "RESOLVED",
               "CLOSED"
             ]
+          },
+          "assignedTo": {
+            "type": "string",
+            "description": "Staff only, on an ASSIGNED event that handed the case to someone else: who"
           },
           "createdAt": {
             "type": "string",
@@ -11533,7 +11663,8 @@
           "description": {
             "type": "string",
             "minLength": 10,
-            "maxLength": 5000
+            "maxLength": 5000,
+            "description": "Needed unless fromCheckOutDamage is set, when the flagged damage describes it"
           },
           "attachments": {
             "type": "array",
@@ -11543,12 +11674,15 @@
             "maxItems": 10,
             "default": [],
             "description": "Photos and documents, uploaded first with purpose INCIDENT_FILE"
+          },
+          "fromCheckOutDamage": {
+            "type": "boolean",
+            "description": "DAMAGE only: opens the case with the new damage flagged on the check-out record that no other case has yet. Its notes go into the description and its photos into the evidence. 409 NO_NEW_DAMAGE when there is none."
           }
         },
         "required": [
           "bookingRef",
-          "type",
-          "description"
+          "type"
         ]
       },
       "Incidents": {
@@ -11625,6 +11759,10 @@
             "type": "string",
             "description": "Staff only: the support member handling it"
           },
+          "assignedToId": {
+            "type": "string",
+            "description": "Staff only: their user id"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -11663,6 +11801,37 @@
             "default": []
           }
         }
+      },
+      "IncidentAssignees": {
+        "type": "object",
+        "properties": {
+          "assignees": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "you": {
+                  "type": "boolean",
+                  "description": "The signed-in staff member"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "you"
+              ]
+            }
+          }
+        },
+        "required": [
+          "assignees"
+        ]
       },
       "StaffIncidentUpdateRequest": {
         "type": "object",
@@ -11705,6 +11874,22 @@
             "type": "boolean"
           }
         }
+      },
+      "IncidentAssigneeRequest": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{24}$",
+            "description": "An active support member or the admin (from GET /admin/incidents/assignees); null for nobody"
+          }
+        },
+        "required": [
+          "userId"
+        ]
       },
       "IncidentChargeRequest": {
         "type": "object",
@@ -13429,6 +13614,9 @@
           "bookingRef": {
             "type": "string",
             "description": "A reported message’s booking, to open its thread"
+          },
+          "review": {
+            "$ref": "#/components/schemas/ModerationReview"
           },
           "resolution": {
             "type": "string"
@@ -25116,7 +25304,8 @@
         "tags": [
           "Admin"
         ],
-        "summary": "Staff: reviews held for moderation, or hidden ones",
+        "summary": "Staff: reviews held for moderation, published ones, or hidden ones",
+        "description": "HELD (the default) oldest first; PUBLISHED and HIDDEN newest first, 100 at most. A published review that breaks the rules can be hidden with a reason.",
         "security": [
           {
             "cookieAuth": []
@@ -25131,6 +25320,7 @@
               "type": "string",
               "enum": [
                 "HELD",
+                "PUBLISHED",
                 "HIDDEN"
               ]
             },
@@ -25267,7 +25457,7 @@
           "Incidents"
         ],
         "summary": "Report damage or an incident on a booking",
-        "description": "By the booking’s Guest or Host, with photos and documents uploaded first (purpose INCIDENT_FILE). Damage must be reported within the damage-report window after check-out. Holds the booking’s payouts until the case is settled.",
+        "description": "By the booking’s Guest or Host, with photos and documents uploaded first (purpose INCIDENT_FILE). Damage must be reported within the damage-report window after check-out. With fromCheckOutDamage, a damage report opens with the new damage flagged on the check-out record that no other case has yet: its photos as evidence and its notes in the description (409 NO_NEW_DAMAGE when there is none). Holds the booking’s payouts until the case is settled.",
         "security": [
           {
             "cookieAuth": []
@@ -25602,6 +25792,55 @@
         }
       }
     },
+    "/admin/incidents/assignees": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: who a case can be assigned to",
+        "description": "The admin first, then the active support team by name.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Assignees",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentAssignees"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/incidents/{ref}": {
       "get": {
         "tags": [
@@ -25752,6 +25991,107 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/incidents/{ref}/assignee": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: assign the case to a staff member, or to nobody",
+        "description": "Any support member or the admin can hand a case to any of them (409 NOT_STAFF for anyone else). Recorded as an internal ASSIGNED or UNASSIGNED event and in the audit log; the new assignee is notified. Choosing whoever has it already changes nothing.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The case number, e.g. IN-4F7K2Q"
+            },
+            "required": true,
+            "description": "The case number, e.g. IN-4F7K2Q",
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentAssigneeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Assigned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {

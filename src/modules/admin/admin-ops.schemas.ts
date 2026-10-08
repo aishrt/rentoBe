@@ -6,6 +6,7 @@ import { INCIDENT_STATUSES, INCIDENT_TYPES } from '../incidents/incident.model.j
 import { PAYMENT_STATUSES, PAYMENT_TYPES } from '../payments/payment.model.js';
 import { PAYOUT_HOLD_REASONS, PAYOUT_STATUSES, PAYOUT_TYPES } from '../payouts/payout.model.js';
 import { REPORT_STATUSES, REPORT_TARGET_TYPES } from '../moderation/report.model.js';
+import { moderationReviewSchema } from '../reviews/reviews.schemas.js';
 import { TICKET_CATEGORIES, TICKET_STATUSES } from '../support/support-ticket.model.js';
 import { HOST_STATUSES, ROLES, USER_STATUSES, VERIFICATION_STATUSES } from '../users/user.model.js';
 import { VEHICLE_STATUSES } from '../vehicles/vehicle.model.js';
@@ -402,6 +403,8 @@ export const adminReportSchema = z
       .string()
       .optional()
       .meta({ description: 'A reported message’s booking, to open its thread' }),
+    // A reported review, whole, so staff can read it and hide it from the report.
+    review: moderationReviewSchema.optional(),
     resolution: z.string().optional(),
     createdAt: iso,
   })

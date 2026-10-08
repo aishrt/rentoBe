@@ -270,9 +270,18 @@ describe('Vehicle onboarding', () => {
       approved.body.vehicle.documents.every((document: { status: string }) => document.status === 'VERIFIED'),
     ).toBe(true);
     expect(await AuditLogModel.countDocuments({ action: 'vehicle.approved' })).toBe(1);
+    // Approved, but it waits for the Host's payout setup before going live (plan §8.2), and the email says so.
+    const email = await NotificationModel.findOne({ type: 'LISTING_APPROVED', channel: 'EMAIL' }).lean();
+    expect(email!.payload).toMatchObject({
+      template: 'listingDecision',
+      props: {
+        decision: 'APPROVED',
+        waitingForPayouts: true,
+        url: expect.stringMatching(/\/host\/earnings$/),
+      },
+    });
     expect(await NotificationModel.countDocuments({ type: 'LISTING_APPROVED', channel: 'EMAIL' })).toBe(1);
 
-    // Approved, but it waits for the Host's payout setup before going live (plan §8.2).
     expect((await request(app).get('/api/v1/search').query({ where: 'Ponsonby' })).body.results).toEqual([]);
     await UserModel.updateOne({ _id: user._id }, { $set: { 'hostProfile.stripeAccountId': 'acct_test' } });
     await applyAccountState({

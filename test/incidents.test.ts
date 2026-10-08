@@ -149,6 +149,82 @@ describe('incidents', () => {
     expect((await nosy.get(`/api/v1/incidents/${toll.body.incident.caseRef}`)).status).toBe(404);
   });
 
+  it('lets staff assign a case to any staff member, or to nobody', async () => {
+    const { booking, guestAgent, guest } = await trip({ status: 'ACTIVE' });
+    const opened = await guestAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: booking.ref, type: 'BREAKDOWN', description: 'Warning light and no power.' });
+    const caseRef = opened.body.incident.caseRef as string;
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const mere = await createStaff('mere@example.co.nz', 'SUPPORT');
+    await UserModel.updateOne({ _id: mere._id }, { $set: { firstName: 'Mere' } });
+    const away = await createStaff('tama@example.co.nz', 'SUPPORT');
+    await UserModel.updateOne({ _id: away._id }, { $set: { firstName: 'Tama', status: 'SUSPENDED' } });
+
+    // Support, not only the admin, can see who's on the team and hand cases over.
+    const support = await staffAgent('mere@example.co.nz');
+    const team = await support.get('/api/v1/admin/incidents/assignees');
+    expect(team.status).toBe(200);
+    expect(team.body.assignees).toEqual([
+      { id: expect.any(String), name: 'Aroha Tester', you: false },
+      { id: mere.id, name: 'Mere Tester', you: true },
+    ]);
+
+    const admin = await staffAgent();
+    const assigned = await admin
+      .post(`/api/v1/admin/incidents/${caseRef}/assignee`)
+      .send({ userId: mere.id });
+    expect(assigned.status).toBe(200);
+    expect(assigned.body.incident).toMatchObject({ assignedTo: 'Mere', assignedToId: mere.id });
+    expect(assigned.body.incident.events.at(-1)).toMatchObject({
+      action: 'ASSIGNED',
+      byName: 'Aroha',
+      assignedTo: 'Mere',
+      visibility: 'INTERNAL',
+    });
+    expect(
+      await NotificationModel.findOne({ userId: mere._id, type: 'INCIDENT_ASSIGNED', channel: 'IN_APP' }),
+    ).toMatchObject({ payload: { link: `/admin/incidents/${caseRef}` } });
+    expect(await AuditLogModel.findOne({ action: 'incident.assigned' })).toMatchObject({
+      before: { assignedTo: null },
+      after: { assignedTo: mere.id },
+    });
+    expect((await admin.get('/api/v1/admin/incidents')).body.incidents[0]).toMatchObject({
+      assignedTo: 'Mere',
+      assignedToId: mere.id,
+    });
+
+    // Only staff who can work: not a guest, not a suspended account.
+    for (const userId of [guest.id, away.id]) {
+      const refused = await admin.post(`/api/v1/admin/incidents/${caseRef}/assignee`).send({ userId });
+      expect(refused.body.error.code).toBe('NOT_STAFF');
+    }
+
+    // The same person again changes nothing; null leaves it with nobody.
+    const same = await support.post(`/api/v1/admin/incidents/${caseRef}/assignee`).send({ userId: mere.id });
+    expect(same.body.incident.events).toHaveLength(2);
+    const cleared = await support.post(`/api/v1/admin/incidents/${caseRef}/assignee`).send({ userId: null });
+    expect(cleared.body.incident.assignedTo).toBeUndefined();
+    expect(cleared.body.incident.events.at(-1)).toMatchObject({ action: 'UNASSIGNED', by: 'YOU' });
+    // Taking it yourself names nobody else, and tells nobody.
+    const taken = await support.post(`/api/v1/admin/incidents/${caseRef}/assignee`).send({ userId: mere.id });
+    expect(taken.body.incident.events.at(-1)).toMatchObject({ action: 'ASSIGNED', by: 'YOU' });
+    expect(taken.body.incident.events.at(-1).assignedTo).toBeUndefined();
+    expect(
+      await NotificationModel.countDocuments({
+        userId: mere._id,
+        type: 'INCIDENT_ASSIGNED',
+        channel: 'IN_APP',
+      }),
+    ).toBe(1);
+    expect(await AuditLogModel.countDocuments({ action: 'incident.assigned' })).toBe(3);
+
+    // The parties never see who on the team has it.
+    const seen = (await guestAgent.get(`/api/v1/incidents/${caseRef}`)).body.incident;
+    expect(seen.events.map((event: { action: string }) => event.action)).toEqual(['OPENED']);
+    expect(seen.assignedToId).toBeUndefined();
+  });
+
   it('adds a charge to the guest from a resolved case', async () => {
     const { booking, guestAgent } = await trip({ status: 'COMPLETED' });
     const opened = await guestAgent

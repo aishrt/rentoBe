@@ -109,6 +109,7 @@ export async function startIdentityCheck(userId: string, returnTo?: string): Pro
         'identityVerification.provider': PROVIDER,
         'identityVerification.providerRef': session.id,
         'identityVerification.sessionStatus': session.status,
+        'identityVerification.startedAt': new Date(),
       },
       $unset: { 'identityVerification.lastError': 1 },
     },

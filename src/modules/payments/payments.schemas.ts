@@ -93,7 +93,12 @@ export const paymentHistoryItemSchema = z
     at: z.iso.datetime(),
     refundedCents: z.number().int(),
     refunds: z.array(historyRefundSchema),
-    hasReceipt: z.boolean().meta({ description: 'GET /bookings/{id}/receipt has a receipt for it' }),
+    hasReceipt: z
+      .boolean()
+      .meta({
+        description:
+          'GET /bookings/{id}/receipt has a receipt for it (a paid extra charge is on its booking’s)',
+      }),
   })
   .meta({ id: 'PaymentHistoryItem' });
 export type PaymentHistoryItem = z.infer<typeof paymentHistoryItemSchema>;

@@ -186,8 +186,9 @@ async function detail(access: ThreadAccess, userId: string, now: Date): Promise<
     UserModel.findById(otherId).select('blockedUserIds closedAt status').lean(),
     hasOpenIncident(booking._id),
   ]);
-  const blockedByMe = me?.blockedUserIds.some((id) => id.equals(otherId)) ?? false;
-  const blockedMe = other?.blockedUserIds.some((id) => id.equals(userId)) ?? false;
+  // Accounts made before blocking existed have no list, and lean reads don't fill in the schema's default.
+  const blockedByMe = me?.blockedUserIds?.some((id) => id.equals(otherId)) ?? false;
+  const blockedMe = other?.blockedUserIds?.some((id) => id.equals(userId)) ?? false;
   const closes = closesAt(booking.toObject() as BookingRecord, settings.trips.threadReadOnlyDays);
   const readOnly = !incidentOpen && closes <= now;
 

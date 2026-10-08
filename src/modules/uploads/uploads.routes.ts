@@ -1,8 +1,8 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { dirname, extname } from 'node:path';
+import { dirname, extname, relative } from 'node:path';
 import express, { Router, type Response } from 'express';
 import mongoose from 'mongoose';
-import { localFilePath } from '../../integrations/storage/local-files.js';
+import { localFilePath, localUploadRoot } from '../../integrations/storage/local-files.js';
 import {
   MAX_UPLOAD_BYTES,
   getStorage,
@@ -53,7 +53,8 @@ async function sendLocalFile(res: Response, key: string, cacheControl: string) {
     // The website shows these images from another port or subdomain of the same site.
     .set('Cross-Origin-Resource-Policy', 'same-site')
     .type(CONTENT_TYPES[extname(key)] ?? 'application/octet-stream')
-    .sendFile(path);
+    // Relative to the folder: Express refuses any path through a dot-folder, such as the default .uploads.
+    .sendFile(relative(localUploadRoot(), path), { root: localUploadRoot() });
 }
 
 /** Mounted at /api/v1/uploads. */

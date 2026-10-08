@@ -244,17 +244,21 @@ export async function decideListing(
   // A live listing's approved changes need no email; a listing's first decision does.
   if (!live && host) {
     const title = vehicleTitle(vehicle);
+    // Approved before payout setup: say so, and send the Host to finish it, not to a listing nobody can find.
+    const waitingForPayouts = decision === 'APPROVED' && vehicle.payoutsReady === false;
+    const link = waitingForPayouts ? '/host/earnings' : `/host/vehicles/${vehicle.id}`;
     await notify({
       userId: vehicle.hostId,
       type: `LISTING_${decision}`,
-      title:
-        decision === 'APPROVED'
+      title: waitingForPayouts
+        ? `Your ${title} is approved`
+        : decision === 'APPROVED'
           ? `Your ${title} is live`
           : decision === 'CHANGES_REQUESTED'
             ? `Changes needed on your ${title}`
             : `Your ${title} wasn't approved`,
-      ...(notes && { body: notes }),
-      link: `/host/vehicles/${vehicle.id}`,
+      ...((notes || waitingForPayouts) && { body: notes ?? 'Set up payouts and it goes live.' }),
+      link,
       email: {
         template: 'listingDecision',
         props: {
@@ -262,7 +266,8 @@ export async function decideListing(
           vehicleTitle: title,
           decision,
           ...(notes && { notes }),
-          url: `${siteUrl()}/host/vehicles/${vehicle.id}`,
+          ...(waitingForPayouts && { waitingForPayouts }),
+          url: `${siteUrl()}${link}`,
         },
       },
     });

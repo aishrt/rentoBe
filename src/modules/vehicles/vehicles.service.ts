@@ -263,6 +263,7 @@ export async function vehicleReviews(id: string, page = 1) {
       return {
         id: review._id.toString(),
         author: {
+          id: review.authorId.toString(),
           firstName: author?.firstName ?? 'A guest',
           ...(author?.avatarUrl && { avatarUrl: author.avatarUrl }),
         },

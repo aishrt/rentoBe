@@ -11,7 +11,7 @@ import { notify } from '../notifications/notify.js';
 import { UserModel } from '../users/user.model.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { ReviewModel, type Review, type ReviewDirection } from './review.model.js';
-import type { ReviewInput, ReviewView } from './reviews.schemas.js';
+import type { ModerationReviewView, ReviewInput, ReviewView } from './reviews.schemas.js';
 
 /*
  * Two-way reviews (spec §16; plan §9 Days 21–22). After a completed trip, the Guest reviews the Host and
@@ -79,7 +79,8 @@ const directionFor = (
 ): ReviewDirection | null =>
   booking.guestId.equals(userId) ? 'GUEST_TO_HOST' : booking.hostId.equals(userId) ? 'HOST_TO_GUEST' : null;
 
-async function toViews(reviews: ReviewRecord[], viewerId?: string): Promise<ReviewView[]> {
+/** The moderation state is shown to the review's author and to staff only. */
+async function toViews(reviews: ReviewRecord[], viewerId?: string, staff = false): Promise<ReviewView[]> {
   if (reviews.length === 0) return [];
   const people = await UserModel.find({
     _id: mongoose.trusted({
@@ -119,7 +120,7 @@ async function toViews(reviews: ReviewRecord[], viewerId?: string): Promise<Revi
       ...(review.care && { care: review.care }),
       ...(review.body && { body: review.body }),
       status: review.status,
-      ...(own && { moderation: review.moderation.state }),
+      ...((own || staff) && { moderation: review.moderation.state }),
       ...(review.revealAt &&
         review.status === 'AWAITING_REVEAL' && { revealAt: review.revealAt.toISOString() }),
       createdAt: review.createdAt.toISOString(),
@@ -409,19 +410,36 @@ export async function memberReviews(memberId: string) {
   };
 }
 
-/** GET /admin/reviews: reviews held for a moderator, oldest first, and recently hidden ones. */
-export async function reviewsForModeration(state: 'HELD' | 'HIDDEN' = 'HELD') {
-  const reviews = await ReviewModel.find({ 'moderation.state': state })
-    .sort({ createdAt: state === 'HELD' ? 1 : -1 })
-    .limit(100)
-    .lean<ReviewRecord[]>();
-  const views = await toViews(reviews);
+/** Reviews as staff see them: with the moderation state and the reason recorded for it. */
+async function staffViews(reviews: ReviewRecord[]): Promise<ModerationReviewView[]> {
+  const views = await toViews(reviews, undefined, true);
   return views.map((view, index) => ({ ...view, moderationReason: reviews[index]!.moderation.reason ?? '' }));
 }
 
 /**
+ * GET /admin/reviews: reviews held for a moderator, oldest first; or published ones, so one that breaks
+ * the rules can still be hidden, and recently hidden ones, newest first.
+ */
+export async function reviewsForModeration(state: 'HELD' | 'PUBLISHED' | 'HIDDEN' = 'HELD') {
+  const reviews = await ReviewModel.find(
+    state === 'PUBLISHED' ? { status: 'PUBLISHED' } : { 'moderation.state': state },
+  )
+    .sort({ createdAt: state === 'HELD' ? 1 : -1 })
+    .limit(100)
+    .lean<ReviewRecord[]>();
+  return staffViews(reviews);
+}
+
+/** Reported reviews as staff see them, to read and hide from the moderation queue. */
+export async function reviewsForReports(ids: Id[]): Promise<ModerationReviewView[]> {
+  if (ids.length === 0) return [];
+  return staffViews(await ReviewModel.find({ _id: mongoose.trusted({ $in: ids }) }).lean<ReviewRecord[]>());
+}
+
+/**
  * POST /admin/reviews/{id}/moderate: a moderator clears a held review (published if its time has come) or
- * hides one with a recorded reason, which takes it out of the ratings (plan §9: moderation).
+ * hides one, held or published, with a recorded reason, which takes it out of the ratings (plan §9:
+ * moderation).
  */
 export async function moderateReview(
   staffId: string,
@@ -451,5 +469,5 @@ export async function moderateReview(
     ...(ip && { ip }),
   });
   const fresh = await ReviewModel.findById(review._id).lean<ReviewRecord>();
-  return (await toViews([fresh!]))[0]!;
+  return (await toViews([fresh!], undefined, true))[0]!;
 }

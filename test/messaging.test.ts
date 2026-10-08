@@ -128,6 +128,18 @@ describe('booking messages', () => {
     expect(confirmed.body.messages[0].body).toBe('My number is 021 111 2222');
   });
 
+  it('opens for accounts made before blocking existed, which have no list of blocked people', async () => {
+    const { booking, guest, host, guestAgent } = await trip();
+    await UserModel.collection.updateMany(
+      { _id: { $in: [guest._id, host._id] } },
+      { $unset: { blockedUserIds: '' } },
+    );
+
+    const thread = await guestAgent.get(`/api/v1/threads/${booking.ref}`);
+    expect(thread.status).toBe(200);
+    expect(thread.body.thread).toMatchObject({ canSend: true, blockedByMe: false });
+  });
+
   it('has no thread for an unpaid checkout, and none for people outside the booking', async () => {
     const { booking, guestAgent } = await trip({ status: 'PAYMENT_PENDING' });
     expect((await guestAgent.get(`/api/v1/threads/${booking.ref}`)).body.error.code).toBe('NO_THREAD');

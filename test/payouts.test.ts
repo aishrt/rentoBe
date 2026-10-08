@@ -28,13 +28,24 @@ const app = testApp();
 const context = { log: { info: vi.fn(), warn: vi.fn() } } as unknown as JobContext;
 
 let transfers: Stripe.TransferCreateParams[] = [];
+/** The idempotency key each transfer was sent with. */
+let transferKeys: (string | undefined)[] = [];
 
 beforeEach(() => {
   transfers = [];
-  vi.spyOn(client.transfers, 'create').mockImplementation(async (params) => {
+  transferKeys = [];
+  vi.spyOn(client.transfers, 'create').mockImplementation(async (params, options) => {
     transfers.push(params);
+    transferKeys.push((options as Stripe.RequestOptions | undefined)?.idempotencyKey);
     return { id: `tr_${transfers.length}` } as Stripe.Response<Stripe.Transfer>;
   });
+  // Stripe's list of the transfers made so far, as runPayout checks before making one.
+  vi.spyOn(client.transfers, 'list').mockImplementation(((params?: Stripe.TransferListParams) =>
+    Promise.resolve({
+      data: transfers
+        .map((transfer, index) => ({ ...transfer, id: `tr_${index + 1}`, reversed: false }))
+        .filter((transfer) => transfer.transfer_group === params?.transfer_group),
+    })) as unknown as typeof client.transfers.list);
   vi.spyOn(client.paymentIntents, 'retrieve').mockImplementation(
     async (id) =>
       ({
@@ -157,6 +168,29 @@ describe('trip payouts', () => {
     expect(transfers).toHaveLength(1);
   });
 
+  it('try again with a new key after Stripe refuses one, and never pay a transfer twice', async () => {
+    const { booking, payout, host } = await trip();
+    await checkIn(booking._id, host._id);
+    vi.mocked(client.transfers.create).mockRejectedValueOnce(
+      new Stripe.errors.StripeInvalidRequestError({
+        message: 'Your destination account needs to have at least one of the following capabilities enabled',
+        statusCode: 400,
+      }),
+    );
+    await expect(runPayout(payout.id)).rejects.toThrow(/capabilities/);
+    expect(await PayoutModel.findById(payout._id)).toMatchObject({ status: 'FAILED', transferAttempts: 1 });
+
+    // Stripe would replay the refusal for the first key, so the retry sends a new one.
+    expect(await runPayout(payout.id)).toBe('paid');
+    expect(transferKeys).toEqual([`payout-${payout.id}-1`]);
+
+    // A transfer that went through while the database missed it is found, not sent again.
+    await PayoutModel.updateOne({ _id: payout._id }, { $set: { status: 'SCHEDULED' } });
+    expect(await runPayout(payout.id)).toBe('paid');
+    expect(transfers).toHaveLength(1);
+    expect(await PayoutModel.findById(payout._id)).toMatchObject({ stripeTransferId: 'tr_1' });
+  });
+
   it('are held without payout setup, and released when Stripe says the account is ready', async () => {
     const { payout, host, booking, vehicle } = await trip({ payoutsEnabled: false });
     await checkIn(booking._id, host._id);
@@ -269,11 +303,61 @@ describe('payout setup', () => {
       }),
       expect.anything(),
     );
+    // Stripe rejects http://localhost as the business website, so a local API leaves it out.
+    expect(create.mock.calls[0]![0]!.business_profile).not.toHaveProperty('url');
     await agent.post('/api/v1/host/connect/onboarding-link');
     expect(create).toHaveBeenCalledTimes(1);
 
     const payouts = await agent.get('/api/v1/host/payouts');
     expect(payouts.body.account).toMatchObject({ connected: true, payoutsEnabled: false });
+  });
+});
+
+describe('payout setup after Stripe refused it', () => {
+  const refusal = (replayed: boolean) =>
+    new Stripe.errors.StripeInvalidRequestError({
+      message: 'Stripe no longer recommends Accounts v1 for new Connect integrations.',
+      statusCode: 400,
+      headers: replayed ? { 'idempotent-replayed': 'true' } : {},
+    });
+
+  it('moves on to a new idempotency key, so a fixed refusal isn’t replayed for 24 hours', async () => {
+    const host = await createHost();
+    const keys: (string | undefined)[] = [];
+    const create = vi.spyOn(client.accounts, 'create').mockImplementation(async (_params, options) => {
+      keys.push((options as Stripe.RequestOptions | undefined)?.idempotencyKey);
+      // The first try is refused; the next, an hour later, gets the earlier answer replayed for the same key.
+      if (keys.length === 1) throw refusal(false);
+      if (keys.at(-1) === `connect-account-${host.id}`) throw refusal(true);
+      return { id: 'acct_new' } as Stripe.Response<Stripe.Account>;
+    });
+    vi.spyOn(client.accountLinks, 'create').mockResolvedValue({
+      url: 'https://connect.stripe.com/setup/e/acct_new/abc',
+    } as Stripe.Response<Stripe.AccountLink>);
+    const agent = browserAgent();
+    await agent.post('/api/v1/auth/login').send({ email: host.email, password: PASSWORD });
+
+    expect((await agent.post('/api/v1/host/connect/onboarding-link')).status).toBeGreaterThanOrEqual(400);
+    const next = await agent.post('/api/v1/host/connect/onboarding-link');
+    expect(next.status).toBe(200);
+    expect(keys).toEqual([`connect-account-${host.id}`, `connect-account-${host.id}-1`]);
+    expect((await UserModel.findById(host._id))!.hostProfile).toMatchObject({
+      stripeAccountId: 'acct_new',
+      connectRefusals: 1,
+    });
+
+    // A Host refused before this fix: Stripe replays the old answer for the old key, so it tries a new one at once.
+    const earlier = await createHost('earlier.host@example.co.nz');
+    keys.length = 0;
+    create.mockImplementation(async (_params, options) => {
+      keys.push((options as Stripe.RequestOptions | undefined)?.idempotencyKey);
+      if (keys.length === 1) throw refusal(true);
+      return { id: 'acct_earlier' } as Stripe.Response<Stripe.Account>;
+    });
+    const earlierAgent = browserAgent();
+    await earlierAgent.post('/api/v1/auth/login').send({ email: earlier.email, password: PASSWORD });
+    expect((await earlierAgent.post('/api/v1/host/connect/onboarding-link')).status).toBe(200);
+    expect(keys).toEqual([`connect-account-${earlier.id}`, `connect-account-${earlier.id}-1`]);
   });
 });
 

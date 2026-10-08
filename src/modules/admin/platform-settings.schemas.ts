@@ -6,6 +6,11 @@ const percent = z.number().min(0).max(100);
 const wholeCents = z.number().int().min(0);
 const count = z.number().int().min(0);
 const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, { error: 'Use HH:mm' });
+/** A phone number to show, or empty for none yet. */
+const phone = z
+  .string()
+  .trim()
+  .regex(/^(\+?[\d ()-]{6,20})?$/, { error: 'Enter a phone number, like 0800 123 456' });
 
 const range = (bound: z.ZodNumber) =>
   z
@@ -32,6 +37,10 @@ export const protectionPlanSchema = z.object({
   coverSummary: z.string().min(1),
   /** The plan every booking includes unless the Guest picks another. */
   mandatory: z.boolean(),
+  /** The plan's own roadside assistance number, when its insurer gives one; else roadsideAssistance.phone. */
+  roadsidePhone: phone.optional().meta({
+    description: 'The plan’s own roadside assistance number; empty or missing means roadsideAssistance.phone',
+  }),
 });
 export type ProtectionPlan = z.infer<typeof protectionPlanSchema>;
 
@@ -194,13 +203,11 @@ export const platformSettingsSchema = z.object({
    * only: the card hold is designed and built once the client decides to have one (plan §5).
    */
   securityDeposit: z.object({ amountCents: wholeCents }),
-  /** From the insurance partner (plan §16, item 9). Empty until it arrives; shown with the protection plans. */
-  roadsideAssistance: z.object({
-    phone: z
-      .string()
-      .trim()
-      .regex(/^(\+?[\d ()-]{6,20})?$/, { error: 'Enter a phone number, like 0800 123 456' }),
-  }),
+  /**
+   * From the insurance partner (plan §16, item 9). Empty until it arrives; shown with the protection plans.
+   * A plan with its own roadsidePhone uses that instead.
+   */
+  roadsideAssistance: z.object({ phone }),
   /** The logo, trade mark and company name checks (plan §16, item 1). Recorded only. */
   brandChecks: z.object({
     finalLogoSupplied: z.boolean(),

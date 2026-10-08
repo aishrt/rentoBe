@@ -227,6 +227,12 @@ async function sourceCharge(payout: PayoutDocument): Promise<string | undefined>
   }
 }
 
+/** A transfer Stripe already made for this payout (each carries its payout's id), not reversed since. */
+async function existingTransfer(payoutId: string, bookingRef: string): Promise<string | undefined> {
+  const { data } = await stripe().transfers.list({ transfer_group: bookingRef, limit: 100 });
+  return data.find((transfer) => transfer.metadata?.payoutId === payoutId && !transfer.reversed)?.id;
+}
+
 /**
  * Host-funded refunds on the booking made after its payout was scheduled reduce a TRIP payout, and Host
  * cancellation fees owed come off any payout (plan §8.1, items 10 and 15). Never below zero: anything left
@@ -304,25 +310,39 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
   let transferId: string | undefined;
   if (amount > 0) {
     try {
-      const source = await sourceCharge(payout);
-      const transfer = await stripe().transfers.create(
-        {
-          amount,
-          currency: CHARGE_CURRENCY,
-          destination: accountId,
-          transfer_group: booking.ref,
-          description: `Rento Vroom ${payout.type === 'TRIP' ? 'trip' : payout.type === 'EXTRA_CHARGE' ? 'extra charge' : 'cancellation fee'} payout for ${booking.ref}`,
-          metadata: { payoutId: payout.id, bookingId: booking._id.toString(), bookingRef: booking.ref },
-          ...(source && { source_transaction: source }),
-        },
-        { idempotencyKey: `payout-${payout.id}` },
-      );
-      transferId = transfer.id;
+      // A transfer made last time whose result the database missed counts as this one, never paid twice.
+      transferId = await existingTransfer(payout.id, booking.ref);
+      if (!transferId) {
+        const source = await sourceCharge(payout);
+        const attempts = payout.transferAttempts ?? 0;
+        const transfer = await stripe().transfers.create(
+          {
+            amount,
+            currency: CHARGE_CURRENCY,
+            destination: accountId,
+            transfer_group: booking.ref,
+            description: `Rento Vroom ${payout.type === 'TRIP' ? 'trip' : payout.type === 'EXTRA_CHARGE' ? 'extra charge' : 'cancellation fee'} payout for ${booking.ref}`,
+            metadata: { payoutId: payout.id, bookingId: booking._id.toString(), bookingRef: booking.ref },
+            ...(source && { source_transaction: source }),
+          },
+          // Stripe replays a key's first answer for 24 hours, refusals included, so a retry after a refusal
+          // needs a new key. An unclear failure (a timeout or a 5xx) keeps the key, in case it went through.
+          { idempotencyKey: attempts > 0 ? `payout-${payout.id}-${attempts}` : `payout-${payout.id}` },
+        );
+        transferId = transfer.id;
+      }
     } catch (error) {
       const reason = error instanceof Stripe.errors.StripeError ? error.message : 'The transfer failed';
+      const refused =
+        error instanceof Stripe.errors.StripeError &&
+        error.statusCode !== undefined &&
+        error.statusCode < 500;
       await PayoutModel.updateOne(
         { _id: payout._id },
-        { $set: { status: 'FAILED', failureReason: reason.slice(0, 300) } },
+        {
+          $set: { status: 'FAILED', failureReason: reason.slice(0, 300) },
+          ...(refused && { $inc: { transferAttempts: 1 } }),
+        },
       );
       await alertStaff({
         type: 'PAYOUT_FAILED',

@@ -21,6 +21,9 @@ import type { Receipt } from './bookings.schemas.js';
 
 const RECEIPT_STATUSES = ['SUCCEEDED', 'REFUNDED', 'PARTIALLY_REFUNDED'] as const;
 
+/** The GST in a GST-inclusive amount. */
+const gstIn = (cents: number, ratePct: number) => Math.round((cents * ratePct) / (100 + ratePct));
+
 /** GET /bookings/{id}/receipt: the Guest's receipt (staff can open it too; the Host has earnings instead). */
 export async function bookingReceipt(booking: BookingDocument, viewer: Viewer): Promise<Receipt> {
   if (viewer === 'HOST') {
@@ -40,10 +43,26 @@ export async function bookingReceipt(booking: BookingDocument, viewer: Viewer): 
   if (!payment) {
     throw new HttpError(409, 'NO_RECEIPT', 'The receipt is ready once the booking is paid for.');
   }
-  const [guest, settings] = await Promise.all([
+  const [guest, settings, chargePayments] = await Promise.all([
     UserModel.findById(booking.guestId).select('firstName lastName email').lean(),
     getPlatformSettings(),
+    PaymentModel.find({ bookingId: booking._id, type: 'EXTRA_CHARGE', status: 'SUCCEEDED' })
+      .select('extraChargeId method updatedAt')
+      .lean(),
   ]);
+  // Charges after the trip (extra kilometres, or from a resolved case), each paid on its own.
+  const extraCharges = booking.extraCharges
+    .filter((charge) => charge.status === 'SUCCEEDED')
+    .map((charge) => {
+      const paid = chargePayments.find((payment) => payment.extraChargeId?.equals(charge._id));
+      return {
+        description: charge.description,
+        amountCents: charge.amountCents,
+        gstCents: gstIn(charge.amountCents, settings.fees.gstRatePct),
+        paidAt: (paid?.updatedAt ?? booking.endAt).toISOString(),
+        paidWith: paid?.method ?? 'Card',
+      };
+    });
   // Charged when the booking was confirmed: at checkout for Instant Book, or when the Host accepted.
   const paidAt =
     booking.statusHistory.find((change) => change.status === 'CONFIRMED')?.at ?? payment.updatedAt;
@@ -79,6 +98,7 @@ export async function bookingReceipt(booking: BookingDocument, viewer: Viewer): 
     })),
     refundedCents: refunded,
     netPaidCents: payment.amountCents - refunded,
+    ...(extraCharges.length > 0 && { extraCharges }),
   };
 }
 
@@ -194,6 +214,23 @@ export function receiptPdf(receipt: Receipt): Promise<Buffer> {
       }
       rule();
       row('Paid after refunds (NZD)', formatNzdExact(receipt.netPaidCents), { bold: true });
+    }
+
+    if (receipt.extraCharges?.length) {
+      heading('Charges after the trip');
+      for (const charge of receipt.extraCharges) {
+        row(charge.description, formatNzdExact(charge.amountCents));
+        doc
+          .fillColor(muted)
+          .text(
+            `Paid ${day(charge.paidAt)} with ${charge.paidWith}. GST included (${receipt.gstRatePct}%) ${formatNzdExact(charge.gstCents)}.`,
+            left,
+            doc.y - 2,
+            { width: width - amountWidth - 12 },
+          )
+          .fillColor(ink);
+        doc.y += 6;
+      }
     }
 
     doc

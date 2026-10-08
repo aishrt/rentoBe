@@ -124,7 +124,8 @@ export const emailTemplates = {
     component: ListingSubmittedEmail,
   }),
   listingDecision: defineTemplate<ListingDecisionProps>({
-    subject: ({ decision, vehicleTitle }) => listingDecisionSubjects[decision](vehicleTitle),
+    subject: ({ decision, vehicleTitle, waitingForPayouts }) =>
+      listingDecisionSubjects[decision](vehicleTitle, waitingForPayouts),
     component: ListingDecisionEmail,
   }),
   bookingRequestHost: defineTemplate<BookingRequestHostProps>({

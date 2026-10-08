@@ -165,7 +165,11 @@ export const availabilityResponseSchema = z
 export const vehicleReviewSchema = z
   .object({
     id: z.string(),
-    author: z.object({ firstName: z.string(), avatarUrl: z.string().optional() }),
+    author: z.object({
+      id: z.string().meta({ description: 'Who wrote it, so readers can report a review but not their own' }),
+      firstName: z.string(),
+      avatarUrl: z.string().optional(),
+    }),
     overall: z.number().int(),
     body: z.string().optional(),
     createdAt: z.iso.datetime(),

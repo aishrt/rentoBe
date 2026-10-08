@@ -82,6 +82,8 @@ export interface IdentityVerification {
   reviewReason?: string;
   /** The document checked: driving_license, passport or id_card. */
   documentType?: string;
+  /** When the latest check began: a check that never passes is redacted this long after it (plan §14). */
+  startedAt?: Date;
   verifiedAt?: Date;
   reviewedBy?: Types.ObjectId;
   /** When Stripe deleted the ID images, keeping only the result (plan §14: 90 days). */
@@ -122,6 +124,8 @@ export interface HostProfile {
   reviewedBy?: Types.ObjectId;
   reviewNotes?: string;
   stripeAccountId?: string;
+  /** Times Stripe refused to make the Host's account: each try after a refusal uses a new idempotency key. */
+  connectRefusals?: number;
   payoutsEnabled: boolean;
   /** What Stripe still needs from the Host before payouts can be sent (plan §8.1, item 20). */
   payoutRequirements?: string[];
@@ -299,6 +303,7 @@ const userSchema = new Schema<User>(
           lastError: String,
           reviewReason: String,
           documentType: String,
+          startedAt: Date,
           verifiedAt: Date,
           reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
           redactedAt: Date,
@@ -335,6 +340,7 @@ const userSchema = new Schema<User>(
           reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
           reviewNotes: String,
           stripeAccountId: String,
+          connectRefusals: Number,
           payoutsEnabled: { type: Boolean, default: false },
           payoutRequirements: { type: [String], default: undefined },
           payoutDelayDays: { type: Number, min: 0 },

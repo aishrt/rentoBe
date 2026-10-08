@@ -1,5 +1,5 @@
 import type { ClientSession } from 'mongoose';
-import type Stripe from 'stripe';
+import Stripe from 'stripe';
 import { env } from '../../env.js';
 import { stripe } from '../../integrations/stripe.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -16,6 +16,8 @@ import { releaseHeldPayouts } from './payouts.service.js';
  */
 
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
+/** Stripe refuses a business website it can't reach, such as localhost in development; the description does. */
+const publicSiteUrl = () => (siteUrl().startsWith('https://') ? siteUrl() : undefined);
 
 /** Stripe's requirement codes in plain words, for the Host's to-do list. */
 const REQUIREMENT_WORDS: [RegExp, string][] = [
@@ -149,6 +151,48 @@ export async function applyAccountState(account: Stripe.Account, session?: Clien
 }
 
 /**
+ * Makes the Host's Express account. The idempotency key stops a double click making two, but Stripe replays a
+ * key's first answer for 24 hours, refusals included, so a refusal moves the Host on to a new key. A replayed
+ * refusal (an earlier try's answer) gets one fresh try straight away.
+ */
+async function createExpressAccount(host: Awaited<ReturnType<typeof findHost>>): Promise<string> {
+  let refusals = host.hostProfile!.connectRefusals ?? 0;
+  for (let tries = 0; ; tries += 1) {
+    try {
+      const account = await stripe().accounts.create(
+        {
+          type: 'express',
+          country: 'NZ',
+          email: host.email,
+          capabilities: { transfers: { requested: true } },
+          business_type: 'individual',
+          business_profile: {
+            product_description: 'Renting out my car to guests on Rento Vroom',
+            mcc: '7512',
+            ...(publicSiteUrl() && { url: publicSiteUrl() }),
+          },
+          metadata: { userId: host.id },
+        },
+        {
+          idempotencyKey:
+            refusals > 0 ? `connect-account-${host.id}-${refusals}` : `connect-account-${host.id}`,
+        },
+      );
+      return account.id;
+    } catch (error) {
+      const refused =
+        error instanceof Stripe.errors.StripeError &&
+        error.statusCode !== undefined &&
+        error.statusCode < 500;
+      if (!refused) throw error;
+      refusals += 1;
+      await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.connectRefusals': refusals } });
+      if (tries > 0 || error.headers?.['idempotent-replayed'] !== 'true') throw error;
+    }
+  }
+}
+
+/**
  * POST /host/connect/onboarding-link: a link to Stripe's payout setup, making the Host's Express account
  * the first time. The link works once, for a few minutes.
  */
@@ -157,23 +201,7 @@ export async function onboardingLink(hostId: string): Promise<{ url: string }> {
   const client = stripe();
   let accountId = host.hostProfile!.stripeAccountId;
   if (!accountId) {
-    const account = await client.accounts.create(
-      {
-        type: 'express',
-        country: 'NZ',
-        email: host.email,
-        capabilities: { transfers: { requested: true } },
-        business_type: 'individual',
-        business_profile: {
-          product_description: 'Renting out my car to guests on Rento Vroom',
-          mcc: '7512',
-          url: siteUrl(),
-        },
-        metadata: { userId: host.id },
-      },
-      { idempotencyKey: `connect-account-${host.id}` },
-    );
-    accountId = account.id;
+    accountId = await createExpressAccount(host);
     await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.stripeAccountId': accountId } });
   }
   const link = await client.accountLinks.create({

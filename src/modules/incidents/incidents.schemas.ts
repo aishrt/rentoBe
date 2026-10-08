@@ -13,12 +13,26 @@ export const newIncidentSchema = z
       .string()
       .trim()
       .min(10, { error: 'Tell us what happened (at least 10 characters)' })
-      .max(5000, { error: 'Keep it under 5,000 characters' }),
+      .max(5000, { error: 'Keep it under 5,000 characters' })
+      .optional()
+      .meta({ description: 'Needed unless fromCheckOutDamage is set, when the flagged damage describes it' }),
     attachments: z
       .array(attachmentInputSchema)
       .max(10, { error: 'Up to 10 files' })
       .default([])
       .meta({ description: 'Photos and documents, uploaded first with purpose INCIDENT_FILE' }),
+    fromCheckOutDamage: z.boolean().optional().meta({
+      description:
+        'DAMAGE only: opens the case with the new damage flagged on the check-out record that no other case has yet. Its notes go into the description and its photos into the evidence. 409 NO_NEW_DAMAGE when there is none.',
+    }),
+  })
+  .refine((input) => input.description !== undefined || input.fromCheckOutDamage, {
+    error: 'Tell us what happened (at least 10 characters)',
+    path: ['description'],
+  })
+  .refine((input) => !input.fromCheckOutDamage || input.type === 'DAMAGE', {
+    error: 'Only a damage report can include the damage flagged at check-out',
+    path: ['fromCheckOutDamage'],
   })
   .meta({ id: 'NewIncidentRequest' });
 export type NewIncidentInput = z.infer<typeof newIncidentSchema>;
@@ -55,6 +69,21 @@ export const staffIncidentUpdateSchema = z
   .meta({ id: 'StaffIncidentUpdateRequest' });
 export type StaffIncidentUpdateInput = z.infer<typeof staffIncidentUpdateSchema>;
 
+/** Support hands a case to a staff member, or leaves it with nobody. */
+export const incidentAssigneeSchema = z
+  .object({
+    userId: z
+      .string()
+      .regex(/^[0-9a-f]{24}$/, { error: 'Choose who handles it' })
+      .nullable()
+      .meta({
+        description:
+          'An active support member or the admin (from GET /admin/incidents/assignees); null for nobody',
+      }),
+  })
+  .meta({ id: 'IncidentAssigneeRequest' });
+export type IncidentAssigneeInput = z.infer<typeof incidentAssigneeSchema>;
+
 export const incidentChargeSchema = z
   .object({
     type: z.enum(EXTRA_CHARGE_TYPES.filter((type) => type !== 'EXTRA_KM') as [string, ...string[]]),
@@ -67,13 +96,17 @@ export type IncidentChargeInput = z.infer<typeof incidentChargeSchema>;
 export const incidentEventViewSchema = z
   .object({
     id: z.string(),
-    action: z.string().meta({ description: 'OPENED, COMMENT, STATUS, ASSIGNED, CHARGE_ADDED' }),
+    action: z.string().meta({ description: 'OPENED, COMMENT, STATUS, ASSIGNED, UNASSIGNED, CHARGE_ADDED' }),
     by: z.enum(['YOU', 'GUEST', 'HOST', 'SUPPORT']),
     byName: z.string(),
     note: z.string().optional(),
     attachments: z.array(attachmentViewSchema),
     visibility: z.enum(EVENT_VISIBILITIES),
     status: z.enum(INCIDENT_STATUSES).optional(),
+    assignedTo: z
+      .string()
+      .optional()
+      .meta({ description: 'Staff only, on an ASSIGNED event that handed the case to someone else: who' }),
     createdAt: z.iso.datetime(),
   })
   .meta({ id: 'IncidentEvent' });
@@ -88,6 +121,7 @@ export const incidentSummarySchema = z
     reportedBy: z.enum(['GUEST', 'HOST', 'SUPPORT']),
     role: z.enum(['GUEST', 'HOST', 'STAFF']).meta({ description: 'How the viewer sees the case' }),
     assignedTo: z.string().optional().meta({ description: 'Staff only: the support member handling it' }),
+    assignedToId: z.string().optional().meta({ description: 'Staff only: their user id' }),
     createdAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
   })
@@ -120,3 +154,17 @@ export const incidentResponseSchema = z
 export const incidentsResponseSchema = z
   .object({ incidents: z.array(incidentSummarySchema) })
   .meta({ id: 'Incidents' });
+
+/** Who a case can be handed to: the admin and the active support team. */
+export const incidentAssigneesResponseSchema = z
+  .object({
+    assignees: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        you: z.boolean().meta({ description: 'The signed-in staff member' }),
+      }),
+    ),
+  })
+  .meta({ id: 'IncidentAssignees' });
+export type IncidentAssignees = z.infer<typeof incidentAssigneesResponseSchema>;

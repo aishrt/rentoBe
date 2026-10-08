@@ -123,7 +123,11 @@ export async function listPaymentHistory(userId: string): Promise<PaymentHistory
           .filter((refund) => refund.status !== 'FAILED')
           .reduce((sum, refund) => sum + refund.amountCents, 0),
         refunds,
-        hasReceipt: payment.type === 'BOOKING' && HAS_RECEIPT.includes(payment.status),
+        // A paid extra charge is on the booking's receipt, under "Charges after the trip".
+        hasReceipt:
+          payment.type === 'EXTRA_CHARGE'
+            ? payment.status === 'SUCCEEDED'
+            : payment.type === 'BOOKING' && HAS_RECEIPT.includes(payment.status),
       },
     ];
   });

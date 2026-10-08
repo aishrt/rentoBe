@@ -2,14 +2,16 @@ import type { Types } from 'mongoose';
 import { formatNzAddress } from '../../lib/format.js';
 import type { NzAddress } from '../../lib/model-fields.js';
 import { nzTripDays } from '../../lib/nz-time.js';
+import { payLinkPath } from '../payments/extra-charges.service.js';
 import { PaymentModel, type Payment } from '../payments/payment.model.js';
 import { PayoutModel, type Payout } from '../payouts/payout.model.js';
+import { expectedBankDate } from '../payouts/payouts.service.js';
 import { ReviewModel } from '../reviews/review.model.js';
 import { UserModel, type User } from '../users/user.model.js';
 import { VehicleModel, type DeliveryOption, type Vehicle } from '../vehicles/vehicle.model.js';
 import { deliveryOptionSummary } from '../vehicles/vehicles.service.js';
 import { BookingModel, type Booking, type BookingStatus } from './booking.model.js';
-import type { BookingView } from './bookings.schemas.js';
+import type { BOOKING_EXTRA_CHARGE_STATUSES, BookingView } from './bookings.schemas.js';
 
 /*
  * A booking as each party sees it (plan §6.2, what each party can see): the exact pickup address,
@@ -153,9 +155,41 @@ function payoutView(booking: BookingRecord, context: BookingContext) {
       status: main.status,
       ...(main.holdReason && { holdReason: main.holdReason }),
       scheduledFor: main.scheduledFor.toISOString(),
-      ...(main.paidAt && { paidAt: main.paidAt.toISOString() }),
+      ...(main.paidAt && {
+        paidAt: main.paidAt.toISOString(),
+        expectedInBankBy: expectedBankDate(
+          main.paidAt,
+          context.host?.hostProfile?.payoutDelayDays,
+        ).toISOString(),
+      }),
     }),
     ...(paid > 0 && { paidCents: paid }),
+  };
+}
+
+/**
+ * A charge after the trip (plan §8.1, items 6 and 11). One with a payment that isn't paid is one the saved
+ * card didn't cover: the Guest was sent the pay link, which their view carries too.
+ */
+function extraChargeView(charge: Booking['extraCharges'][number], viewer: Viewer) {
+  const status: (typeof BOOKING_EXTRA_CHARGE_STATUSES)[number] =
+    charge.status === 'SUCCEEDED'
+      ? 'PAID'
+      : charge.status === 'PENDING'
+        ? charge.paymentId
+          ? 'UNPAID'
+          : 'PENDING'
+        : charge.status;
+  return {
+    id: charge._id!.toString(),
+    type: charge.type,
+    description: charge.description,
+    amountCents: charge.amountCents,
+    status,
+    addedAt: charge._id!.getTimestamp().toISOString(),
+    ...(viewer === 'GUEST' &&
+      status === 'UNPAID' &&
+      charge.paymentId && { payPath: payLinkPath(charge.paymentId.toString()) }),
   };
 }
 
@@ -275,6 +309,9 @@ export function toBookingView(
             }),
         }
       : null,
+    ...(booking.extraCharges.length > 0 && {
+      extraCharges: booking.extraCharges.map((charge) => extraChargeView(charge, viewer)),
+    }),
     actions: {
       pay: viewer === 'GUEST' && booking.status === 'PAYMENT_PENDING' && holdLive,
       cancel: (viewer === 'GUEST' || viewer === 'HOST') && booking.status === 'CONFIRMED',

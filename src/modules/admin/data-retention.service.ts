@@ -53,12 +53,20 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
   const settings = await getPlatformSettings();
   const result: RetentionResult = { identitiesRedacted: 0, tripsCleared: 0, auditLogsDeleted: 0 };
 
-  // ID images: Stripe Identity redacts the session; the result stays on the account.
+  // ID images: Stripe Identity redacts the session; the result stays on the account. A check that passed goes
+  // 90 days after it passed; one that was turned down or never finished, 90 days after it began. One that
+  // support is still reviewing (PENDING) keeps its images until they decide.
   const idCutoff = new Date(now.getTime() - settings.retention.idImagesDays * DAY_MS);
   const checked = await UserModel.find({
     'identityVerification.providerRef': mongoose.trusted({ $exists: true }),
     'identityVerification.redactedAt': mongoose.trusted({ $exists: false }),
-    'identityVerification.verifiedAt': mongoose.trusted({ $lte: idCutoff }),
+    $or: [
+      { 'identityVerification.verifiedAt': mongoose.trusted({ $lte: idCutoff }) },
+      {
+        'identityVerification.status': mongoose.trusted({ $in: ['NONE', 'REJECTED'] }),
+        'identityVerification.startedAt': mongoose.trusted({ $lte: idCutoff }),
+      },
+    ],
   })
     .select('_id')
     .limit(BATCH)
