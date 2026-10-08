@@ -43,7 +43,11 @@ export const hostProfileSchema = z
     bio: z.string().optional(),
     gstRegistered: z.boolean(),
     gstNumber: z.string().optional(),
-    payoutsEnabled: z.boolean().meta({ description: 'Payout setup (Stripe Connect) arrives in Phase 3' }),
+    payoutsEnabled: z.boolean().meta({ description: 'Whether payout setup (Stripe Connect) is finished' }),
+    identityRequired: z.boolean().meta({
+      description:
+        'Whether approval waits for a passed identity check (the identityForHosts platform setting)',
+    }),
     rating: z.object({ avg: z.number(), count: z.number().int() }),
     tripCount: z.number().int(),
     responseRate: z.number().optional(),

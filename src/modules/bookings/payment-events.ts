@@ -68,7 +68,7 @@ async function refundFailed(event: Stripe.Event, session: ClientSession) {
   );
 }
 
-/** A card dispute (chargeback) is linked to its payment (plan §8.1, item 12). Payout holds join in Phase 3. */
+/** A card dispute (chargeback) is linked to its payment and holds the booking's payouts (plan §8.1, item 12). */
 async function disputeChanged(event: Stripe.Event, session: ClientSession) {
   const dispute = event.data.object as Stripe.Dispute;
   const payment = await PaymentModel.findOne({

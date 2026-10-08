@@ -3,6 +3,7 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
 import { forget } from '../src/lib/memo.js';
+import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
@@ -132,6 +133,23 @@ describe('Host application', () => {
     expect(await JobModel.countDocuments({ type: 'notification.send' })).toBe(1);
     expect(await NotificationModel.countDocuments({ channel: 'IN_APP' })).toBe(1);
   });
+
+  it('approves without the identity check when the identityForHosts setting is off', async () => {
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { verification: { identityForHosts: false } },
+    });
+    const { user, agent } = await applicant();
+    await agent.post('/api/v1/me/host-application').send({ acceptHostAgreement: true });
+    expect((await agent.get('/api/v1/me/host-profile')).body.host.identityRequired).toBe(false);
+
+    await createStaff();
+    const staff = await staffAgent();
+    const [application] = (await staff.get('/api/v1/admin/host-applications')).body.applications;
+    expect(application).toMatchObject({ identityStatus: 'NONE', identityRequired: false });
+    const approved = await staff.post(`/api/v1/admin/host-applications/${user.id}/approve`).send({});
+    expect(approved.body.status).toBe('APPROVED');
+  });
 });
 
 describe('Vehicle onboarding', () => {
@@ -239,7 +257,7 @@ describe('Vehicle onboarding', () => {
     const queue = await staff.get('/api/v1/admin/vehicles');
     expect(queue.body.vehicles).toEqual([expect.objectContaining({ id, status: 'UNDER_REVIEW', flags: 1 })]);
     const review = await staff.get(`/api/v1/admin/vehicles/${id}`);
-    expect(review.body.host).toMatchObject({ name: 'Hana Tester', status: 'APPLIED' });
+    expect(review.body.host).toMatchObject({ name: 'Hana Tester', status: 'APPLIED', payoutsEnabled: false });
     // Staff open documents through short-lived links.
     const link = new URL(review.body.vehicle.documents[0].link);
     expect((await staff.get(`${link.pathname}${link.search}`)).status).toBe(200);
@@ -253,16 +271,30 @@ describe('Vehicle onboarding', () => {
         userId: user.id,
         emailVerified: true,
         phoneVerified: true,
+        identityStatus: 'NONE',
+        identityRequired: true,
         vehicles: { total: 1, underReview: 1 },
       }),
     ]);
+    // Hosts pass the identity check before they're approved (the identityForHosts setting, spec §22).
+    const unverified = await staff.post(`/api/v1/admin/host-applications/${user.id}/approve`).send({});
+    expect(unverified.status).toBe(409);
+    expect(unverified.body.error.code).toBe('IDENTITY_NOT_VERIFIED');
+    expect((await agent.get('/api/v1/me/host-profile')).body.host).toMatchObject({
+      status: 'APPLIED',
+      identityRequired: true,
+    });
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { identityVerification: { status: 'APPROVED', verifiedAt: new Date() } } },
+    );
     expect(
       (await staff.post(`/api/v1/admin/host-applications/${user.id}/approve`).send({})).body.status,
     ).toBe('APPROVED');
 
     const approved = await staff.post(`/api/v1/admin/vehicles/${id}/approve`).send({});
     expect(approved.status).toBe(200);
-    expect(approved.body.vehicle.status).toBe('ACTIVE');
+    expect(approved.body.vehicle).toMatchObject({ status: 'ACTIVE', waitingForPayouts: true });
     expect(
       approved.body.vehicle.photos.every((photo: { status: string }) => photo.status === 'APPROVED'),
     ).toBe(true);
@@ -283,6 +315,7 @@ describe('Vehicle onboarding', () => {
     expect(await NotificationModel.countDocuments({ type: 'LISTING_APPROVED', channel: 'EMAIL' })).toBe(1);
 
     expect((await request(app).get('/api/v1/search').query({ where: 'Ponsonby' })).body.results).toEqual([]);
+    expect((await agent.get('/api/v1/host/vehicles')).body.vehicles[0].waitingForPayouts).toBe(true);
     await UserModel.updateOne({ _id: user._id }, { $set: { 'hostProfile.stripeAccountId': 'acct_test' } });
     await applyAccountState({
       id: 'acct_test',
@@ -291,6 +324,7 @@ describe('Vehicle onboarding', () => {
       requirements: { currently_due: [], past_due: [] },
     } as unknown as Stripe.Account);
 
+    expect((await agent.get(`/api/v1/host/vehicles/${id}`)).body.vehicle.waitingForPayouts).toBe(false);
     // Live: in search, with the approved photos served publicly.
     const search = await request(app).get('/api/v1/search').query({ where: 'Ponsonby' });
     expect(search.body.results.map((card: { id: string }) => card.id)).toEqual([id]);

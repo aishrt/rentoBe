@@ -43,7 +43,8 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
     path: '/admin/host-applications/{userId}/approve',
     tags: ['Admin'],
     summary: 'Approve a Host application',
-    description: '409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email. Emails the Host.',
+    description:
+      '409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email, and 409 IDENTITY_NOT_VERIFIED until their identity check has passed (while the identityForHosts setting is on). Emails the Host.',
     security: signedIn,
     request: { params: userParam, body: jsonBody(reviewNotesSchema) },
     responses: {

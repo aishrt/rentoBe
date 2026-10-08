@@ -5769,7 +5769,11 @@
           },
           "payoutsEnabled": {
             "type": "boolean",
-            "description": "Payout setup (Stripe Connect) arrives in Phase 3"
+            "description": "Whether payout setup (Stripe Connect) is finished"
+          },
+          "identityRequired": {
+            "type": "boolean",
+            "description": "Whether approval waits for a passed identity check (the identityForHosts platform setting)"
           },
           "rating": {
             "type": "object",
@@ -5798,6 +5802,7 @@
           "appliedAt",
           "gstRegistered",
           "payoutsEnabled",
+          "identityRequired",
           "rating",
           "tripCount"
         ]
@@ -5892,6 +5897,10 @@
               "SUSPENDED"
             ]
           },
+          "waitingForPayouts": {
+            "type": "boolean",
+            "description": "Approved, but out of search until the Host finishes payout setup (plan §8.2)"
+          },
           "onboardingStep": {
             "type": "integer"
           },
@@ -5924,6 +5933,7 @@
           "slug",
           "title",
           "status",
+          "waitingForPayouts",
           "onboardingStep",
           "photo",
           "missingCount",
@@ -5966,6 +5976,10 @@
               "INACTIVE",
               "SUSPENDED"
             ]
+          },
+          "waitingForPayouts": {
+            "type": "boolean",
+            "description": "Approved, but out of search until the Host finishes payout setup (plan §8.2)"
           },
           "reviewNotes": {
             "type": "string"
@@ -6366,6 +6380,7 @@
           "slug",
           "title",
           "status",
+          "waitingForPayouts",
           "onboardingStep",
           "features",
           "petFriendly",
@@ -7697,6 +7712,10 @@
             ],
             "description": "The Host’s identity check (plan §9, Days 19–20)"
           },
+          "identityRequired": {
+            "type": "boolean",
+            "description": "Whether approval waits for a passed identity check (the identityForHosts platform setting)"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -7746,6 +7765,7 @@
           "emailVerified",
           "phoneVerified",
           "identityStatus",
+          "identityRequired",
           "status",
           "appliedAt",
           "gstRegistered",
@@ -7912,6 +7932,10 @@
                   null
                 ]
               },
+              "payoutsEnabled": {
+                "type": "boolean",
+                "description": "Payout setup is done, so an approved listing goes live at once (plan §8.2)"
+              },
               "emailVerified": {
                 "type": "boolean"
               },
@@ -7924,6 +7948,7 @@
               "name",
               "email",
               "status",
+              "payoutsEnabled",
               "emailVerified",
               "phoneVerified"
             ]
@@ -20973,7 +20998,7 @@
           "Admin"
         ],
         "summary": "Approve a Host application",
-        "description": "409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email. Emails the Host.",
+        "description": "409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email, and 409 IDENTITY_NOT_VERIFIED until their identity check has passed (while the identityForHosts setting is on). Emails the Host.",
         "security": [
           {
             "cookieAuth": []

@@ -21,6 +21,7 @@ const notFound = (what: string) => new HttpError(404, 'NOT_FOUND', `No such ${wh
 
 /** GET /admin/host-applications, oldest first so nobody waits longest. */
 export async function listHostApplications(status: HostStatus = 'APPLIED') {
+  const settings = await getPlatformSettings();
   const users = await UserModel.find({ 'hostProfile.status': status })
     .sort({ 'hostProfile.appliedAt': 1 })
     .limit(200)
@@ -51,6 +52,7 @@ export async function listHostApplications(status: HostStatus = 'APPLIED') {
       ...(user.phone && { phone: user.phone }),
       phoneVerified: Boolean(user.phoneVerifiedAt),
       identityStatus: user.identityVerification?.status ?? 'NONE',
+      identityRequired: settings.verification.identityForHosts,
       status: profile.status,
       appliedAt: profile.appliedAt.toISOString(),
       ...(profile.bio && { bio: profile.bio }),
@@ -65,7 +67,11 @@ export async function listHostApplications(status: HostStatus = 'APPLIED') {
 export const isHostStatus = (value: unknown): value is HostStatus =>
   typeof value === 'string' && (HOST_STATUSES as readonly string[]).includes(value);
 
-/** Approves or rejects a Host application (plan §6.1: the email must be confirmed first). */
+/**
+ * Approves or rejects a Host application. Approval needs a confirmed email (plan §6.1) and, while the
+ * `identityForHosts` setting is on, a passed identity check (spec §22: Hosts verify their identity as
+ * part of the application).
+ */
 export async function decideHostApplication(
   staffId: string,
   userId: string,
@@ -78,6 +84,19 @@ export async function decideHostApplication(
   if (!user?.hostProfile) throw notFound('application');
   if (approved && !user.emailVerifiedAt) {
     throw new HttpError(409, 'EMAIL_NOT_VERIFIED', "The applicant hasn't confirmed their email address yet.");
+  }
+  if (
+    approved &&
+    user.identityVerification?.status !== 'APPROVED' &&
+    (await getPlatformSettings()).verification.identityForHosts
+  ) {
+    throw new HttpError(
+      409,
+      'IDENTITY_NOT_VERIFIED',
+      user.identityVerification?.status === 'PENDING'
+        ? "The applicant's identity check is waiting for a review in Verifications."
+        : "The applicant hasn't passed the identity check yet.",
+    );
   }
   const before = user.hostProfile.status;
   user.hostProfile.status = approved ? 'APPROVED' : 'REJECTED';
@@ -164,7 +183,9 @@ export async function getVehicleForReview(id: string) {
   const vehicle = await findVehicle(id);
   const [host, settings] = await Promise.all([
     UserModel.findById(vehicle.hostId)
-      .select('firstName lastName email phone emailVerifiedAt phoneVerifiedAt hostProfile.status')
+      .select(
+        'firstName lastName email phone emailVerifiedAt phoneVerifiedAt hostProfile.status hostProfile.payoutsEnabled',
+      )
       .lean(),
     getPlatformSettings(),
   ]);
@@ -176,6 +197,7 @@ export async function getVehicleForReview(id: string) {
       email: host?.email ?? '',
       ...(host?.phone && host.phoneVerifiedAt && { phone: host.phone }),
       status: host?.hostProfile?.status ?? null,
+      payoutsEnabled: Boolean(host?.hostProfile?.payoutsEnabled),
       emailVerified: Boolean(host?.emailVerifiedAt),
       phoneVerified: Boolean(host?.phoneVerifiedAt),
     },

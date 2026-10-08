@@ -3,7 +3,7 @@ import { HOST_STATUSES } from '../users/user.model.js';
 import { hostVehicleSchema } from '../vehicles/host-vehicles.schemas.js';
 import { VEHICLE_STATUSES } from '../vehicles/vehicle.model.js';
 
-/* The staff portal's basic approval queues (plan §9, Days 8–11). The full admin dashboard is Phase 3. */
+/* The staff portal's approval queues (plan §9, Days 8–11): Host applications and listings. */
 
 export const hostApplicationSchema = z
   .object({
@@ -17,6 +17,10 @@ export const hostApplicationSchema = z
     identityStatus: z
       .enum(['NONE', 'PENDING', 'APPROVED', 'REJECTED'])
       .meta({ description: 'The Host’s identity check (plan §9, Days 19–20)' }),
+    identityRequired: z.boolean().meta({
+      description:
+        'Whether approval waits for a passed identity check (the identityForHosts platform setting)',
+    }),
     status: z.enum(HOST_STATUSES),
     appliedAt: z.iso.datetime(),
     bio: z.string().optional(),
@@ -69,6 +73,9 @@ export const adminVehicleSchema = z
         .optional()
         .meta({ description: 'The verified mobile, to reach the Host about the listing' }),
       status: z.enum(HOST_STATUSES).nullable(),
+      payoutsEnabled: z
+        .boolean()
+        .meta({ description: 'Payout setup is done, so an approved listing goes live at once (plan §8.2)' }),
       emailVerified: z.boolean(),
       phoneVerified: z.boolean(),
     }),

@@ -173,6 +173,9 @@ export const hostVehicleSchema = z
     slug: z.string(),
     title: z.string(),
     status: z.enum(VEHICLE_STATUSES),
+    waitingForPayouts: z.boolean().meta({
+      description: 'Approved, but out of search until the Host finishes payout setup (plan §8.2)',
+    }),
     reviewNotes: z.string().optional(),
     onboardingStep: z.number().int(),
     regoPlate: z.string().optional(),
@@ -283,6 +286,9 @@ export const hostVehicleSummarySchema = z
     slug: z.string(),
     title: z.string(),
     status: z.enum(VEHICLE_STATUSES),
+    waitingForPayouts: z.boolean().meta({
+      description: 'Approved, but out of search until the Host finishes payout setup (plan §8.2)',
+    }),
     onboardingStep: z.number().int(),
     photo: z.string().nullable(),
     missingCount: z.number().int(),

@@ -5,10 +5,10 @@ import { maskPhone } from '../../lib/phone.js';
 import { logger } from '../logger.js';
 
 /**
- * Text messages other than verification codes (plan §7): new booking requests for Hosts now, and
- * pickup and return reminders with Phase 3. Twilio's Messages API in production, from a Messaging
- * Service or a Twilio number; the console driver logs them locally, and the dummy driver logs them on a
- * deployed API until Twilio has a sender.
+ * Text messages other than verification codes (plan §7): new booking requests for Hosts, pickup and
+ * return reminders, and unread messages for those who opt in. Twilio's Messages API in production, from
+ * a Messaging Service or a Twilio number; the console driver logs them locally, and the dummy driver logs
+ * them on a deployed API until Twilio has a sender.
  */
 export interface SmsSender {
   readonly provider: 'twilio' | 'console' | 'dummy';

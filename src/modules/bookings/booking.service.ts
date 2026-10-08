@@ -126,8 +126,8 @@ export async function createBooking(
   });
   if (trip.problems.length > 0) throw tripProblemError(trip.problems[0]!);
 
-  // Verification at checkout (plan §6.1, §8.2): mobile and licence now; the identity check joins on
-  // Days 19–20, when a check in review turns an Instant Book into a request.
+  // Verification at checkout (plan §6.1, §8.2): mobile, licence and the identity check. A check in review
+  // turns an Instant Book into a request.
   const problems = eligibilityProblems(guest, settings, trip.endAt, now);
   if (problems.length > 0) {
     throw new HttpError(409, 'VERIFICATION_REQUIRED', problems[0]!.message, {

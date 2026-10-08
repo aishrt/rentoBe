@@ -1,5 +1,6 @@
 import { env } from '../../env.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
+import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { notify } from '../notifications/notify.js';
 import { AGREEMENT_VERSIONS } from '../users/agreements.js';
@@ -14,7 +15,7 @@ import type { HostApplicationInput, HostProfilePatch, HostProfileView } from './
 
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
 
-export function toHostProfileView(profile: HostProfile): HostProfileView {
+export function toHostProfileView(profile: HostProfile, identityRequired: boolean): HostProfileView {
   return {
     status: profile.status,
     appliedAt: profile.appliedAt.toISOString(),
@@ -23,10 +24,16 @@ export function toHostProfileView(profile: HostProfile): HostProfileView {
     gstRegistered: profile.gstRegistered,
     ...(profile.gstNumber && { gstNumber: profile.gstNumber }),
     payoutsEnabled: profile.payoutsEnabled,
+    identityRequired,
     rating: profile.rating ?? { avg: 0, count: 0 },
     tripCount: profile.tripCount ?? 0,
     ...(profile.responseRate !== undefined && { responseRate: profile.responseRate }),
   };
+}
+
+/** The view, saying whether approval waits for the identity check (the `identityForHosts` setting). */
+async function profileView(profile: HostProfile): Promise<HostProfileView> {
+  return toHostProfileView(profile, (await getPlatformSettings()).verification.identityForHosts);
 }
 
 async function activeUser(userId: string) {
@@ -92,14 +99,14 @@ export async function applyToHost(
       },
     });
   }
-  return toHostProfileView(user.hostProfile!);
+  return profileView(user.hostProfile!);
 }
 
 /** GET /me/host-profile. */
 export async function getHostProfile(userId: string): Promise<HostProfileView> {
   const user = await activeUser(userId);
   if (!user.hostProfile) throw new HttpError(404, 'NOT_A_HOST', "You haven't applied to host yet.");
-  return toHostProfileView(user.hostProfile);
+  return profileView(user.hostProfile);
 }
 
 /** PATCH /me/host-profile: bio and GST details (plan §11). */
@@ -117,5 +124,5 @@ export async function updateHostProfile(userId: string, patch: HostProfilePatch)
   user.hostProfile.gstRegistered = gstRegistered;
   user.hostProfile.gstNumber = gstRegistered ? gstNumber : undefined;
   await user.save();
-  return toHostProfileView(user.hostProfile);
+  return profileView(user.hostProfile);
 }

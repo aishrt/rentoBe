@@ -18,8 +18,8 @@ import {
 
 /**
  * Mounted at /api/v1/notifications: the in-app notifications behind the header's bell and the
- * Notifications page (plan §7). The bell refreshes every minute until Socket.IO messaging arrives in
- * Phase 3.
+ * Notifications page (plan §7). New ones arrive live over Socket.IO; the bell also polls, in case the
+ * connection drops.
  */
 export function notificationsRouter() {
   const router = Router();
