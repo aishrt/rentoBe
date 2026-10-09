@@ -431,9 +431,46 @@ export async function patchVehicle(
   if (patch.onboardingStep) vehicle.onboardingStep = patch.onboardingStep;
 
   const changedKeys = KEY_FIELDS.filter((key) => String(before[key] ?? '') !== String(vehicle[key] ?? ''));
-  if (LIVE.includes(vehicle.status) && changedKeys.length > 0) {
-    vehicle.status = 'UNDER_REVIEW';
-    vehicle.reviewNotes = undefined;
+  // A listing already back for review over its key details keeps adding to them until staff decide (its
+  // list stays, even emptied by edits put back, until then).
+  const keyReview =
+    ['UNDER_REVIEW', 'CHANGES_REQUESTED'].includes(vehicle.status) && Array.isArray(vehicle.keyChanges);
+  if ((LIVE.includes(vehicle.status) || keyReview) && changedKeys.length > 0) {
+    if (LIVE.includes(vehicle.status)) {
+      vehicle.status = 'UNDER_REVIEW';
+      vehicle.reviewNotes = undefined;
+    }
+    // What the reviewer compares (plan §3, changes to live listings): each detail as it was while live and
+    // as it is now. Edits before the review keep the live value with the latest one, and a detail put back
+    // as it was drops out.
+    type KeyField = (typeof KEY_FIELDS)[number];
+    const text = (value: unknown) =>
+      value === undefined || value === null || value === '' ? undefined : String(value);
+    const changedAt = new Date();
+    const changes = new Map<KeyField, { field: KeyField; before?: string; after?: string; changedAt: Date }>(
+      (vehicle.keyChanges ?? []).map((change) => [
+        change.field,
+        {
+          field: change.field,
+          ...(change.before !== undefined && { before: change.before }),
+          ...(change.after !== undefined && { after: change.after }),
+          changedAt: change.changedAt,
+        },
+      ]),
+    );
+    for (const key of changedKeys) {
+      const live = changes.has(key) ? changes.get(key)!.before : text(before[key]);
+      const now = text(vehicle.get(key));
+      if (live === now) changes.delete(key);
+      else
+        changes.set(key, {
+          field: key,
+          ...(live !== undefined && { before: live }),
+          ...(now !== undefined && { after: now }),
+          changedAt,
+        });
+    }
+    vehicle.set('keyChanges', [...changes.values()]);
     await recordAudit({
       actorId: userId,
       action: 'vehicle.key-details-changed',
@@ -674,6 +711,38 @@ export async function hostCalendar(vehicleId: Types.ObjectId, from: Date, to: Da
       }),
     };
   });
+}
+
+/** Cars without a calendar to show: drafts, and listings taken down for good (as on the Calendar tab). */
+const NO_CALENDAR: VehicleStatus[] = ['DRAFT', 'REJECTED', 'SUSPENDED'];
+
+/** The car's cover, as on My Vehicles: the front, or else the first photo not rejected. */
+function coverPhoto(vehicle: VehicleDocument): string | null {
+  const cover =
+    vehicle.photos.find((photo) => photo.type === 'FRONT' && photo.status !== 'REJECTED') ??
+    vehicle.photos.find((photo) => photo.status !== 'REJECTED');
+  return cover?.url ?? null;
+}
+
+/**
+ * GET /host/calendar: the Calendar tab across all the Host's cars (plan §12.6). Only their own cars with a
+ * calendar, in the order they were added, each with its blocks as the car's own calendar shows them, so
+ * the labels match.
+ */
+export async function allCarsCalendar(userId: string, from: Date, to: Date) {
+  const vehicles = await VehicleModel.find({
+    hostId: userId,
+    status: mongoose.trusted({ $nin: NO_CALENDAR }),
+  }).sort({ _id: 1 });
+  return Promise.all(
+    vehicles.map(async (vehicle) => ({
+      id: vehicle.id,
+      title: vehicleTitle(vehicle),
+      photo: coverPhoto(vehicle),
+      status: vehicle.status,
+      blocks: await hostCalendar(vehicle._id, from, to),
+    })),
+  );
 }
 
 /** POST /host/vehicles/{id}/blocks (and the staff calendar override, plan §9, Days 10–11). */

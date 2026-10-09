@@ -34,6 +34,11 @@ export const newIncidentSchema = z
     error: 'Only a damage report can include the damage flagged at check-out',
     path: ['fromCheckOutDamage'],
   })
+  // A toll or an infringement notice is reported with the notice itself (plan §8.2, tolls and fines).
+  .refine((input) => !['TOLL', 'FINE'].includes(input.type) || input.attachments.length > 0, {
+    error: 'Attach a photo or PDF of the notice',
+    path: ['attachments'],
+  })
   .meta({ id: 'NewIncidentRequest' });
 export type NewIncidentInput = z.infer<typeof newIncidentSchema>;
 

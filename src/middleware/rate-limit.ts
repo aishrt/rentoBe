@@ -163,6 +163,19 @@ export const messageRateLimit = () =>
     message: "You've sent a lot of messages in a short time. Please wait a few minutes.",
   });
 
+/**
+ * Signed upload targets, per user: plenty for a listing's photos and documents and a trip's inspections, but
+ * not an open tap into private storage (plan §14).
+ */
+export const uploadRateLimit = () =>
+  limitRequests({
+    name: 'upload',
+    windowMs: 60 * MINUTE,
+    limit: 300,
+    perUser: true,
+    message: "You've uploaded a lot of files in a short time. Please try again in an hour.",
+  });
+
 /** Reports of users, messages, reviews and listings, per user. */
 export const reportRateLimit = () =>
   limitRequests({

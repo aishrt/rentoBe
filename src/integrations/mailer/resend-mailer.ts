@@ -23,6 +23,7 @@ export function createResendMailer({ apiKey, from, replyTo, client }: ResendMail
         html: message.html,
         text: message.text,
         ...((message.replyTo ?? replyTo) && { replyTo: message.replyTo ?? replyTo }),
+        ...(message.headers && { headers: message.headers }),
       });
       if (error || !data) {
         throw new MailerError(`Resend did not accept the email: ${error?.message ?? 'empty response'}`);

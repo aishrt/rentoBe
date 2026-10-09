@@ -10,6 +10,8 @@ import { confirmBooking, endBooking } from '../src/modules/bookings/booking-tran
 import { IncidentModel } from '../src/modules/incidents/incident.model.js';
 import { maskContactDetails, MASKED } from '../src/modules/messages/masking.js';
 import { MessageModel } from '../src/modules/messages/message.model.js';
+import { REMOVED_MESSAGE_NOTICE } from '../src/modules/messages/messages.schemas.js';
+import { getThread, sendMessage } from '../src/modules/messages/messages.service.js';
 import { ThreadModel } from '../src/modules/messages/thread.model.js';
 import { ReportModel } from '../src/modules/moderation/report.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
@@ -456,5 +458,160 @@ describe('automated booking messages and reminders', () => {
         channel: 'EMAIL',
       }),
     ).toBe(1);
+  });
+});
+
+describe('moderation and suspended accounts', () => {
+  it('lets support remove a reported message: both sides see a notice, staff still see it', async () => {
+    const { booking, host, guestAgent, hostAgent } = await trip();
+    const sent = await guestAgent
+      .post(`/api/v1/threads/${booking.ref}/messages`)
+      .send({ body: 'Pay me in cash or else' });
+    const report = await hostAgent
+      .post('/api/v1/reports')
+      .send({ targetType: 'MESSAGE', targetId: sent.body.message.id, reason: 'HARASSMENT' });
+    await createStaff('aroha@example.co.nz', 'SUPPORT');
+    const staff = await staffAgent();
+    const queue = async () => (await staff.get('/api/v1/admin/moderation/reports')).body.reports[0];
+    expect((await queue()).messageRemoved).toBeUndefined();
+
+    const removed = await staff
+      .post(`/api/v1/admin/moderation/messages/${sent.body.message.id}/remove`)
+      .send({ reason: 'Threatening the Host' });
+    expect(removed.status).toBe(200);
+    // Only what happened: staff read the words in the conversation, opened from the report.
+    expect(removed.body).toEqual({ id: sent.body.message.id, removed: true });
+    expect(await AuditLogModel.findOne({ action: 'message.removed' }).lean()).toMatchObject({
+      entity: 'message',
+      entityId: sent.body.message.id,
+      after: { bookingRef: booking.ref, reason: 'Threatening the Host' },
+    });
+
+    // Both sides see only the notice, in the conversation and the inbox, without why.
+    for (const agent of [guestAgent, hostAgent]) {
+      const [message] = (await agent.get(`/api/v1/threads/${booking.ref}/messages`)).body.messages;
+      expect(message).toMatchObject({ body: REMOVED_MESSAGE_NOTICE, attachments: [] });
+      expect(message.removed).toEqual({ at: expect.any(String) });
+      expect((await agent.get('/api/v1/threads')).body.threads[0].lastMessage.body).toBe(
+        REMOVED_MESSAGE_NOTICE,
+      );
+    }
+    // Nor is it emailed on.
+    const [job] = await JobModel.find({ type: 'messages.unreadEmail' });
+    await unreadMessageEmailJob(job!.payload as { threadId: string; recipientId: string }, context);
+    expect(await NotificationModel.countDocuments({ userId: host._id, type: 'NEW_MESSAGE' })).toBe(0);
+
+    // Staff still read it, marked removed, in the report and the conversation.
+    expect((await queue()).messageRemoved).toEqual({
+      at: expect.any(String),
+      reason: 'Threatening the Host',
+    });
+    const thread = await staff.get(
+      `/api/v1/admin/bookings/${booking.ref}/thread?context=REPORT:${report.body.id}`,
+    );
+    expect(thread.body.messages[0]).toMatchObject({
+      body: 'Pay me in cash or else',
+      removed: { reason: 'Threatening the Host' },
+    });
+
+    const again = await staff
+      .post(`/api/v1/admin/moderation/messages/${sent.body.message.id}/remove`)
+      .send({ reason: 'Threatening the Host' });
+    expect(again.body.error.code).toBe('ALREADY_REMOVED');
+    await pickupReminderJob({ bookingId: booking.id, hoursBefore: 24 }, context);
+    const automated = await MessageModel.findOne({ systemGenerated: true }).lean();
+    const system = await staff
+      .post(`/api/v1/admin/moderation/messages/${automated!._id.toString()}/remove`)
+      .send({ reason: 'Testing it' });
+    expect(system.body.error.code).toBe('SYSTEM_MESSAGE');
+    expect(
+      (await staff.post('/api/v1/admin/moderation/messages/nope/remove').send({ reason: 'Gone' })).status,
+    ).toBe(404);
+    // Then the report is resolved as actioned.
+    const resolved = await staff
+      .post(`/api/v1/admin/moderation/reports/${report.body.id}/resolve`)
+      .send({ status: 'ACTIONED', resolution: 'Removed the message' });
+    expect(resolved.body.report).toMatchObject({ status: 'ACTIONED', messageRemoved: expect.any(Object) });
+  });
+
+  it('removes only a reported message, and takes its words out of the recipient’s notice too', async () => {
+    const { booking, host, guestAgent, hostAgent } = await trip();
+    const sent = await guestAgent
+      .post(`/api/v1/threads/${booking.ref}/messages`)
+      .send({ body: 'Pay me in cash or else' });
+    await createStaff('aroha@example.co.nz', 'SUPPORT');
+    const staff = await staffAgent();
+    const remove = () =>
+      staff
+        .post(`/api/v1/admin/moderation/messages/${sent.body.message.id}/remove`)
+        .send({ reason: 'Threatening the Host' });
+
+    // A message id alone opens nothing (plan §6.2: staff act from a report, an incident or a ticket).
+    const unreported = await remove();
+    expect(unreported.status).toBe(409);
+    expect(unreported.body.error.code).toBe('NOT_REPORTED');
+    expect((await MessageModel.findById(sent.body.message.id).lean())!.hiddenAt).toBeUndefined();
+
+    // The Host was emailed and notified about it before anyone reported it.
+    const [job] = await JobModel.find({ type: 'messages.unreadEmail' });
+    await unreadMessageEmailJob(job!.payload as { threadId: string; recipientId: string }, context);
+    const notice = { userId: host._id, type: 'NEW_MESSAGE' };
+    expect((await NotificationModel.findOne({ ...notice, channel: 'IN_APP' }).lean())!.payload).toMatchObject(
+      {
+        body: 'Pay me in cash or else',
+      },
+    );
+
+    await hostAgent
+      .post('/api/v1/reports')
+      .send({ targetType: 'MESSAGE', targetId: sent.body.message.id, reason: 'HARASSMENT' });
+    expect((await remove()).status).toBe(200);
+    expect((await NotificationModel.findOne({ ...notice, channel: 'IN_APP' }).lean())!.payload).toMatchObject(
+      {
+        body: REMOVED_MESSAGE_NOTICE,
+      },
+    );
+    const email = await NotificationModel.findOne({ ...notice, channel: 'EMAIL' }).lean();
+    expect((email!.payload as { props: { snippet: string } }).props.snippet).toBe(REMOVED_MESSAGE_NOTICE);
+  });
+
+  it('stops a suspended member’s messages, and holds the conversation on the other side', async () => {
+    const { booking, guest, hostAgent } = await trip();
+    await UserModel.updateOne({ _id: guest._id }, { $set: { status: 'SUSPENDED' } });
+    const asGuest = { userId: guest.id, roles: ['GUEST'] as const };
+
+    // Their own messages stop, whatever the conversation, with a reason the website shows.
+    await expect(
+      sendMessage(asGuest, booking.ref, { body: 'Hello?', attachments: [] }),
+    ).rejects.toMatchObject({
+      status: 403,
+      code: 'ACCOUNT_SUSPENDED',
+    });
+    expect(await getThread(asGuest, booking.ref)).toMatchObject({
+      canSend: false,
+      readOnlyReason: expect.stringContaining('Your account is suspended'),
+    });
+
+    // The other side can't message them meanwhile, and is told why.
+    expect((await hostAgent.get(`/api/v1/threads/${booking.ref}`)).body.thread).toMatchObject({
+      canSend: false,
+      readOnlyReason: expect.stringContaining('Kiri’s account is on hold'),
+    });
+    const held = await hostAgent
+      .post(`/api/v1/threads/${booking.ref}/messages`)
+      .send({ body: 'See you soon' });
+    expect(held.status).toBe(409);
+    expect(held.body.error.code).toBe('THREAD_CLOSED');
+
+    // Rento Vroom's booking messages still arrive.
+    await pickupReminderJob({ bookingId: booking.id, hoursBefore: 24 }, context);
+    const thread = await ThreadModel.findOne({ bookingId: booking._id });
+    expect(await MessageModel.countDocuments({ threadId: thread!._id, systemGenerated: true })).toBe(1);
+
+    await UserModel.updateOne({ _id: guest._id }, { $set: { status: 'ACTIVE' } });
+    expect(
+      (await hostAgent.post(`/api/v1/threads/${booking.ref}/messages`).send({ body: 'See you soon' })).status,
+    ).toBe(201);
+    expect((await sendMessage(asGuest, booking.ref, { body: 'Thanks!', attachments: [] })).from).toBe('ME');
   });
 });

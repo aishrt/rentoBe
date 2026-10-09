@@ -21,10 +21,25 @@ export const optionalAuth: RequestHandler = (req, _res, next) => {
   next();
 };
 
-export const requireAuth: RequestHandler = (req, _res, next) => {
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Suspending or closing an account deletes its sessions, but its access token stays valid for up to
+ * 15 minutes. Reads may finish that time; every change is refused at once (plan §8.2: a suspended user's
+ * messages, bookings and listings stop straight away). Closed accounts are suspended too.
+ */
+export const requireAuth: RequestHandler = async (req, _res, next) => {
   const token = readAccessToken(req);
   const auth = token ? verifyAccessToken(token) : null;
   if (!auth) return next(unauthenticated());
+  if (!READ_METHODS.has(req.method)) {
+    try {
+      const user = await UserModel.findById(auth.userId).select('status').lean();
+      if (!user || user.status !== 'ACTIVE') return next(unauthenticated());
+    } catch (error) {
+      return next(error);
+    }
+  }
   req.auth = auth;
   next();
 };
@@ -53,6 +68,13 @@ export function requirePermission(permission: Permission): RequestHandler {
     }
     next();
   };
+}
+
+/** The same check inside a route, for an action that needs the permission only sometimes. */
+export async function hasPermission(userId: string, permission: Permission): Promise<boolean> {
+  const user = await UserModel.findById(userId).select('email roles permissions status');
+  if (!user || user.status !== 'ACTIVE') return false;
+  return effectiveRoles(user).includes('ADMIN') || user.permissions.includes(permission);
 }
 
 /**

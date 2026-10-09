@@ -1,21 +1,25 @@
-import type { ClientSession } from 'mongoose';
+import mongoose, { type ClientSession } from 'mongoose';
 import Stripe from 'stripe';
 import { withTransaction } from '../../db.js';
 import { CHARGE_CURRENCY, stripe } from '../../integrations/stripe.js';
 import { logger } from '../../integrations/logger.js';
 import { reportError } from '../../integrations/sentry.js';
 import { enqueue } from '../../jobs/queue.js';
+import { formatNzdExact } from '../../lib/format.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
+import { tripDatesStillHeld } from '../availability/availability.service.js';
 import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
 import { ensureCustomer } from '../payments/stripe-customer.js';
+import { alertStaff } from '../staff/staff-alerts.js';
 import { checkFailedPayments, queuePaymentRiskCheck } from '../risk/risk-signals.js';
 import { AGREEMENT_VERSIONS } from '../users/agreements.js';
 import { verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel } from '../users/user.model.js';
+import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { BookingModel, type BookingDocument } from './booking.model.js';
 import { notifyPaymentFailed } from './booking-notifications.js';
-import { confirmBooking, markRequested } from './booking-transitions.js';
+import { confirmBooking, endBooking, markRequested } from './booking-transitions.js';
 import { loadBookingContext, type BookingRecord } from './booking-view.js';
 import type { PaymentSession } from './bookings.schemas.js';
 
@@ -56,6 +60,8 @@ export async function preparePayment(
       'We held these dates for 30 minutes and the time is up. Please start again.',
     );
   }
+
+  if (!(await vehicleTakesBookings(booking.vehicleId))) throw vehicleSuspended();
 
   const user = await UserModel.findById(guestId);
   if (!user) throw unauthenticated();
@@ -173,6 +179,8 @@ export async function applyPaymentIntent(
 
   switch (intent.status) {
     case 'succeeded': {
+      // Already taken before this call: a cancellation since then decided what's refunded, not this.
+      const wasPaid = ['SUCCEEDED', 'PARTIALLY_REFUNDED', 'REFUNDED'].includes(payment.status);
       if (payment.status === 'PENDING' || payment.status === 'AUTHORISED' || payment.status === 'FAILED') {
         // An authorised request was checked when it was authorised.
         if (payment.status !== 'AUTHORISED') await queuePaymentRiskCheck(payment.id, session);
@@ -181,12 +189,16 @@ export async function applyPaymentIntent(
         await payment.save({ session });
       }
       if (booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING') {
-        await confirmBooking(booking, payment, session, now);
+        const unwanted = await whyUnwanted(booking, session, now);
+        if (unwanted) await endUnwanted(booking, payment, unwanted, session, now);
+        else await confirmBooking(booking, payment, session, now);
       } else if (
+        !wasPaid &&
         ['EXPIRED', 'CANCELLED', 'DECLINED'].includes(booking.status) &&
         payment.refunds.length === 0
       ) {
         // Paid after the dates were released (a very late payment): give it all back.
+        await BookingModel.updateOne({ _id: booking._id }, { $set: { paymentReturnedAt: now } }, { session });
         await enqueue(
           'payment.refundUnwanted',
           { paymentId: payment.id },
@@ -202,7 +214,11 @@ export async function applyPaymentIntent(
         payment.failureReason = undefined;
         await payment.save({ session });
       }
-      if (booking.status === 'PAYMENT_PENDING') await markRequested(booking, session, now);
+      if (booking.status === 'PAYMENT_PENDING') {
+        const unwanted = await whyUnwanted(booking, session, now);
+        if (unwanted) await endUnwanted(booking, payment, unwanted, session, now);
+        else await markRequested(booking, session, now);
+      }
       return;
     }
     case 'canceled': {
@@ -232,6 +248,73 @@ export async function applyPaymentIntent(
     default:
       return;
   }
+}
+
+/** Whether a car can take new bookings: not suspended by staff, and its Host not suspended (plan §8.2). */
+export async function vehicleTakesBookings(vehicleId: BookingDocument['vehicleId'], session?: ClientSession) {
+  const live = await VehicleModel.exists({
+    _id: vehicleId,
+    status: mongoose.trusted({ $ne: 'SUSPENDED' }),
+    hostSuspended: mongoose.trusted({ $ne: true }),
+  }).session(session ?? null);
+  return Boolean(live);
+}
+
+export const vehicleSuspended = () =>
+  new HttpError(
+    409,
+    'VEHICLE_SUSPENDED',
+    'This car is suspended at the moment, so it can’t take new bookings.',
+  );
+
+export type UnwantedReason = 'DATES_TAKEN' | 'CAR_UNAVAILABLE';
+
+/**
+ * Why a payment that just went through can't make its booking, if it can't: a new checkout whose car was
+ * suspended meanwhile, or whose dates went to someone else after its hold ran out (plan §8.2).
+ */
+async function whyUnwanted(
+  booking: BookingDocument,
+  session: ClientSession,
+  now: Date,
+): Promise<UnwantedReason | null> {
+  if (booking.status === 'PAYMENT_PENDING' && !(await vehicleTakesBookings(booking.vehicleId, session))) {
+    return 'CAR_UNAVAILABLE';
+  }
+  return (await tripDatesStillHeld(booking, session, now)) ? null : 'DATES_TAKEN';
+}
+
+/**
+ * The booking can't be made after all: it ends, the money goes back (a charge is refunded, an authorisation
+ * released) and the Guest is told why.
+ */
+async function endUnwanted(
+  booking: BookingDocument,
+  payment: PaymentDocument,
+  reason: UnwantedReason,
+  session: ClientSession,
+  now: Date,
+) {
+  const ended = await endBooking(
+    booking,
+    {
+      to: 'EXPIRED',
+      from: ['PAYMENT_PENDING', 'PENDING'],
+      reason:
+        reason === 'DATES_TAKEN'
+          ? 'The dates were booked by someone else while the payment was processing'
+          : 'The car was suspended while the payment was processing',
+      now,
+    },
+    session,
+  );
+  if (!ended) return;
+  await BookingModel.updateOne({ _id: booking._id }, { $set: { paymentReturnedAt: now } }, { session });
+  await enqueue(
+    'payment.refundUnwanted',
+    { paymentId: payment.id, reason },
+    { uniqueKey: `refund-unwanted:${payment.id}`, refId: booking.id, session },
+  );
 }
 
 /** POST /bookings/{id}/payment/sync: after Stripe.js confirms, apply the result straight away. */
@@ -300,6 +383,17 @@ export async function refundIntent(
       },
       { idempotencyKey: key },
     );
+    if (refund.status === 'failed') {
+      // Stripe usually reports a failed refund later (refund.failed); one that fails at once is alerted here,
+      // as the webhook skips a refund already recorded as failed (plan §8.1, item 21).
+      await alertStaff({
+        type: 'REFUND_FAILED',
+        title: 'A refund failed',
+        body: `a refund of ${formatNzdExact(amount)} failed (${refund.failure_reason ?? 'unknown'}). Please return the money to the guest another way.`,
+        link: '/admin/payments',
+        dedupeKey: `REFUND_FAILED:${refund.id}`,
+      });
+    }
     return {
       amountCents: amount,
       stripeRefundId: refund.id,

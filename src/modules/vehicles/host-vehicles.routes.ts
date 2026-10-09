@@ -6,6 +6,7 @@ import { requireAuth } from '../../middleware/auth.js';
 import { maintenanceInputSchema } from '../hosts/host-reminders.schemas.js';
 import { getMaintenance, hostTodo, saveMaintenance } from '../hosts/host-reminders.service.js';
 import {
+  allCarsCalendarQuerySchema,
   blockInputSchema,
   documentAttachSchema,
   photoAttachSchema,
@@ -13,6 +14,7 @@ import {
   vehiclePatchSchema,
 } from './host-vehicles.schemas.js';
 import {
+  allCarsCalendar,
   attachDocument,
   attachPhoto,
   blockDates,
@@ -111,6 +113,19 @@ export function hostRouter() {
       to: to.toISOString(),
       blocks: await hostCalendar(vehicle._id, from, to),
       rules: { minNoticeHours: vehicle.rules.minNoticeHours, bufferHours: vehicle.rules.bufferHours },
+    });
+  });
+
+  // The Calendar tab across all the Host's cars (plan §12.6): their own cars only, two months at most.
+  router.get('/calendar', async (req, res) => {
+    const query = validate(allCarsCalendarQuerySchema, req.query);
+    // Checked above: real dates, so they're always NZ days the calendar can read.
+    const from = parseCalendarTime(query.from)!;
+    const to = parseCalendarTime(query.to)!;
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      vehicles: await allCarsCalendar(req.auth!.userId, from, to),
     });
   });
 

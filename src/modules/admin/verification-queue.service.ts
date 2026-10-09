@@ -27,12 +27,9 @@ export const staffLicenceSchema = z.object({
   version: z.string().optional(),
   expiry: z.string(),
   issuedAt: z.string().optional(),
-  inEnglish: z
-    .boolean()
-    .optional()
-    .meta({
-      description: 'Overseas licences: false when it isn’t in English, which then needs English proof',
-    }),
+  inEnglish: z.boolean().optional().meta({
+    description: 'Overseas licences: false when it isn’t in English, which then needs English proof',
+  }),
   englishProof: z.string().optional(),
   status: z.string(),
 });
@@ -151,29 +148,38 @@ type QueueUser = Pick<
   | 'updatedAt'
 > & { _id: mongoose.Types.ObjectId };
 
+/** Identity checks in review: the first part of the queue. */
+export const identityReviewFilter = () => ({
+  'identityVerification.status': 'PENDING',
+  closedAt: mongoose.trusted({ $exists: false }),
+});
+
+/**
+ * Licences only a person can confirm (plan §8.2): after an identity check that didn't confirm them, or with no
+ * identity check needed before booking. One whose identity check is in review comes with that check; one
+ * waiting for an identity check still to come may be confirmed by it. The overview counts the same.
+ */
+export async function licenceReviewFilter() {
+  const settings = await getPlatformSettings();
+  return {
+    'driverLicence.status': 'PENDING',
+    'identityVerification.status': mongoose.trusted({
+      $in: settings.verification.identityBeforeFirstBooking ? ['APPROVED'] : ['APPROVED', 'NONE', null],
+    }),
+    closedAt: mongoose.trusted({ $exists: false }),
+  };
+}
+
 /** GET /admin/verifications: identity checks to review first, then licences to check by hand. */
 export async function verificationQueue(): Promise<VerificationItem[]> {
   const fields = 'firstName lastName email dob driverLicence identityVerification riskFlags updatedAt';
-  const settings = await getPlatformSettings();
   const [identities, licences] = await Promise.all([
-    UserModel.find({
-      'identityVerification.status': 'PENDING',
-      closedAt: mongoose.trusted({ $exists: false }),
-    })
+    UserModel.find(identityReviewFilter())
       .select(fields)
       .sort({ updatedAt: 1 })
       .limit(100)
       .lean<QueueUser[]>(),
-    // Licences only a person can confirm (plan §8.2): after an identity check that didn't confirm them, or with
-    // no identity check needed before booking. One whose identity check is in review comes with that check;
-    // one waiting for an identity check still to come may be confirmed by it.
-    UserModel.find({
-      'driverLicence.status': 'PENDING',
-      'identityVerification.status': mongoose.trusted({
-        $in: settings.verification.identityBeforeFirstBooking ? ['APPROVED'] : ['APPROVED', 'NONE', null],
-      }),
-      closedAt: mongoose.trusted({ $exists: false }),
-    })
+    UserModel.find(await licenceReviewFilter())
       .select(fields)
       .sort({ updatedAt: 1 })
       .limit(100)

@@ -1092,6 +1092,13 @@
               "type": "string"
             },
             "description": "Set when the other part (the identity check or the licence) still waits for support: the bookings that keep waiting for it"
+          },
+          "carSuspended": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bookings not confirmed because their car (or its Host) is suspended: confirmed when the suspension is lifted, unless their time runs out first"
           }
         },
         "required": [
@@ -5671,6 +5678,14 @@
                 ]
               }
             ]
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentInput"
+            },
+            "maxItems": 10,
+            "description": "Signed in only: photos and PDFs uploaded first with purpose SUPPORT_FILE"
           }
         },
         "required": [
@@ -5678,6 +5693,27 @@
           "email",
           "subject",
           "message"
+        ]
+      },
+      "AttachmentInput": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "contentType": {
+            "type": "string",
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "key"
         ]
       },
       "SupportTickets": {
@@ -5817,6 +5853,12 @@
                 "body": {
                   "type": "string"
                 },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Attachment"
+                  }
+                },
                 "createdAt": {
                   "type": "string",
                   "format": "date-time"
@@ -5826,6 +5868,7 @@
                 "id",
                 "from",
                 "body",
+                "attachments",
                 "createdAt"
               ]
             }
@@ -5842,6 +5885,23 @@
         ],
         "description": "A user’s own ticket, without the staff’s internal notes"
       },
+      "Attachment": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "contentType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
       "TicketReply": {
         "type": "object",
         "properties": {
@@ -5849,6 +5909,15 @@
             "type": "string",
             "minLength": 2,
             "maxLength": 5000
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentInput"
+            },
+            "maxItems": 10,
+            "default": [],
+            "description": "Photos and PDFs uploaded first with purpose SUPPORT_FILE"
           }
         },
         "required": [
@@ -7312,6 +7381,73 @@
           "reason"
         ]
       },
+      "AllCarsCalendar": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CalendarCar"
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "vehicles"
+        ]
+      },
+      "CalendarCar": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "photo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "UNDER_REVIEW",
+              "CHANGES_REQUESTED",
+              "REJECTED",
+              "ACTIVE",
+              "INACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CalendarBlock"
+            },
+            "description": "As on the car’s own calendar"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "photo",
+          "status",
+          "blocks"
+        ]
+      },
       "BlockResponse": {
         "type": "object",
         "properties": {
@@ -7452,7 +7588,7 @@
           },
           "key": {
             "type": "string",
-            "description": "Attach the file to the car or booking with this once it is sent"
+            "description": "Attach the file to the car, booking or support ticket with this once it is sent"
           },
           "maxBytes": {
             "type": "integer"
@@ -7477,8 +7613,10 @@
               "VEHICLE_DOCUMENT",
               "MESSAGE_PHOTO",
               "INSPECTION_PHOTO",
-              "INCIDENT_FILE"
-            ]
+              "INCIDENT_FILE",
+              "SUPPORT_FILE"
+            ],
+            "description": "SUPPORT_FILE: a photo or PDF for one of your support tickets, needing no car or booking"
           },
           "vehicleId": {
             "type": "string",
@@ -7851,12 +7989,17 @@
           "unreadMessageSms": {
             "type": "boolean",
             "description": "A text when a message is unread after 10 minutes"
+          },
+          "unreadMessageEmail": {
+            "type": "boolean",
+            "description": "An email when a message is unread after 10 minutes (on unless turned off)"
           }
         },
         "required": [
           "marketingEmail",
           "marketingSms",
-          "unreadMessageSms"
+          "unreadMessageSms",
+          "unreadMessageEmail"
         ]
       },
       "NotificationPrefsPatch": {
@@ -7873,8 +8016,27 @@
           "unreadMessageSms": {
             "type": "boolean",
             "description": "A text when a message is unread after 10 minutes"
+          },
+          "unreadMessageEmail": {
+            "type": "boolean",
+            "description": "An email when a message is unread after 10 minutes (on unless turned off)"
           }
         }
+      },
+      "UnsubscribeResponse": {
+        "type": "object",
+        "properties": {
+          "unsubscribedFrom": {
+            "type": "string",
+            "enum": [
+              "MARKETING",
+              "MESSAGE_EMAILS"
+            ]
+          }
+        },
+        "required": [
+          "unsubscribedFrom"
+        ]
       },
       "UnsubscribeRequest": {
         "type": "object",
@@ -8103,6 +8265,21 @@
           "pendingDocuments": {
             "type": "integer"
           },
+          "keyChanges": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "regoPlate",
+                "vin",
+                "chassisNo",
+                "make",
+                "model",
+                "year"
+              ]
+            },
+            "description": "Key details the Host changed on the live listing, which sent it back for review"
+          },
           "flags": {
             "type": "integer"
           },
@@ -8118,6 +8295,7 @@
           "host",
           "pendingPhotos",
           "pendingDocuments",
+          "keyChanges",
           "flags",
           "updatedAt"
         ]
@@ -8239,6 +8417,20 @@
           "vehicle": {
             "$ref": "#/components/schemas/HostVehicle"
           },
+          "keyChanges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyChange"
+            },
+            "description": "What the Host changed among the plate, VIN, chassis number, make, model and year since the listing was live (plan §3). Empty until they change one; cleared when staff approve or reject the listing."
+          },
+          "upcomingBookings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminBookingRow"
+            },
+            "description": "While the car is suspended: its pending, confirmed and current bookings, for staff to keep or cancel (plan §8.2)"
+          },
           "host": {
             "type": "object",
             "properties": {
@@ -8292,7 +8484,124 @@
         },
         "required": [
           "vehicle",
+          "keyChanges",
           "host"
+        ]
+      },
+      "KeyChange": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string",
+            "enum": [
+              "regoPlate",
+              "vin",
+              "chassisNo",
+              "make",
+              "model",
+              "year"
+            ]
+          },
+          "before": {
+            "type": "string",
+            "description": "While the listing was live; left out when it had none"
+          },
+          "after": {
+            "type": "string",
+            "description": "Now; left out when the Host removed it"
+          },
+          "changedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "field",
+          "changedAt"
+        ]
+      },
+      "AdminBookingRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PAYMENT_PENDING",
+              "PENDING",
+              "CONFIRMED",
+              "ACTIVE",
+              "COMPLETED",
+              "CANCELLED",
+              "DECLINED",
+              "EXPIRED"
+            ]
+          },
+          "vehicleTitle": {
+            "type": "string"
+          },
+          "guest": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "totalCents": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "ref",
+          "status",
+          "vehicleTitle",
+          "guest",
+          "host",
+          "start",
+          "end",
+          "totalCents",
+          "createdAt"
         ]
       },
       "PhotoDecision": {
@@ -9396,6 +9705,27 @@
               },
               "avatarUrl": {
                 "type": "string"
+              },
+              "verified": {
+                "type": "boolean"
+              },
+              "rating": {
+                "type": "object",
+                "properties": {
+                  "avg": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "avg",
+                  "count"
+                ]
+              },
+              "tripCount": {
+                "type": "integer"
               }
             },
             "required": [
@@ -9773,6 +10103,7 @@
             "enum": [
               "GUEST_NO_SHOW",
               "HOST_NO_SHOW",
+              "HOST_CANCELLED",
               "PLATFORM"
             ]
           },
@@ -9795,6 +10126,7 @@
             "enum": [
               "GUEST_NO_SHOW",
               "HOST_NO_SHOW",
+              "HOST_CANCELLED",
               "PLATFORM"
             ]
           },
@@ -9896,6 +10228,13 @@
               "type": "string"
             },
             "description": "Set when the other part (the identity check or the licence) still waits for support: the bookings that keep waiting for it"
+          },
+          "carSuspended": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bookings not confirmed because their car (or its Host) is suspended: confirmed when the suspension is lifted, unless their time runs out first"
           }
         },
         "required": [
@@ -10283,6 +10622,23 @@
             "type": "string",
             "format": "date-time",
             "description": "Your own messages: when the other side read it"
+          },
+          "removed": {
+            "type": "object",
+            "properties": {
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "reason": {
+                "type": "string",
+                "description": "Support staff only: why it was removed"
+              }
+            },
+            "required": [
+              "at"
+            ],
+            "description": "Removed by support. The Guest and Host get the notice as the body and no photos; support staff still see the original."
           }
         },
         "required": [
@@ -10292,23 +10648,6 @@
           "body",
           "attachments",
           "createdAt"
-        ]
-      },
-      "Attachment": {
-        "type": "object",
-        "properties": {
-          "url": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "contentType": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "url"
         ]
       },
       "MessageResponse": {
@@ -10339,27 +10678,6 @@
             "default": []
           }
         }
-      },
-      "AttachmentInput": {
-        "type": "object",
-        "properties": {
-          "key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 300
-          },
-          "name": {
-            "type": "string",
-            "maxLength": 200
-          },
-          "contentType": {
-            "type": "string",
-            "maxLength": 100
-          }
-        },
-        "required": [
-          "key"
-        ]
       },
       "ReportResponse": {
         "type": "object",
@@ -10577,7 +10895,7 @@
           "damageWindowEndsAt": {
             "type": "string",
             "format": "date-time",
-            "description": "After check-out: new damage can be flagged until then"
+            "description": "After check-out: either party can flag new damage until then"
           },
           "emailVerificationNeeded": {
             "type": "boolean",
@@ -10727,9 +11045,22 @@
                   "type": "string",
                   "format": "date-time"
                 },
+                "exifTakenAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When the photo says it was taken: more than an hour from takenAt shows a photo taken earlier"
+                },
                 "uploadedAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "lat": {
+                  "type": "number",
+                  "description": "Staff only: where the device was"
+                },
+                "lng": {
+                  "type": "number",
+                  "description": "Staff only"
                 }
               },
               "required": [
@@ -10883,10 +11214,16 @@
             "format": "date-time",
             "description": "The device clock when it was taken"
           },
+          "exifTakenAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the photo says it was taken (EXIF DateTimeOriginal), for a photo chosen from the device rather than taken with the in-app camera"
+          },
           "lat": {
             "type": "number",
             "minimum": -90,
-            "maximum": 90
+            "maximum": 90,
+            "description": "Where the device was, if allowed"
           },
           "lng": {
             "type": "number",
@@ -11145,7 +11482,7 @@
           "expectedInBankBy": {
             "type": "string",
             "format": "date-time",
-            "description": "Usually in the Host’s bank by then"
+            "description": "Usually in the Host’s bank by then: from the transfer once paid, or from the scheduled date while it’s scheduled"
           },
           "booking": {
             "type": "object",
@@ -13087,90 +13424,6 @@
           "createdAt"
         ]
       },
-      "AdminBookingRow": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "ref": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "PAYMENT_PENDING",
-              "PENDING",
-              "CONFIRMED",
-              "ACTIVE",
-              "COMPLETED",
-              "CANCELLED",
-              "DECLINED",
-              "EXPIRED"
-            ]
-          },
-          "vehicleTitle": {
-            "type": "string"
-          },
-          "guest": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "host": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "start": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "end": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "totalCents": {
-            "type": "integer"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "ref",
-          "status",
-          "vehicleTitle",
-          "guest",
-          "host",
-          "start",
-          "end",
-          "totalCents",
-          "createdAt"
-        ]
-      },
       "SuspendRequest": {
         "type": "object",
         "properties": {
@@ -13561,6 +13814,48 @@
             "type": "boolean",
             "description": "The trip’s payout was sent (or is being sent, or the booking ended without one), so a Host-funded refund comes off the Host’s next payout or is taken back from the transfer"
           },
+          "refundableCharges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "paymentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "EXTRA_KM",
+                    "FUEL",
+                    "CLEANING",
+                    "LATE_RETURN",
+                    "DAMAGE",
+                    "TOLL",
+                    "FINE",
+                    "OTHER"
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "refundableCents": {
+                  "type": "integer"
+                },
+                "payoutSent": {
+                  "type": "boolean",
+                  "description": "The Host’s share of the charge was paid, so a Host-funded refund is taken back another way"
+                }
+              },
+              "required": [
+                "paymentId",
+                "type",
+                "description",
+                "refundableCents",
+                "payoutSent"
+              ]
+            },
+            "description": "Paid extra charges with something left to refund (plan §8.1, item 11)"
+          },
           "hostRefund": {
             "type": "object",
             "properties": {
@@ -13600,7 +13895,8 @@
           "payouts",
           "incidents",
           "tickets",
-          "refundableCents"
+          "refundableCents",
+          "refundableCharges"
         ]
       },
       "AdminPayment": {
@@ -13831,6 +14127,11 @@
       "AdminRefundRequest": {
         "type": "object",
         "properties": {
+          "paymentId": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{24}$",
+            "description": "One of the booking’s payments to refund, e.g. an extra charge (plan §8.1, item 11). Leave out for the booking’s own payment."
+          },
           "amountCents": {
             "type": "integer",
             "minimum": 1
@@ -13948,6 +14249,272 @@
           "payouts",
           "total",
           "page"
+        ]
+      },
+      "AdminRefunds": {
+        "type": "object",
+        "properties": {
+          "refunds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminRefundRow"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "refunds",
+          "total",
+          "page"
+        ]
+      },
+      "AdminRefundRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "paymentId": {
+            "type": "string"
+          },
+          "paymentType": {
+            "type": "string",
+            "enum": [
+              "BOOKING",
+              "EXTRA_CHARGE"
+            ]
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "guest": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "CANCELLATION",
+              "LATE_PAYMENT",
+              "STAFF"
+            ],
+            "description": "A cancellation’s own refund, a payment that arrived after its booking ended, or one staff issued. Older refunds have none."
+          },
+          "fundedBy": {
+            "type": "string",
+            "enum": [
+              "PLATFORM",
+              "HOST"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "SUCCEEDED",
+              "FAILED"
+            ]
+          },
+          "failureReason": {
+            "type": "string"
+          },
+          "issuedBy": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "description": "Staff refunds"
+          },
+          "hostRecovery": {
+            "type": "object",
+            "properties": {
+              "deductedCents": {
+                "type": "integer",
+                "description": "Taken off the Host’s payouts"
+              },
+              "reversedCents": {
+                "type": "integer",
+                "description": "Taken back from a paid payout’s Stripe transfer"
+              },
+              "owedCents": {
+                "type": "integer",
+                "description": "Still owed: comes off the Host’s next payout"
+              }
+            },
+            "required": [
+              "deductedCents",
+              "reversedCents",
+              "owedCents"
+            ],
+            "description": "A Host-funded refund: how it has been recovered from the Host (plan §8.1, item 15)"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "paymentId",
+          "paymentType",
+          "bookingRef",
+          "guest",
+          "amountCents",
+          "reason",
+          "fundedBy",
+          "status",
+          "createdAt"
+        ]
+      },
+      "AdminExtraCharges": {
+        "type": "object",
+        "properties": {
+          "charges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminExtraChargeRow"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "charges",
+          "total",
+          "page"
+        ]
+      },
+      "AdminExtraChargeRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "guest": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "EXTRA_KM",
+              "FUEL",
+              "CLEANING",
+              "LATE_RETURN",
+              "DAMAGE",
+              "TOLL",
+              "FINE",
+              "OTHER"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "SUCCEEDED",
+              "FAILED",
+              "CANCELLED"
+            ]
+          },
+          "paymentStatus": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "AUTHORISED",
+              "SUCCEEDED",
+              "FAILED",
+              "REFUNDED",
+              "PARTIALLY_REFUNDED",
+              "CANCELLED"
+            ],
+            "description": "Its payment, once the saved card has been tried"
+          },
+          "failureReason": {
+            "type": "string",
+            "description": "Why the last try failed"
+          },
+          "attempts": {
+            "type": "integer",
+            "description": "Tries on the saved card so far, while their record is kept (30 days)"
+          },
+          "nextTryAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the saved card is tried again"
+          },
+          "incidentRef": {
+            "type": "string",
+            "description": "The case it was charged from"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "bookingRef",
+          "guest",
+          "type",
+          "description",
+          "amountCents",
+          "status",
+          "createdAt"
         ]
       },
       "AdminPayoutResponse": {
@@ -14168,6 +14735,12 @@
                 "body": {
                   "type": "string"
                 },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Attachment"
+                  }
+                },
                 "internal": {
                   "type": "boolean"
                 },
@@ -14181,6 +14754,7 @@
                 "from",
                 "authorName",
                 "body",
+                "attachments",
                 "internal",
                 "createdAt"
               ]
@@ -14220,6 +14794,15 @@
               "RESOLVED"
             ],
             "description": "Defaults to PENDING after a reply"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentInput"
+            },
+            "maxItems": 10,
+            "default": [],
+            "description": "Photos and PDFs uploaded first with purpose SUPPORT_FILE. A reply has them only when the sender has an account to see them in (400 otherwise); a note always can"
           }
         },
         "required": [
@@ -14329,6 +14912,22 @@
           "review": {
             "$ref": "#/components/schemas/ModerationReview"
           },
+          "messageRemoved": {
+            "type": "object",
+            "properties": {
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "at"
+            ],
+            "description": "A reported message support removed: when, and why"
+          },
           "resolution": {
             "type": "string"
           },
@@ -14378,6 +14977,37 @@
         "required": [
           "status",
           "resolution"
+        ]
+      },
+      "RemovedMessageResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "removed"
+        ]
+      },
+      "RemoveMessageRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "reason"
         ]
       },
       "AdminFeaturedVehicles": {
@@ -21192,6 +21822,79 @@
         }
       }
     },
+    "/host/calendar": {
+      "get": {
+        "tags": [
+          "Hosting"
+        ],
+        "summary": "The calendar across all my cars",
+        "description": "The Host’s own cars with a calendar (not drafts, rejected or suspended listings), in the order they were added, each with its blocks between two NZ days: up to 62 days at a time. Blocks are as on each car’s own calendar. 400 VALIDATION_ERROR for a longer or backwards range.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "The first NZ day, 2026-10-01"
+            },
+            "required": true,
+            "description": "The first NZ day, 2026-10-01",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "The NZ day after the last one (exclusive), 2026-11-01"
+            },
+            "required": true,
+            "description": "The NZ day after the last one (exclusive), 2026-11-01",
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Each car’s calendar",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllCarsCalendar"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/host/vehicles/{id}/blocks": {
       "post": {
         "tags": [
@@ -22166,8 +22869,8 @@
         "tags": [
           "Notifications"
         ],
-        "summary": "Unsubscribe from marketing email and texts",
-        "description": "The link in every marketing email; works without signing in.",
+        "summary": "Unsubscribe from marketing email and texts, or from unread-message emails",
+        "description": "The link in every marketing email and unread-message email; works without signing in. An email app’s one-click unsubscribe (RFC 8058) posts here with `?token=` and a form body instead.",
         "requestBody": {
           "required": true,
           "content": {
@@ -22179,8 +22882,15 @@
           }
         },
         "responses": {
-          "204": {
-            "description": "Unsubscribed"
+          "200": {
+            "description": "What was turned off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnsubscribeResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid input. `error.fields` has one message per invalid field.",
@@ -24721,6 +25431,7 @@
               "enum": [
                 "GUEST_NO_SHOW",
                 "HOST_NO_SHOW",
+                "HOST_CANCELLED",
                 "PLATFORM"
               ]
             },
@@ -25109,7 +25820,7 @@
           "Messages"
         ],
         "summary": "Send a message, with up to 6 photos",
-        "description": "Photos are uploaded first with POST /uploads/signature (purpose MESSAGE_PHOTO). The other side is emailed if it’s still unread after 10 minutes.",
+        "description": "Photos are uploaded first with POST /uploads/signature (purpose MESSAGE_PHOTO). The other side is emailed if it’s still unread after 10 minutes. 403 ACCOUNT_SUSPENDED while your account is suspended; 409 THREAD_CLOSED when the conversation can’t take messages (`readOnlyReason` says why).",
         "security": [
           {
             "cookieAuth": []
@@ -25163,6 +25874,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
             "content": {
               "application/json": {
                 "schema": {
@@ -25824,7 +26545,7 @@
           "Handover"
         ],
         "summary": "Flag new damage after the trip",
-        "description": "The Guest until they confirm the check-out; the Host until the damage-report window in settings closes. Open an incident to claim for it.",
+        "description": "Either party, once the check-out is recorded, until the damage-report window in settings closes (409 DAMAGE_WINDOW_CLOSED after it). Open an incident to claim for it.",
         "security": [
           {
             "cookieAuth": []
@@ -26706,15 +27427,7 @@
           "Reviews"
         ],
         "summary": "A member’s public profile and the published reviews about them",
-        "description": "Only what each party may see of the other (plan §6.2), and the reviews about them as Guest and as Host, without the booking each came from. This is the public profile plan §11 lists as GET /users/{id}/profile. A closed or suspended account is not found.",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
+        "description": "Only what each party may see of the other (plan §6.2), and the reviews about them as Guest and as Host, without the booking each came from. This is the public profile plan §11 lists as GET /users/{id}/profile, open to visitors. A closed or suspended account is not found.",
         "parameters": [
           {
             "schema": {
@@ -26732,16 +27445,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UserReviews"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not signed in, or the session has ended",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -28360,7 +29063,8 @@
         "tags": [
           "Admin"
         ],
-        "summary": "Staff with the refunds permission: waive Host cancellation fees owed",
+        "summary": "Admin: waive Host cancellation fees owed",
+        "description": "Some or all of what the Host owes; written to the audit log (plan §8.1, item 10).",
         "security": [
           {
             "cookieAuth": []
@@ -29354,6 +30058,213 @@
         }
       }
     },
+    "/admin/refunds": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff with the refunds permission: every refund",
+        "description": "Refunds on every payment, newest first, by status, who funds them and why they were made, or by booking reference. A Host-funded refund says how it has been recovered from the Host (plan §8.1, item 15).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 20,
+              "description": "A booking reference, or part of one"
+            },
+            "required": false,
+            "description": "A booking reference, or part of one",
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PENDING",
+                "SUCCEEDED",
+                "FAILED"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PLATFORM",
+                "HOST"
+              ]
+            },
+            "required": false,
+            "name": "fundedBy",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CANCELLATION",
+                "LATE_PAYMENT",
+                "STAFF"
+              ]
+            },
+            "required": false,
+            "name": "kind",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminRefunds"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/extra-charges": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff with the refunds permission: unpaid extra charges",
+        "description": "Extra charges on any booking still being collected (PENDING) or that failed, newest first, with the last failure and the tries on the saved card (plan §8.1, item 6).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PENDING",
+                "FAILED"
+              ],
+              "description": "Both when left out"
+            },
+            "required": false,
+            "description": "Both when left out",
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminExtraCharges"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/payouts/{id}/hold": {
       "post": {
         "tags": [
@@ -30076,6 +30987,105 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminReportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/moderation/messages/{id}/remove": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: remove a member’s message",
+        "description": "Only a reported message (409 NOT_REPORTED otherwise). Both sides then see “This message was removed by Rento Vroom support.” in its place, without its photos, also in the recipient’s new-message notice; staff still see it in the conversation, marked removed. 409 ALREADY_REMOVED, or SYSTEM_MESSAGE for Rento Vroom’s own messages.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedMessageResponse"
                 }
               }
             }

@@ -97,6 +97,11 @@ export interface IdentityVerification {
   documentNumberHash?: string;
   /** Whether the date of birth Stripe read from the ID matched the account's when it was checked. */
   documentDobMatched?: boolean;
+  /**
+   * A keyed hash of that date of birth, so details entered after the check (a licence saved once the ID check
+   * has passed) are compared with what the ID said.
+   */
+  documentDobHash?: string;
   /** When the latest check began: a check that never passes is redacted this long after it (plan §14). */
   startedAt?: Date;
   verifiedAt?: Date;
@@ -178,6 +183,8 @@ export interface NotificationPrefs {
   marketingSms: boolean;
   /** SMS when a message is still unread after 10 minutes. */
   unreadMessageSms: boolean;
+  /** Email when a message is still unread after 10 minutes: on unless turned off (missing on older accounts). */
+  unreadMessageEmail?: boolean;
 }
 
 export const EMAIL_PROBLEMS = ['BOUNCED', 'SUPPRESSED'] as const;
@@ -324,6 +331,7 @@ const userSchema = new Schema<User>(
           marketingEmail: { type: Boolean, default: false },
           marketingSms: { type: Boolean, default: false },
           unreadMessageSms: { type: Boolean, default: false },
+          unreadMessageEmail: { type: Boolean, default: true },
         },
         { _id: false },
       ),
@@ -360,6 +368,7 @@ const userSchema = new Schema<User>(
           documentType: String,
           documentNumberHash: String,
           documentDobMatched: Boolean,
+          documentDobHash: String,
           startedAt: Date,
           verifiedAt: Date,
           reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },

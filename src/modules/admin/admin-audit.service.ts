@@ -13,10 +13,11 @@ import { PayoutModel } from '../payouts/payout.model.js';
 import { ReviewModel } from '../reviews/review.model.js';
 import { SupportTicketModel } from '../support/support-ticket.model.js';
 import { UserModel } from '../users/user.model.js';
-import { VehicleModel } from '../vehicles/vehicle.model.js';
+import { VehicleModel, liveVehicleFilter } from '../vehicles/vehicle.model.js';
 import type { adminDashboardSchema, auditQuerySchema, jobQuerySchema } from './admin-ops.schemas.js';
 import { nzDayStart } from './admin-bookings.service.js';
-import { reportRange } from './admin-reports.service.js';
+import { rangeMoney, reportRange } from './admin-reports.service.js';
+import { identityReviewFilter, licenceReviewFilter } from './verification-queue.service.js';
 
 /*
  * The staff portal's overview with the spec §18 figures for a date range and the queues waiting for the
@@ -42,7 +43,8 @@ export async function adminDashboard(
       closedAt: mongoose.trusted({ $exists: false }),
     }),
     UserModel.countDocuments({ roles: 'HOST', status: 'ACTIVE', 'hostProfile.status': 'APPROVED' }),
-    VehicleModel.countDocuments({ status: 'ACTIVE' }),
+    // Cars Guests can find and book, as search counts them (plan §8.2).
+    VehicleModel.countDocuments(liveVehicleFilter()),
     BookingModel.countDocuments({
       status: mongoose.trusted({ $in: ['PENDING', 'CONFIRMED'] }),
       startAt: mongoose.trusted({ $gt: now }),
@@ -50,15 +52,9 @@ export async function adminDashboard(
     BookingModel.countDocuments({ status: 'CANCELLED', cancelledAt: mongoose.trusted(inRange) }),
     IncidentModel.countDocuments({ createdAt: mongoose.trusted(inRange) }),
     IncidentModel.countDocuments({ status: open }),
-    UserModel.countDocuments({
-      'identityVerification.status': 'PENDING',
-      closedAt: mongoose.trusted({ $exists: false }),
-    }),
-    UserModel.countDocuments({
-      'driverLicence.status': 'PENDING',
-      'identityVerification.status': 'APPROVED',
-      closedAt: mongoose.trusted({ $exists: false }),
-    }),
+    // The same people the Verifications queue lists.
+    UserModel.countDocuments(identityReviewFilter()),
+    UserModel.countDocuments(await licenceReviewFilter()),
     UserModel.countDocuments({ status: 'SUSPENDED', closedAt: mongoose.trusted({ $exists: false }) }),
     VehicleModel.countDocuments({ status: 'SUSPENDED' }),
     UserModel.countDocuments({ 'hostProfile.status': 'APPLIED' }),
@@ -106,26 +102,12 @@ export async function adminDashboard(
     heldPayouts,
     failedJobs,
   ] = counts;
-  const [money, payouts, refunds] = await Promise.all([
-    BookingModel.aggregate<{ total: number; fees: number }>([
-      { $match: { createdAt: inRange, status: { $in: ['CONFIRMED', 'ACTIVE', 'COMPLETED', 'CANCELLED'] } } },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: '$price.totalCents' },
-          fees: { $sum: '$price.platformFeeCents' },
-        },
-      },
-    ]),
+  // Money is counted as the Reports page counts it, so both agree for the same dates.
+  const [money, payouts] = await Promise.all([
+    rangeMoney(range),
     PayoutModel.aggregate<{ total: number }>([
       { $match: { status: 'PAID', paidAt: inRange } },
       { $group: { _id: null, total: { $sum: '$amountCents' } } },
-    ]),
-    PaymentModel.aggregate<{ total: number }>([
-      { $match: { type: 'BOOKING', 'refunds.createdAt': inRange } },
-      { $unwind: '$refunds' },
-      { $match: { 'refunds.createdAt': inRange, 'refunds.status': { $ne: 'FAILED' } } },
-      { $group: { _id: null, total: { $sum: '$refunds.amountCents' } } },
     ]),
   ]);
   return {
@@ -136,8 +118,8 @@ export async function adminDashboard(
       activeHosts: activeHosts!,
       activeVehicles: activeVehicles!,
       upcomingBookings: upcomingBookings!,
-      bookingRevenueCents: (money[0]?.total ?? 0) - (refunds[0]?.total ?? 0),
-      platformFeesCents: money[0]?.fees ?? 0,
+      bookingRevenueCents: money.bookingRevenueCents,
+      platformFeesCents: money.platformFeesCents,
       hostPayoutsCents: payouts[0]?.total ?? 0,
       cancellations: cancellations!,
       incidentCases: incidentCases!,

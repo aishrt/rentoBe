@@ -2,12 +2,14 @@ import type { OpenAPIRegistry, RouteConfig } from '@asteasolutions/zod-to-openap
 import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { homeHeroSchema, legalPageSchema, siteFooterSchema } from '../cms/content.schemas.js';
+import { removedMessageResponseSchema, removeMessageSchema } from '../messages/messages.schemas.js';
 import {
   adminBookingDetailSchema,
   adminBookingsResponseSchema,
   adminDashboardSchema,
   adminDestinationSchema,
   adminDestinationsResponseSchema,
+  adminExtraChargesResponseSchema,
   adminFaqSchema,
   adminFaqsResponseSchema,
   adminFeaturedResponseSchema,
@@ -20,6 +22,7 @@ import {
   adminPayoutSchema,
   adminPayoutsResponseSchema,
   adminRefundSchema,
+  adminRefundsResponseSchema,
   adminReportSchema,
   adminReportsResponseSchema,
   adminSiteFooterSchema,
@@ -33,6 +36,7 @@ import {
   destinationCreateSchema,
   destinationEditSchema,
   exportQuerySchema,
+  extraChargeListQuerySchema,
   faqInputSchema,
   featuredReviewsSchema,
   featuredVehiclesSchema,
@@ -46,6 +50,7 @@ import {
   payoutListQuerySchema,
   permissionsSchema,
   platformReportSchema,
+  refundListQuerySchema,
   reportRangeSchema,
   resolveReportSchema,
   reviewChoicesResponseSchema,
@@ -179,7 +184,8 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
   add({
     method: 'post',
     path: '/admin/users/{id}/waive-host-fee',
-    summary: 'Staff with the refunds permission: waive Host cancellation fees owed',
+    summary: 'Admin: waive Host cancellation fees owed',
+    description: 'Some or all of what the Host owes; written to the audit log (plan §8.1, item 10).',
     params: id,
     body: waiveFeeSchema,
     response: adminUserResponseSchema,
@@ -279,6 +285,26 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     response: adminPayoutsResponseSchema,
     errors: [400, 401, 403],
   });
+  add({
+    method: 'get',
+    path: '/admin/refunds',
+    summary: 'Staff with the refunds permission: every refund',
+    description:
+      'Refunds on every payment, newest first, by status, who funds them and why they were made, or by booking reference. A Host-funded refund says how it has been recovered from the Host (plan §8.1, item 15).',
+    query: refundListQuerySchema,
+    response: adminRefundsResponseSchema,
+    errors: [400, 401, 403],
+  });
+  add({
+    method: 'get',
+    path: '/admin/extra-charges',
+    summary: 'Staff with the refunds permission: unpaid extra charges',
+    description:
+      'Extra charges on any booking still being collected (PENDING) or that failed, newest first, with the last failure and the tries on the saved card (plan §8.1, item 6).',
+    query: extraChargeListQuerySchema,
+    response: adminExtraChargesResponseSchema,
+    errors: [400, 401, 403],
+  });
   const payoutResponse = z.object({ payout: adminPayoutSchema }).meta({ id: 'AdminPayoutResponse' });
   add({
     method: 'post',
@@ -358,6 +384,17 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     params: id,
     body: resolveReportSchema,
     response: z.object({ report: adminReportSchema }).meta({ id: 'AdminReportResponse' }),
+    errors: [400, 401, 403, 404, 409],
+  });
+  add({
+    method: 'post',
+    path: '/admin/moderation/messages/{id}/remove',
+    summary: 'Staff: remove a member’s message',
+    description:
+      'Only a reported message (409 NOT_REPORTED otherwise). Both sides then see “This message was removed by Rento Vroom support.” in its place, without its photos, also in the recipient’s new-message notice; staff still see it in the conversation, marked removed. 409 ALREADY_REMOVED, or SYSTEM_MESSAGE for Rento Vroom’s own messages.',
+    params: id,
+    body: removeMessageSchema,
+    response: removedMessageResponseSchema,
     errors: [400, 401, 403, 404, 409],
   });
 

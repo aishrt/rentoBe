@@ -4,18 +4,24 @@ import { withTransaction } from '../../db.js';
 import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
-import { formatNzdExact } from '../../lib/format.js';
+import { formatNzDateTime, formatNzdExact } from '../../lib/format.js';
 import { fromNzWallClock } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditLogModel } from '../audit/audit-log.model.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
 import { refundIntent, statusAfterRefunds } from '../bookings/booking-payments.js';
 import { completeTrip, startTrip } from '../bookings/booking-transitions.js';
-import { bookingView, findBookingFor, type Actor } from '../bookings/booking.service.js';
+import {
+  bookingView,
+  confirmAfterSuspension,
+  findBookingFor,
+  type Actor,
+} from '../bookings/booking.service.js';
 import { afterTripCompleted } from '../bookings/trip-completion.js';
 import { IncidentModel } from '../incidents/incident.model.js';
+import { postSystemMessage } from '../messages/thread-core.js';
 import { notify } from '../notifications/notify.js';
-import { PaymentModel } from '../payments/payment.model.js';
+import { PaymentModel, type Payment } from '../payments/payment.model.js';
 import {
   recoverHostRefund,
   releaseHeldPayouts,
@@ -167,7 +173,62 @@ export async function adminBookingDetail(
     refundableCents: paid ? Math.max(0, paid.amountCents - refunded) : 0,
     // A Host-funded refund then comes off the Host's next payout or the transfer (plan §8.1, item 15).
     tripPayoutSent: !(await tripPayoutPending(booking._id)),
+    refundableCharges: await refundableCharges(booking, payments),
   };
+}
+
+/** Paid extra charges with money left to refund, each with whether its payout to the Host has gone. */
+async function refundableCharges(
+  booking: BookingRecord,
+  payments: (Pick<Payment, 'type' | 'status' | 'extraChargeId' | 'amountCents' | 'refunds'> & { _id: Id })[],
+) {
+  const rows = [];
+  for (const payment of payments) {
+    if (payment.type !== 'EXTRA_CHARGE' || !payment.extraChargeId) continue;
+    if (!['SUCCEEDED', 'PARTIALLY_REFUNDED'].includes(payment.status)) continue;
+    const charge = booking.extraCharges.find((candidate) => candidate._id?.equals(payment.extraChargeId!));
+    const refunded = payment.refunds
+      .filter((refund) => refund.status !== 'FAILED')
+      .reduce((sum, refund) => sum + refund.amountCents, 0);
+    const left = payment.amountCents - refunded;
+    if (!charge || left <= 0) continue;
+    rows.push({
+      paymentId: payment._id.toString(),
+      type: charge.type,
+      description: charge.description,
+      refundableCents: left,
+      payoutSent: !(await tripPayoutPending(booking._id, payment.extraChargeId)),
+    });
+  }
+  return rows;
+}
+
+/** Tells both parties support started the trip, as a check-in in the app would (plan §8.2). */
+async function announceStaffStart(booking: BookingRecord, session: mongoose.ClientSession) {
+  const id = booking._id.toString();
+  const body = `Rento Vroom support marked your trip in the ${booking.vehicleSnapshot.title} as started. The return is due ${formatNzDateTime(booking.endAt)} (NZ time).`;
+  await notify(
+    {
+      userId: booking.guestId,
+      type: 'TRIP_STARTED',
+      title: 'Your trip has started',
+      body,
+      link: `/trips/${booking.ref}`,
+      dedupeKey: `TRIP_STARTED:${id}:GUEST`,
+    },
+    { session },
+  );
+  await notify(
+    {
+      userId: booking.hostId,
+      type: 'TRIP_STARTED',
+      title: 'The trip has started',
+      body,
+      link: `/host/bookings/${booking.ref}`,
+      dedupeKey: `TRIP_STARTED:${id}:HOST`,
+    },
+    { session },
+  );
 }
 
 /**
@@ -209,10 +270,22 @@ export async function editBookingStatus(
       if (!started)
         throw new HttpError(409, 'ALREADY_CHANGED', 'This booking has just changed. Please refresh.');
       await releaseHeldPayouts({ bookingId: booking._id }, 'TRIP_NOT_STARTED', { session, now });
+      // The same news as a check-in in the app (plan §8.2: the same side effects).
+      await postSystemMessage(
+        started,
+        `Rento Vroom support marked this trip as started at ${formatNzDateTime(now)} (NZ time). The return is due ${formatNzDateTime(started.endAt)}.`,
+        { session, now },
+      );
+      await announceStaffStart(started.toObject() as BookingRecord, session);
     } else {
       const completed = await completeTrip(booking, session, { by: actor.userId, reason, now });
       if (!completed)
         throw new HttpError(409, 'ALREADY_CHANGED', 'This booking has just changed. Please refresh.');
+      await postSystemMessage(
+        completed,
+        `Rento Vroom support marked this trip as completed at ${formatNzDateTime(now)} (NZ time).`,
+        { session, now },
+      );
       await afterTripCompleted(completed.toObject() as BookingRecord, null, session, now);
     }
   });
@@ -241,8 +314,16 @@ export async function adminRefund(
   now = new Date(),
 ) {
   const { booking } = await findBookingFor(actor, refOrId);
-  const payment = await paidPayment(booking._id);
+  // The booking's own payment, or one of its extra charges (plan §8.1, item 11).
+  const payment = input.paymentId
+    ? await PaymentModel.findOne({
+        _id: input.paymentId,
+        bookingId: booking._id,
+        status: mongoose.trusted({ $in: ['SUCCEEDED', 'PARTIALLY_REFUNDED'] }),
+      })
+    : await paidPayment(booking._id);
   if (!payment) throw new HttpError(409, 'NOT_PAID', 'This booking has no payment to refund.');
+  const extraChargeId = payment.type === 'EXTRA_CHARGE' ? payment.extraChargeId : undefined;
   const refund = await refundIntent(
     payment,
     input.amountCents,
@@ -252,8 +333,8 @@ export async function adminRefund(
   const recoverFrom = input.recoverFrom ?? 'NEXT_PAYOUT';
   // Reversing the transfer is a Stripe call, so it's made before the refund is recorded.
   const reversal =
-    hostFunded && recoverFrom === 'REVERSE_TRANSFER' && !(await tripPayoutPending(booking._id))
-      ? await reversePayoutTransfer(booking, refund)
+    hostFunded && recoverFrom === 'REVERSE_TRANSFER' && !(await tripPayoutPending(booking._id, extraChargeId))
+      ? await reversePayoutTransfer(booking, refund, extraChargeId)
       : undefined;
   let hostRefund: HostRefundRecovery | undefined;
   await withTransaction(async (session) => {
@@ -272,7 +353,12 @@ export async function adminRefund(
     });
     fresh.status = statusAfterRefunds(fresh);
     await fresh.save({ session });
-    if (hostFunded) hostRefund = await recoverHostRefund(booking, refund, reversal, session, now);
+    // A refund Stripe refused at once never reached the Guest: the Host owes nothing for it.
+    if (hostFunded && refund.status !== 'FAILED') {
+      hostRefund = await recoverHostRefund(booking, refund, reversal, session, now, extraChargeId);
+    }
+    // A refund Stripe refused at once alerted staff instead (refundIntent); the Guest hears once it goes.
+    if (refund.status === 'FAILED') return;
     await notify(
       {
         userId: booking.guestId,
@@ -322,7 +408,7 @@ export async function adminRefund(
   return { ...(await adminBookingDetail(actor, booking.id)), ...(hostRefund && { hostRefund }) };
 }
 
-async function upcomingFor(filter: Record<string, unknown>, now: Date) {
+export async function upcomingFor(filter: Record<string, unknown>, now: Date) {
   const bookings = await BookingModel.find({
     ...filter,
     status: mongoose.trusted({ $in: ['PENDING', 'CONFIRMED', 'ACTIVE'] }),
@@ -383,7 +469,7 @@ export async function suspendVehicle(staffId: string, vehicleId: string, reason:
     type: 'VEHICLE_SUSPENDED',
     title: `Your ${title} is suspended`,
     body: reason,
-    link: '/host/vehicles',
+    link: `/host/vehicles/${vehicle.id}`,
     email: {
       template: 'tripNotice',
       props: {
@@ -393,8 +479,8 @@ export async function suspendVehicle(staffId: string, vehicleId: string, reason:
           `Your ${title} is hidden from search and can’t take new bookings: ${reason}`,
           'Our team will be in touch about its upcoming bookings. If you have questions, reply to this email.',
         ],
-        buttonLabel: 'Your cars',
-        url: `${siteUrl()}/host/vehicles`,
+        buttonLabel: 'View your car',
+        url: `${siteUrl()}/host/vehicles/${vehicle.id}`,
       },
     },
     dedupeKey: `VEHICLE_SUSPENDED:${vehicle.id}:${Date.now()}`,
@@ -418,6 +504,8 @@ export async function unsuspendVehicle(staffId: string, vehicleId: string, ip?: 
   vehicle.reviewNotes = undefined;
   await vehicle.save();
   forget('vehicles:featured');
+  // Bookings approved while it was suspended go ahead now.
+  await confirmAfterSuspension({ vehicleId: vehicle._id });
   await recordAudit({
     actorId: staffId,
     action: 'vehicle.unsuspended',

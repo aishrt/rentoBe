@@ -15,7 +15,7 @@ import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { notify } from '../notifications/notify.js';
 import { PaymentModel } from '../payments/payment.model.js';
 import { alertStaff } from '../staff/staff-alerts.js';
-import { UserModel } from '../users/user.model.js';
+import { UserModel, type RefundOwed } from '../users/user.model.js';
 import {
   PayoutModel,
   type Deduction,
@@ -207,7 +207,8 @@ async function sourceCharge(payout: PayoutDocument): Promise<string | undefined>
           bookingId: payout.bookingId,
           type: 'EXTRA_CHARGE',
           extraChargeId: payout.extraChargeId,
-          status: 'SUCCEEDED',
+          // A charge partly refunded still funds the rest of its payout.
+          status: mongoose.trusted({ $in: ['SUCCEEDED', 'PARTIALLY_REFUNDED'] }),
         }
       : {
           bookingId: payout.bookingId,
@@ -238,14 +239,17 @@ async function existingTransfer(payoutId: string, bookingRef: string): Promise<s
  * What comes off a payout (plan §8.1, items 10 and 15): a TRIP payout first takes the Host-funded refunds
  * made on its own booking before it was sent, a line each; then any payout takes the Host cancellation fees
  * owed and the Host-funded refunds owed from bookings already paid, oldest first. Never below zero:
- * anything left stays owed.
+ * anything left stays owed, including the part of a refund on this booking the payout can't cover
+ * (`carryOver`, added to what the Host owes).
  */
 async function deductionsFor(
   payout: PayoutRecord,
   booking: BookingRecord,
   session: ClientSession,
-): Promise<Deduction[]> {
+  now: Date,
+): Promise<{ deductions: Deduction[]; carryOver: RefundOwed[] }> {
   const deductions: Deduction[] = [];
+  const carryOver: RefundOwed[] = [];
   let left = payout.amountCents;
   const take = (deduction: Omit<Deduction, 'amountCents'>, owedCents: number) => {
     const amount = Math.min(left, owedCents);
@@ -253,12 +257,18 @@ async function deductionsFor(
     deductions.push({ ...deduction, amountCents: amount });
     left -= amount;
   };
-  if (payout.type === 'TRIP') {
-    const payments = await PaymentModel.find({ bookingId: booking._id, type: 'BOOKING' })
+  if (payout.type === 'TRIP' || payout.type === 'EXTRA_CHARGE') {
+    // A trip's payout takes the refunds of the booking's payment; an extra charge's, those of that charge.
+    const payments = await PaymentModel.find(
+      payout.type === 'TRIP'
+        ? { bookingId: booking._id, type: 'BOOKING' }
+        : { bookingId: booking._id, type: 'EXTRA_CHARGE', extraChargeId: payout.extraChargeId },
+    )
       .session(session)
       .lean();
     for (const refund of payments.flatMap((payment) => payment.refunds)) {
       if (refund.fundedBy !== 'HOST' || refund.status === 'FAILED') continue;
+      const before = left;
       take(
         {
           type: 'HOST_FUNDED_REFUND',
@@ -267,6 +277,15 @@ async function deductionsFor(
         },
         refund.amountCents,
       );
+      const uncovered = refund.amountCents - (before - left);
+      if (uncovered > 0 && refund.stripeRefundId) {
+        carryOver.push({
+          bookingId: booking._id,
+          stripeRefundId: refund.stripeRefundId,
+          amountCents: uncovered,
+          createdAt: now,
+        });
+      }
     }
   }
   const host = await UserModel.findById(payout.hostId)
@@ -285,7 +304,7 @@ async function deductionsFor(
       refund.amountCents,
     );
   }
-  return deductions;
+  return { deductions, carryOver };
 }
 
 /** Thrown when what the Host owes changed under a reservation: it's worked out again. */
@@ -351,8 +370,15 @@ async function reserveDeductions(
         const fresh = await PayoutModel.findById(payout._id).session(session).lean<PayoutRecord>();
         if (!fresh || fresh.status === 'PAID' || fresh.status === 'CANCELLED') return null;
         if (fresh.deductionsReservedAt) return fresh.deductions;
-        const deductions = await deductionsFor(fresh, booking, session);
+        const { deductions, carryOver } = await deductionsFor(fresh, booking, session, now);
         await takeOwed(fresh.hostId, deductions, session);
+        if (carryOver.length > 0) {
+          await UserModel.updateOne(
+            { _id: fresh.hostId },
+            { $push: { 'hostProfile.refundsOwed': { $each: carryOver } } },
+            { session },
+          );
+        }
         const reserved = await PayoutModel.updateOne(
           {
             _id: fresh._id,
@@ -753,6 +779,13 @@ export async function listHostPayouts(hostId: string) {
         paidAt: payout.paidAt.toISOString(),
         expectedInBankBy: expectedBankDate(payout.paidAt, host?.hostProfile?.payoutDelayDays).toISOString(),
       }),
+      // A scheduled payout's two dates (plan §8.1, item 19): the transfer, then the bank on Stripe's schedule.
+      ...(payout.status === 'SCHEDULED' && {
+        expectedInBankBy: expectedBankDate(
+          payout.scheduledFor,
+          host?.hostProfile?.payoutDelayDays,
+        ).toISOString(),
+      }),
       booking: {
         ref: booking?.ref ?? '',
         vehicleTitle: booking?.vehicleSnapshot.title ?? 'A car',
@@ -763,9 +796,10 @@ export async function listHostPayouts(hostId: string) {
 }
 
 /** The booking's trip payout while a Host-funded refund can still come off it: not sent, nor reserved for sending. */
-const pendingTripPayout = (bookingId: Id) => ({
+const pendingTripPayout = (bookingId: Id, extraChargeId?: Id) => ({
   bookingId,
-  type: 'TRIP',
+  // A refund of an extra charge comes off that charge's own payout (plan §8.1, item 11).
+  ...(extraChargeId ? { type: 'EXTRA_CHARGE', extraChargeId } : { type: 'TRIP' }),
   status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }),
   deductionsReservedAt: mongoose.trusted({ $exists: false }),
 });
@@ -774,8 +808,8 @@ const pendingTripPayout = (bookingId: Id) => ({
  * Whether a Host-funded refund on the booking still comes off its own trip payout (plan §8.1, item 15).
  * Once that payout is sent, or being sent, or the booking ended without one, the Host owes the refund.
  */
-export async function tripPayoutPending(bookingId: Id): Promise<boolean> {
-  return Boolean(await PayoutModel.exists(pendingTripPayout(bookingId)));
+export async function tripPayoutPending(bookingId: Id, extraChargeId?: Id): Promise<boolean> {
+  return Boolean(await PayoutModel.exists(pendingTripPayout(bookingId, extraChargeId)));
 }
 
 export type TransferReversal =
@@ -790,10 +824,13 @@ export type TransferReversal =
 export async function reversePayoutTransfer(
   booking: BookingRecord,
   refund: { amountCents: number; stripeRefundId: string },
+  extraChargeId?: Id,
 ): Promise<TransferReversal> {
   const payout = await PayoutModel.findOne({
     bookingId: booking._id,
-    type: mongoose.trusted({ $in: ['TRIP', 'CANCELLATION_FEE'] }),
+    ...(extraChargeId
+      ? { type: 'EXTRA_CHARGE', extraChargeId }
+      : { type: mongoose.trusted({ $in: ['TRIP', 'CANCELLATION_FEE'] }) }),
     status: 'PAID',
     stripeTransferId: mongoose.trusted({ $exists: true }),
   })
@@ -853,11 +890,12 @@ export async function recoverHostRefund(
   reversal: TransferReversal | undefined,
   session: ClientSession,
   now = new Date(),
+  extraChargeId?: Id,
 ): Promise<HostRefundRecovery> {
   // Touching the trip payout makes a reservation running at the same moment conflict with this transaction,
   // so the refund is counted once: by the payout's own deductions, or as owed here.
   const pending = await PayoutModel.updateOne(
-    pendingTripPayout(booking._id),
+    pendingTripPayout(booking._id, extraChargeId),
     { $set: { updatedAt: new Date() } },
     { session, timestamps: false },
   );
@@ -903,7 +941,7 @@ export async function recoverHostRefund(
       { session },
     );
   }
-  await notifyRefundRecovered(booking, refund, reversed, owed, session);
+  await notifyRefundRecovered(booking, refund, reversed, owed, session, Boolean(extraChargeId));
   return {
     recoveredFrom: reversed > 0 ? 'REVERSE_TRANSFER' : 'NEXT_PAYOUT',
     ...(reversed > 0 && { reversedCents: reversed }),
@@ -922,6 +960,7 @@ async function notifyRefundRecovered(
   reversedCents: number,
   owedCents: number,
   session: ClientSession,
+  extraCharge = false,
 ) {
   const host = await UserModel.findById(booking.hostId).select('firstName').session(session).lean();
   const amount = formatNzdExact(refund.amountCents);
@@ -949,7 +988,7 @@ async function notifyRefundRecovered(
           firstName: host?.firstName ?? 'there',
           heading: `A refund for booking ${booking.ref}`,
           paragraphs: [
-            `We’ve refunded the guest ${amount} for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}. It’s a refund of rental you were paid, so it’s funded by you as the Host.`,
+            `We’ve refunded the guest ${amount} for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}. It’s a refund of ${extraCharge ? 'an extra charge' : 'rental'} you were paid, so it’s funded by you as the Host.`,
             ...how,
             'If you have questions about it, reply to this email.',
           ],

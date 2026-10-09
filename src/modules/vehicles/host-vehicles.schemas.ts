@@ -359,6 +359,39 @@ export const calendarResponseSchema = z
   })
   .meta({ id: 'HostCalendar' });
 
+/** The all-cars calendar answers up to two months at a time: the website asks for a month, or two weeks. */
+export const MAX_ALL_CARS_CALENDAR_DAYS = 62;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const allCarsCalendarQuerySchema = z
+  .object({
+    from: z.iso.date().meta({ description: 'The first NZ day, 2026-10-01' }),
+    to: z.iso.date().meta({ description: 'The NZ day after the last one (exclusive), 2026-11-01' }),
+  })
+  .refine(({ from, to }) => to > from, { error: 'Choose an end after the start', path: ['to'] })
+  .refine(({ from, to }) => Date.parse(to) - Date.parse(from) <= MAX_ALL_CARS_CALENDAR_DAYS * DAY_MS, {
+    error: `Choose up to ${MAX_ALL_CARS_CALENDAR_DAYS} days`,
+    path: ['to'],
+  });
+
+export const allCarsCalendarSchema = z
+  .object({
+    from: z.iso.datetime(),
+    to: z.iso.datetime(),
+    vehicles: z.array(
+      z
+        .object({
+          id: z.string(),
+          title: z.string(),
+          photo: z.string().nullable(),
+          status: z.enum(VEHICLE_STATUSES),
+          blocks: z.array(calendarBlockSchema).meta({ description: 'As on the car’s own calendar' }),
+        })
+        .meta({ id: 'CalendarCar' }),
+    ),
+  })
+  .meta({ id: 'AllCarsCalendar' });
+
 export const recurringResultSchema = z
   .object({
     blocks: z.number().int(),

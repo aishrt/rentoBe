@@ -7,6 +7,7 @@ import { BookingModel } from '../bookings/booking.model.js';
 import { notify } from '../notifications/notify.js';
 import { enqueue } from '../../jobs/queue.js';
 import { SupportTicketModel, type SupportTicket } from '../support/support-ticket.model.js';
+import { attachmentView, confirmSupportFiles } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import type {
   staffTicketReplySchema,
@@ -122,6 +123,7 @@ export async function staffTicket(ref: string): Promise<z.infer<typeof staffTick
           ? (row!.from.name ?? 'Visitor')
           : (nameOf(message.authorId)?.split(' ')[0] ?? 'Support'),
         body: message.body,
+        attachments: message.attachments.map(attachmentView),
         internal: message.internal,
         createdAt: message.createdAt.toISOString(),
       };
@@ -131,7 +133,8 @@ export async function staffTicket(ref: string): Promise<z.infer<typeof staffTick
 
 /**
  * POST /admin/support/tickets/{ref}/messages: a reply to the sender, emailed to them (and in their account's
- * notifications when they have one), or an internal note for the team.
+ * notifications when they have one), or an internal note for the team. Either can carry files the staff
+ * member uploaded; a reply's are seen in the sender's account, so one without an account can't have them.
  */
 export async function replyToTicket(
   staffId: string,
@@ -140,12 +143,28 @@ export async function replyToTicket(
   ip?: string,
 ) {
   const ticket = await findTicket(ref);
+  // A closed account can't sign in, and notify() sends it nothing: its sender is answered at the
+  // address on the ticket, like a visitor from the Contact form.
+  const account = ticket.userId ? await UserModel.findById(ticket.userId).select('closedAt').lean() : null;
+  const accountId = account && !account.closedAt ? account._id : undefined;
+  if (!input.internal && input.attachments.length > 0 && !accountId) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
+      attachments: 'They have no account to see files in. Describe them in the reply, or add them to a note.',
+    });
+  }
+  const attachments = await confirmSupportFiles(staffId, input.attachments);
   const status = input.status ?? (input.internal ? ticket.status : 'PENDING');
   await SupportTicketModel.updateOne(
     { _id: ticket._id },
     {
       $push: {
-        messages: { authorId: staffId, body: input.body, internal: input.internal, createdAt: new Date() },
+        messages: {
+          authorId: staffId,
+          body: input.body,
+          attachments,
+          internal: input.internal,
+          createdAt: new Date(),
+        },
       },
       $set: { status, ...(!ticket.assignedTo && { assignedTo: staffId }) },
     },
@@ -153,21 +172,26 @@ export async function replyToTicket(
   if (!input.internal) {
     const staff = await UserModel.findById(staffId).select('firstName').lean();
     const firstName = ticket.name?.split(' ')[0] ?? 'there';
+    const filesLine =
+      attachments.length === 1
+        ? 'They added a file: open your request to see it.'
+        : `They added ${attachments.length} files: open your request to see them.`;
     const props = {
       firstName,
       heading: `A reply to your support request ${ticket.ref}`,
       paragraphs: [
         `${staff?.firstName ?? 'Our support team'} replied about “${ticket.subject}”:`,
         ...input.body.split(/\n{2,}/),
+        ...(attachments.length > 0 ? [filesLine] : []),
       ],
       rows: [{ label: 'Reference', value: ticket.ref }],
-      buttonLabel: ticket.userId ? 'View and reply' : 'Contact us',
-      url: ticket.userId ? `${siteUrl()}/account/support/${ticket.ref}` : `${siteUrl()}/contact`,
-      ...(!ticket.userId && { note: `To reply, use the contact form and mention ${ticket.ref}.` }),
+      buttonLabel: accountId ? 'View and reply' : 'Contact us',
+      url: accountId ? `${siteUrl()}/account/support/${ticket.ref}` : `${siteUrl()}/contact`,
+      ...(!accountId && { note: `To reply, use the contact form and mention ${ticket.ref}.` }),
     };
-    if (ticket.userId) {
+    if (accountId) {
       await notify({
-        userId: ticket.userId,
+        userId: accountId,
         type: 'SUPPORT_REPLY',
         title: `Support replied: ${ticket.subject}`,
         body: input.body.slice(0, 140),

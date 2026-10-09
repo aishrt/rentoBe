@@ -13,6 +13,7 @@ import {
 import {
   notificationPrefsPatchSchema,
   notificationPrefsSchema,
+  unsubscribeResponseSchema,
   unsubscribeSchema,
 } from '../users/notification-prefs.js';
 
@@ -116,9 +117,13 @@ export function registerNotificationPaths(registry: OpenAPIRegistry) {
     method: 'post',
     path: '/notifications/unsubscribe',
     tags: ['Notifications'],
-    summary: 'Unsubscribe from marketing email and texts',
-    description: 'The link in every marketing email; works without signing in.',
+    summary: 'Unsubscribe from marketing email and texts, or from unread-message emails',
+    description:
+      'The link in every marketing email and unread-message email; works without signing in. An email app’s one-click unsubscribe (RFC 8058) posts here with `?token=` and a form body instead.',
     request: { body: jsonBody(unsubscribeSchema) },
-    responses: { 204: { description: 'Unsubscribed' }, ...errorResponses(400) },
+    responses: {
+      200: jsonResponse('What was turned off', unsubscribeResponseSchema),
+      ...errorResponses(400),
+    },
   });
 }

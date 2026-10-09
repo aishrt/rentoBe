@@ -58,6 +58,7 @@ export async function pickupReminderJob(
   const soon = hoursBefore <= 3;
   const key = `${booking._id.toString()}:${hoursBefore}`;
   const guestUrl = `${siteUrl()}/trips/${booking.ref}`;
+  const hostUrl = `${siteUrl()}/host/bookings/${booking.ref}`;
 
   await notify({
     userId: booking.guestId,
@@ -65,24 +66,23 @@ export async function pickupReminderJob(
     title: `${words}: pick up the ${booking.vehicleSnapshot.title}`,
     body: `${when} (NZ time) at ${place}.`,
     link: `/trips/${booking.ref}`,
-    ...(!soon && {
-      email: {
-        template: 'tripReminder',
-        props: {
-          firstName: context.guest?.firstName ?? 'there',
-          role: 'GUEST',
-          kind: 'PICKUP',
-          otherFirstName: hostName,
-          ref: booking.ref,
-          vehicleTitle: booking.vehicleSnapshot.title,
-          when,
-          inWords: words,
-          place,
-          url: guestUrl,
-          ...(!context.guest?.emailVerifiedAt && { verifyEmailUrl: `${siteUrl()}/account/settings` }),
-        },
+    email: {
+      template: 'tripReminder',
+      props: {
+        firstName: context.guest?.firstName ?? 'there',
+        role: 'GUEST',
+        kind: 'PICKUP',
+        otherFirstName: hostName,
+        ref: booking.ref,
+        vehicleTitle: booking.vehicleSnapshot.title,
+        when,
+        inWords: words,
+        place,
+        url: guestUrl,
+        // The day-before reminder asks an unverified Guest to confirm their email (plan §6.1).
+        ...(!soon && !context.guest?.emailVerifiedAt && { verifyEmailUrl: `${siteUrl()}/account/settings` }),
       },
-    }),
+    },
     sms: {
       // The day-before text may wait for the end of quiet hours, so it names the day rather than "tomorrow".
       body: soon
@@ -102,29 +102,29 @@ export async function pickupReminderJob(
     title: `${words}: ${guestName} picks up your ${booking.vehicleSnapshot.title}`,
     body: `${when} (NZ time) at ${hostView.pickup.address ?? hostView.pickup.label}.`,
     link: `/host/bookings/${booking.ref}`,
-    ...(!soon && {
-      email: {
-        template: 'tripReminder',
-        props: {
-          firstName: hostName,
-          role: 'HOST',
-          kind: 'PICKUP',
-          otherFirstName: guestName,
-          ref: booking.ref,
-          vehicleTitle: booking.vehicleSnapshot.title,
-          when,
-          inWords: words,
-          place: hostView.pickup.address ?? hostView.pickup.label,
-          url: `${siteUrl()}/host/bookings/${booking.ref}`,
-        },
+    email: {
+      template: 'tripReminder',
+      props: {
+        firstName: hostName,
+        role: 'HOST',
+        kind: 'PICKUP',
+        otherFirstName: guestName,
+        ref: booking.ref,
+        vehicleTitle: booking.vehicleSnapshot.title,
+        when,
+        inWords: words,
+        place: hostView.pickup.address ?? hostView.pickup.label,
+        url: hostUrl,
       },
-    }),
-    ...(soon && {
-      sms: {
-        body: `Rento Vroom: ${guestName} picks up your ${booking.vehicleSnapshot.title} at ${nzTime(booking.startAt)}. Do the check-in together: ${siteUrl()}/host/bookings/${booking.ref}`,
-        urgent: true,
-      },
-    }),
+    },
+    sms: {
+      body: soon
+        ? `Rento Vroom: ${guestName} picks up your ${booking.vehicleSnapshot.title} at ${nzTime(booking.startAt)}. Do the check-in together: ${hostUrl}`
+        : `Rento Vroom: ${guestName} picks up your ${booking.vehicleSnapshot.title} on ${when}. Do the check-in together: ${hostUrl}`,
+      urgent: soon,
+      whileBooking: { id: booking._id, statuses: ['CONFIRMED'] },
+      expiresAt: booking.startAt,
+    },
     dedupeKey: `PICKUP_REMINDER_HOST:${key}`,
   });
 
@@ -142,7 +142,7 @@ export async function returnReminderJob(
 ) {
   const trip = await loadTrip(bookingId);
   if (!trip || !['CONFIRMED', 'ACTIVE'].includes(trip.booking.status)) return;
-  const { booking, context, guestView } = trip;
+  const { booking, context, guestView, hostView } = trip;
   const guestName = context.guest?.firstName ?? 'your guest';
   const when = formatNzDateTime(booking.endAt);
   const words = inWords(hoursBefore);
@@ -180,12 +180,34 @@ export async function returnReminderJob(
     },
     dedupeKey: `RETURN_REMINDER:${key}`,
   });
+  const hostUrl = `${siteUrl()}/host/bookings/${booking.ref}`;
+  const hostPlace = hostView.dropoff.address ?? hostView.dropoff.label;
   await notify({
     userId: booking.hostId,
     type: 'RETURN_REMINDER',
     title: `${words}: ${guestName} returns your ${booking.vehicleSnapshot.title}`,
     body: `By ${when} (NZ time).`,
     link: `/host/bookings/${booking.ref}`,
+    email: {
+      template: 'tripReminder',
+      props: {
+        firstName: context.host?.firstName ?? 'there',
+        role: 'HOST',
+        kind: 'RETURN',
+        otherFirstName: guestName,
+        ref: booking.ref,
+        vehicleTitle: booking.vehicleSnapshot.title,
+        when,
+        inWords: words,
+        place: hostPlace,
+        url: hostUrl,
+      },
+    },
+    sms: {
+      body: `Rento Vroom: ${guestName} returns your ${booking.vehicleSnapshot.title} by ${nzTime(booking.endAt)}, ${hostPlace}. Do the check-out together: ${hostUrl}`,
+      whileBooking: { id: booking._id, statuses: ['CONFIRMED', 'ACTIVE'] },
+      expiresAt: booking.endAt,
+    },
     dedupeKey: `RETURN_REMINDER_HOST:${key}`,
   });
   await postSystemMessage(

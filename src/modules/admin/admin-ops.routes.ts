@@ -36,7 +36,17 @@ import {
   updateHelpArticle,
   vehicleChoices,
 } from './admin-content.service.js';
-import { holdPayout, listPayments, listPayouts, releasePayout, retryPayout } from './admin-money.service.js';
+import { removeMessageSchema } from '../messages/messages.schemas.js';
+import { removeMessage } from '../messages/messages.service.js';
+import {
+  holdPayout,
+  listPayments,
+  listPayouts,
+  listRefunds,
+  listUnpaidExtraCharges,
+  releasePayout,
+  retryPayout,
+} from './admin-money.service.js';
 import { listReports, resolveReport } from './admin-moderation.service.js';
 import {
   adminRefundSchema,
@@ -46,6 +56,7 @@ import {
   destinationCreateSchema,
   destinationEditSchema,
   exportQuerySchema,
+  extraChargeListQuerySchema,
   faqInputSchema,
   featuredReviewsSchema,
   featuredVehiclesSchema,
@@ -57,6 +68,7 @@ import {
   paymentListQuerySchema,
   payoutListQuerySchema,
   permissionsSchema,
+  refundListQuerySchema,
   reportRangeSchema,
   resolveReportSchema,
   staffTicketReplySchema,
@@ -87,8 +99,8 @@ const param = (req: Request, name: string) => String(req.params[name]);
 /**
  * The staff portal's operations (spec §18; plan §6.2, §9 Days 19–23), used by admin.routes.ts after its
  * guards: an active staff account, and every write in the audit log. Support staff have users, bookings,
- * verifications, incidents, the support inbox and moderation; money needs the refunds permission; content,
- * reports, the audit log and jobs are the admin's.
+ * verifications, incidents, the support inbox and moderation; money needs the refunds permission; waiving
+ * Host fees (plan §8.1, item 10), content, reports, the audit log and jobs are the admin's.
  */
 export function adminOpsRouter() {
   const router = Router();
@@ -127,7 +139,8 @@ export function adminOpsRouter() {
     res.json({ user: await closeAccount(req.auth!.userId, req.auth!.roles, param(req, 'id'), req.ip) });
   });
 
-  router.post('/users/:id/waive-host-fee', money, async (req, res) => {
+  // Admins waive Host fees (plan §8.1, item 10); the refunds permission doesn't extend to it.
+  router.post('/users/:id/waive-host-fee', adminOnly, async (req, res) => {
     const { amountCents, reason } = validate(waiveFeeSchema, req.body);
     res.json({ user: await waiveHostFee(req.auth!.userId, param(req, 'id'), amountCents, reason, req.ip) });
   });
@@ -179,6 +192,15 @@ export function adminOpsRouter() {
     res.json(await listPayouts(validate(payoutListQuerySchema, req.query)));
   });
 
+  // Every refund across payments, and extra charges still unpaid (plan §8.1, items 6 and 15; §12.6).
+  router.get('/refunds', money, async (req, res) => {
+    res.json(await listRefunds(validate(refundListQuerySchema, req.query)));
+  });
+
+  router.get('/extra-charges', money, async (req, res) => {
+    res.json(await listUnpaidExtraCharges(validate(extraChargeListQuerySchema, req.query)));
+  });
+
   router.post('/payouts/:id/hold', adminOnly, async (req, res) => {
     const { reason } = validate(holdPayoutSchema, req.body);
     res.json({ payout: await holdPayout(req.auth!.userId, param(req, 'id'), reason, req.ip) });
@@ -220,6 +242,12 @@ export function adminOpsRouter() {
   router.post('/moderation/reports/:id/resolve', async (req, res) => {
     const { status, resolution } = validate(resolveReportSchema, req.body);
     res.json({ report: await resolveReport(req.auth!.userId, param(req, 'id'), status, resolution, req.ip) });
+  });
+
+  // A member's message taken out of a conversation, usually after a report about it.
+  router.post('/moderation/messages/:id/remove', async (req, res) => {
+    const { reason } = validate(removeMessageSchema, req.body);
+    res.json(await removeMessage(req.auth!.userId, param(req, 'id'), reason, req.ip));
   });
 
   // Content (admin only).

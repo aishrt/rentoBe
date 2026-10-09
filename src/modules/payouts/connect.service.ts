@@ -7,6 +7,7 @@ import { forget } from '../../lib/memo.js';
 import { notify } from '../notifications/notify.js';
 import { UserModel, type HostProfile } from '../users/user.model.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
+import { PayoutModel } from './payout.model.js';
 import { releaseHeldPayouts } from './payouts.service.js';
 
 /*
@@ -125,7 +126,13 @@ export async function applyAccountState(account: Stripe.Account, session?: Clien
       { session },
     );
   } else if (!enabled && wasEnabled) {
-    // Payouts wait with "payout setup needed" until Stripe has what it asked for (plan §8.1, item 20).
+    // Payouts wait with "payout setup needed" until Stripe has what it asked for (plan §8.1, item 20): the
+    // scheduled ones show it at once, rather than when their transfer comes round.
+    await PayoutModel.updateMany(
+      { hostId: host._id, status: 'SCHEDULED' },
+      { $set: { status: 'HELD', holdReason: 'PAYOUT_SETUP' } },
+      { session },
+    );
     await notify(
       {
         userId: host._id,

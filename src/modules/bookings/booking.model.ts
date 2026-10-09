@@ -169,6 +169,13 @@ export interface Booking {
   hostShareCents?: number;
   /** A Host cancellation fee added to the Host's fees owed (plan §8.1, item 10). */
   hostCancellationFeeCents?: number;
+  /** The part of that fee an admin waived (plan §8.1, item 10), so earnings and statements show what's due. */
+  hostCancellationFeeWaivedCents?: number;
+  /**
+   * A payment that went through for a booking that couldn't be made (paid after it expired, its dates taken or
+   * its car suspended meanwhile) and was given back: the Guest sees the booking among their cancelled trips.
+   */
+  paymentReturnedAt?: Date;
   lineItems: LineItem[];
   statusHistory: StatusChange[];
   extraCharges: ExtraCharge[];
@@ -331,6 +338,8 @@ const bookingSchema = new Schema<Booking>(
     refundCents: cents(),
     hostShareCents: cents(),
     hostCancellationFeeCents: cents(),
+    hostCancellationFeeWaivedCents: cents(),
+    paymentReturnedAt: Date,
     lineItems: { type: [lineItemSchema], default: [] },
     statusHistory: { type: [statusChangeSchema], default: [] },
     extraCharges: { type: [extraChargeSchema], default: [] },

@@ -100,3 +100,11 @@ export async function startRealtime(httpServer: HttpServer): Promise<RealtimeSer
 export function emitToUser(userId: string, event: string, ...args: unknown[]): void {
   current?.to(userRoom(userId)).emit(event, ...args);
 }
+
+/**
+ * Closes every open tab and device of one user, on every backend task. A suspended or closed account's
+ * sessions are already deleted, so they can't connect again (plan §8.2).
+ */
+export function disconnectUser(userId: string): void {
+  current?.in(userRoom(userId)).disconnectSockets(true);
+}

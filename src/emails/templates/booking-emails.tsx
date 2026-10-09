@@ -338,6 +338,8 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
       />
       {props.audience === 'GUEST' && props.refund && (
         <EmailText>
+          {/* A Host cancellation always refunds the Guest in full (plan §7, §8.1 item 10). */}
+          {props.cancelledBy === 'HOST' ? `You get a full refund of ${props.refund}. ` : ''}
           Refunds go back to the card you paid with and usually show within 5–10 working days.
         </EmailText>
       )}

@@ -149,6 +149,18 @@ export interface TripRules {
 }
 
 /**
+ * One key detail a Host changed on a live listing, which sent it back for review (plan §3, changes to live
+ * listings): what it was while live and what it is now, as text. A detail added or removed has no value on
+ * that side.
+ */
+export interface KeyChange {
+  field: 'regoPlate' | 'vin' | 'chassisNo' | 'make' | 'model' | 'year';
+  before?: string;
+  after?: string;
+  changedAt: Date;
+}
+
+/**
  * The `vehicles` collection (plan §3). A draft is saved at every onboarding step, so only the owner and
  * slug are required here; the Zod schemas check the rest when the Host submits the listing.
  */
@@ -190,6 +202,11 @@ export interface Vehicle {
   rules: TripRules;
   status: VehicleStatus;
   reviewNotes?: string;
+  /**
+   * The key details changed since the listing was last live, for the reviewer to compare. Kept until staff
+   * approve or reject the listing; listings that never changed them have none.
+   */
+  keyChanges?: KeyChange[];
   onboardingStep: number;
   location?: GeoPoint;
   suburb?: string;
@@ -337,6 +354,24 @@ const vehicleSchema = new Schema<Vehicle>(
     },
     status: { type: String, enum: VEHICLE_STATUSES, default: 'DRAFT' },
     reviewNotes: String,
+    keyChanges: {
+      type: [
+        new Schema<KeyChange>(
+          {
+            field: {
+              type: String,
+              enum: ['regoPlate', 'vin', 'chassisNo', 'make', 'model', 'year'],
+              required: true,
+            },
+            before: String,
+            after: String,
+            changedAt: { type: Date, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
     onboardingStep: { type: Number, min: 1, max: 6, default: 1 },
     location: { type: pointSchema },
     suburb: { type: String, trim: true },

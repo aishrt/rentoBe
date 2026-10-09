@@ -81,12 +81,17 @@ export const verificationOutcomeShape = {
     description:
       'Set when the other part (the identity check or the licence) still waits for support: the bookings that keep waiting for it',
   }),
+  carSuspended: z.array(z.string()).optional().meta({
+    description:
+      'Bookings not confirmed because their car (or its Host) is suspended: confirmed when the suspension is lifted, unless their time runs out first',
+  }),
 };
 export type VerificationOutcome = {
   confirmed: string[];
   waitingForHost: string[];
   released: string[];
   stillInReview?: string[];
+  carSuspended?: string[];
 };
 
 export const identityReviewResponseSchema = z
@@ -94,8 +99,11 @@ export const identityReviewResponseSchema = z
   .meta({ id: 'IdentityReviewResponse' });
 export type IdentityReviewResult = z.infer<typeof identityReviewResponseSchema>;
 
-/** Why staff cancel (plan §8.2): a no-show (a confirmed booking only), or a platform cancellation. */
-export const ADMIN_CANCEL_REASONS = ['GUEST_NO_SHOW', 'HOST_NO_SHOW', 'PLATFORM'] as const;
+/**
+ * Why staff cancel (plan §8.2): a no-show (a confirmed booking only), a Host cancellation made for the Host
+ * (e.g. the car's documents ran out, or a suspended car whose Host is at fault), or a platform cancellation.
+ */
+export const ADMIN_CANCEL_REASONS = ['GUEST_NO_SHOW', 'HOST_NO_SHOW', 'HOST_CANCELLED', 'PLATFORM'] as const;
 export type AdminCancelReason = (typeof ADMIN_CANCEL_REASONS)[number];
 
 export const adminCancelSchema = z
@@ -292,7 +300,14 @@ export const bookingSummarySchema = z
     vehicle: z.object({ slug: z.string(), title: z.string(), photoUrl: z.string().optional() }),
     start: z.iso.datetime(),
     end: z.iso.datetime(),
-    otherParty: z.object({ firstName: z.string(), avatarUrl: z.string().optional() }),
+    otherParty: z.object({
+      firstName: z.string(),
+      avatarUrl: z.string().optional(),
+      // The Guest, in the Host's lists (plan §6.2: verified or not, rating and trips; never the documents).
+      verified: z.boolean().optional(),
+      rating: z.object({ avg: z.number(), count: z.number().int() }).optional(),
+      tripCount: z.number().int().optional(),
+    }),
     amountCents: z.number().int().meta({ description: 'The Guest’s total, or the Host’s payout' }),
     requestExpiresAt: z.iso.datetime().optional(),
     verificationReview: verificationReviewSchema,

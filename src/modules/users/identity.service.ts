@@ -10,7 +10,7 @@ import { recordAudit } from '../audit/audit.service.js';
 import { resolveVerificationReview } from '../bookings/booking.service.js';
 import { notify } from '../notifications/notify.js';
 import { alertStaff } from '../staff/staff-alerts.js';
-import { licenceNumberHash } from './driver-licence.service.js';
+import { documentDobHash, flagDuplicateLicence, licenceNumberHash } from './driver-licence.service.js';
 import { UserModel, type IdentityVerification } from './user.model.js';
 
 /*
@@ -178,6 +178,7 @@ export async function syncIdentity(
     // What the document said, kept (as a keyed hash and a yes or no) for staff checking the licence later.
     let documentNumberHash: string | undefined;
     let documentDobMatched: boolean | undefined;
+    let dobHash: string | undefined;
     let licenceMatches = false;
     const reportId =
       typeof session.last_verification_report === 'string'
@@ -198,13 +199,20 @@ export async function syncIdentity(
           if (!licenceMatches) reason = 'The licence number on the ID doesn’t match the one entered.';
         }
         const dob = document?.dob;
-        if (dob?.year && dob.month && dob.day && user.dob) {
+        if (dob?.year && dob.month && dob.day) {
           const onDocument = `${dob.year}-${String(dob.month).padStart(2, '0')}-${String(dob.day).padStart(2, '0')}`;
-          documentDobMatched = onDocument === nzDate(user.dob);
-          if (!documentDobMatched) reason = 'The date of birth on the ID doesn’t match the one entered.';
+          // Kept as a keyed hash, to compare a date of birth entered later (with the licence).
+          dobHash = documentDobHash(onDocument);
+          if (user.dob) {
+            documentDobMatched = onDocument === nzDate(user.dob);
+            if (!documentDobMatched) reason = 'The date of birth on the ID doesn’t match the one entered.';
+          }
         }
       } catch (error) {
+        // Without the report nothing was compared: the check isn't approved on trust. The identity.sync job
+        // retries (the webhook queued it), and the account page shows the check as still running meanwhile.
         logger.warn({ err: error, userId }, 'Could not read the identity report');
+        throw error;
       }
     }
     outcome = reason ? 'REVIEW' : 'APPROVED';
@@ -213,6 +221,7 @@ export async function syncIdentity(
       ...(documentType && { documentType }),
       ...(documentNumberHash && { documentNumberHash }),
       ...(documentDobMatched !== undefined && { documentDobMatched }),
+      ...(dobHash && { documentDobHash: dobHash }),
       ...(reason ? { status: 'PENDING', reviewReason: reason } : { status: 'APPROVED', verifiedAt: now }),
     };
     if (!reason && licenceMatches) {
@@ -239,6 +248,8 @@ export async function syncIdentity(
     Object.entries(next).map(([key, value]) => [`identityVerification.${key}`, value]),
   );
   await UserModel.updateOne({ _id: user._id, 'identityVerification.providerRef': ref }, { $set: set });
+  // A licence the ID showed that's on another account is flagged on both (plan §3).
+  if (next.documentNumberHash) await flagDuplicateLicence(user._id, next.documentNumberHash, now);
 
   // Each outcome is emailed as well as shown on the bell (plan §7, "Verification required" and "Verification
   // approved or rejected"); a person who closed the tab mid-check still hears how it went.
@@ -338,7 +349,12 @@ export async function identityStatus(userId: string): Promise<IdentityStatusView
   const user = await UserModel.findById(userId).select('identityVerification').lean();
   const identity = user?.identityVerification;
   if (identity?.status === 'NONE' && identity.providerRef && identity.sessionStatus !== 'canceled') {
-    return syncIdentity(userId);
+    try {
+      return await syncIdentity(userId);
+    } catch (error) {
+      // Stripe couldn't be read just now: the check stays as it was, and the next look tries again.
+      logger.warn({ err: error, userId }, 'Could not sync the identity check');
+    }
   }
   return view(identity);
 }

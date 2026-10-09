@@ -15,9 +15,10 @@ import type { adminReportSchema } from './admin-ops.schemas.js';
 
 /*
  * The moderation queue (spec §18; plan §9 Days 20–22): what members reported, with what was reported, so
- * support can act on it (hide a review, suspend someone, take a car down) or dismiss it, with a recorded
- * reason. A reported message's booking, or the booking a member was reported from, is given so its thread
- * can be opened from the report, and a reported review comes whole, so it can be hidden from there.
+ * support can act on it (remove a message, hide a review, suspend someone, take a car down) or dismiss it,
+ * with a recorded reason. A reported message's booking, or the booking a member was reported from, is given
+ * so its thread can be opened from the report, a reported message says whether it was removed, and a
+ * reported review comes whole, so it can be hidden from there.
  */
 
 type Id = Types.ObjectId;
@@ -32,7 +33,7 @@ async function previews(reports: ReportRecord[]) {
     reports.filter((report) => report.targetType === type).map((report) => report.targetId);
   const [messages, reviews, vehicles, users] = await Promise.all([
     MessageModel.find({ _id: mongoose.trusted({ $in: ids('MESSAGE') }) })
-      .select('threadId body attachments')
+      .select('threadId body attachments hiddenAt hiddenReason')
       .lean(),
     reviewsForReports(ids('REVIEW')),
     VehicleModel.find({ _id: mongoose.trusted({ $in: ids('VEHICLE') }) })
@@ -71,7 +72,14 @@ async function previews(reports: ReportRecord[]) {
   };
   const find = <T extends { _id: Id }>(list: T[], id: Id) => list.find((item) => item._id.equals(id));
 
-  return (report: ReportRecord): { preview: string; bookingRef?: string; review?: ModerationReviewView } => {
+  return (
+    report: ReportRecord,
+  ): {
+    preview: string;
+    bookingRef?: string;
+    review?: ModerationReviewView;
+    messageRemoved?: { at: string; reason?: string };
+  } => {
     switch (report.targetType) {
       case 'MESSAGE': {
         const message = find(messages, report.targetId);
@@ -79,7 +87,16 @@ async function previews(reports: ReportRecord[]) {
         const thread = threads.find((candidate) => candidate._id.equals(message.threadId));
         const booking = thread && bookings.find((candidate) => candidate._id.equals(thread.bookingId));
         const photos = message.attachments.length ? ` (${message.attachments.length} photo(s))` : '';
-        return { preview: clip(`${message.body}${photos}`), ...(booking && { bookingRef: booking.ref }) };
+        return {
+          preview: clip(`${message.body}${photos}`),
+          ...(booking && { bookingRef: booking.ref }),
+          ...(message.hiddenAt && {
+            messageRemoved: {
+              at: message.hiddenAt.toISOString(),
+              ...(message.hiddenReason && { reason: message.hiddenReason }),
+            },
+          }),
+        };
       }
       case 'REVIEW': {
         const review = reviews.find((candidate) => candidate.id === report.targetId.toString());

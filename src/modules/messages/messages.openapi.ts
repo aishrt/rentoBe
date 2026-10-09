@@ -74,12 +74,12 @@ export function registerMessagePaths(registry: OpenAPIRegistry) {
     tags: ['Messages'],
     summary: 'Send a message, with up to 6 photos',
     description:
-      'Photos are uploaded first with POST /uploads/signature (purpose MESSAGE_PHOTO). The other side is emailed if it’s still unread after 10 minutes.',
+      'Photos are uploaded first with POST /uploads/signature (purpose MESSAGE_PHOTO). The other side is emailed if it’s still unread after 10 minutes. 403 ACCOUNT_SUSPENDED while your account is suspended; 409 THREAD_CLOSED when the conversation can’t take messages (`readOnlyReason` says why).',
     security: signedIn,
     request: { params: refParams, body: jsonBody(sendMessageSchema) },
     responses: {
       201: jsonResponse('Sent', messageResponseSchema),
-      ...errorResponses(400, 401, 404, 409, 429),
+      ...errorResponses(400, 401, 403, 404, 409, 429),
     },
   });
 

@@ -15,6 +15,8 @@ export interface NewMessageProps {
   /** How many messages are waiting. */
   count: number;
   url: string;
+  /** Turns these emails off without signing in (plan §7: non-essential email people choose). */
+  unsubscribeUrl?: string;
 }
 
 /** A message still unread 10 minutes after it was sent (plan §4.3, `messages.unreadEmail`). */
@@ -35,6 +37,12 @@ export function NewMessageEmail(props: NewMessageProps) {
         Keep your conversation on Rento Vroom: messages here are part of the trip’s record if anything goes
         wrong.
       </EmailNote>
+      {props.unsubscribeUrl && (
+        <EmailNote>
+          Don’t want these emails? <a href={props.unsubscribeUrl}>Turn off emails about unread messages</a>.
+          You’ll still see new messages in the app.
+        </EmailNote>
+      )}
     </EmailLayout>
   );
 }

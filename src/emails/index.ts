@@ -223,6 +223,8 @@ export interface SendEmailInput<Name extends EmailTemplateName> {
   template: Name;
   props: EmailTemplateProps<Name>;
   replyTo?: string;
+  /** A one-click unsubscribe link for non-transactional mail, sent as List-Unsubscribe (RFC 8058). */
+  listUnsubscribe?: string;
 }
 
 /**
@@ -230,9 +232,19 @@ export interface SendEmailInput<Name extends EmailTemplateName> {
  * instead, `enqueue('email.send', …)`, which calls this with retries (plan §4.3).
  */
 export async function sendEmail<Name extends EmailTemplateName>(
-  { to, template, props, replyTo }: SendEmailInput<Name>,
+  { to, template, props, replyTo, listUnsubscribe }: SendEmailInput<Name>,
   mailer: Mailer = getMailer(),
 ): Promise<SentEmail> {
   const email = await renderEmail(template, props);
-  return mailer.send({ to, ...email, ...(replyTo && { replyTo }) });
+  return mailer.send({
+    to,
+    ...email,
+    ...(replyTo && { replyTo }),
+    ...(listUnsubscribe && {
+      headers: {
+        'List-Unsubscribe': `<${listUnsubscribe}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      },
+    }),
+  });
 }

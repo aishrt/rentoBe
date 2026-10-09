@@ -1,5 +1,12 @@
 import { z } from 'zod';
+import { attachmentInputSchema, attachmentViewSchema } from '../uploads/uploads.schemas.js';
 import { TICKET_CATEGORIES, TICKET_STATUSES } from './support-ticket.model.js';
+
+/**
+ * Photos and PDFs with a ticket message, uploaded first with purpose SUPPORT_FILE (plan §3, public and
+ * private files). Uploading needs an account, so files come from signed-in members and staff.
+ */
+export const ticketFilesSchema = z.array(attachmentInputSchema).max(10, { error: 'Up to 10 files' });
 
 /** The Contact Us form (plan §9, Days 12–14). Signed-out visitors give a name and email to reply to. */
 export const contactRequestSchema = z
@@ -20,6 +27,9 @@ export const contactRequestSchema = z
       .regex(/^RV-[A-Z0-9]{6}$/, { error: 'Booking references look like RV-7K2Q9M' })
       .optional()
       .or(z.literal('').transform(() => undefined)),
+    attachments: ticketFilesSchema.optional().meta({
+      description: 'Signed in only: photos and PDFs uploaded first with purpose SUPPORT_FILE',
+    }),
   })
   .meta({ id: 'ContactRequest' });
 export type ContactRequest = z.infer<typeof contactRequestSchema>;
@@ -54,6 +64,7 @@ export const supportTicketSchema = supportTicketSummarySchema
         id: z.string(),
         from: z.enum(['YOU', 'SUPPORT']),
         body: z.string(),
+        attachments: z.array(attachmentViewSchema),
         createdAt: z.iso.datetime(),
       }),
     ),
@@ -72,5 +83,9 @@ export const ticketReplySchema = z
       .trim()
       .min(2, { error: 'Write a message' })
       .max(5000, { error: 'Keep it under 5,000 characters' }),
+    attachments: ticketFilesSchema
+      .default([])
+      .meta({ description: 'Photos and PDFs uploaded first with purpose SUPPORT_FILE' }),
   })
   .meta({ id: 'TicketReply' });
+export type TicketReplyInput = z.infer<typeof ticketReplySchema>;

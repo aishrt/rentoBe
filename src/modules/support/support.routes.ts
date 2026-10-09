@@ -27,8 +27,8 @@ export function supportRouter(options: { rateLimit: boolean } = { rateLimit: tru
   });
 
   router.post('/tickets/:ref/messages', requireAuth, ...limit(ticketReplyRateLimit), async (req, res) => {
-    const { body } = validate(ticketReplySchema, req.body);
-    res.json({ ticket: await replyToMyTicket(req.auth!.userId, String(req.params.ref), body) });
+    const input = validate(ticketReplySchema, req.body);
+    res.json({ ticket: await replyToMyTicket(req.auth!.userId, String(req.params.ref), input) });
   });
 
   return router;

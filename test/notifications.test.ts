@@ -240,11 +240,17 @@ describe('notification preferences', () => {
       marketingEmail: false,
       marketingSms: false,
       unreadMessageSms: false,
+      unreadMessageEmail: true,
     });
     const changed = await agent
       .patch('/api/v1/me/notification-prefs')
       .send({ marketingEmail: true, marketingSms: true, unreadMessageSms: true });
-    expect(changed.body.prefs).toEqual({ marketingEmail: true, marketingSms: true, unreadMessageSms: true });
+    expect(changed.body.prefs).toEqual({
+      marketingEmail: true,
+      marketingSms: true,
+      unreadMessageSms: true,
+      unreadMessageEmail: true,
+    });
 
     const visitor = browserAgent();
     expect(
@@ -254,11 +260,12 @@ describe('notification preferences', () => {
     expect(
       (await visitor.post('/api/v1/notifications/unsubscribe').send({ token: unsubscribeToken(user.id) }))
         .status,
-    ).toBe(204);
+    ).toBe(200);
     expect((await agent.get('/api/v1/me/notification-prefs')).body.prefs).toEqual({
       marketingEmail: false,
       marketingSms: false,
       unreadMessageSms: true,
+      unreadMessageEmail: true,
     });
   });
 });

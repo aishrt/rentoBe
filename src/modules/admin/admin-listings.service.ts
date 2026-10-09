@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
+import { nzDate } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { notify } from '../notifications/notify.js';
 import { HOST_STATUSES, UserModel, type HostStatus } from '../users/user.model.js';
@@ -10,6 +11,7 @@ import { toHostVehicleView } from '../vehicles/host-vehicles.service.js';
 import { listingChecklist, PHOTO_ANGLE_NAMES } from '../vehicles/listing-checklist.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import { VehicleModel, type VehicleDocument } from '../vehicles/vehicle.model.js';
+import { upcomingFor } from './admin-bookings.service.js';
 import type { vehicleListQuerySchema } from './admin-listings.schemas.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 
@@ -169,6 +171,7 @@ export async function listReviewQueue() {
       ...(vehicle.city && { city: vehicle.city }),
       pendingPhotos: vehicle.photos.filter((photo) => photo.status === 'PENDING').length,
       pendingDocuments: vehicle.documents.filter((document) => document.status === 'PENDING').length,
+      keyChanges: (vehicle.keyChanges ?? []).map((change) => change.field),
       flags: listingChecklist(vehicle, settings).flags.length,
       updatedAt: vehicle.updatedAt.toISOString(),
     };
@@ -265,18 +268,31 @@ async function findVehicle(id: string): Promise<VehicleDocument> {
   return vehicle;
 }
 
-export async function getVehicleForReview(id: string) {
+/**
+ * GET /admin/vehicles/{id}: the listing as staff review it, with the key details its Host changed since it
+ * was live, and while it's suspended, its upcoming bookings still to keep or cancel (plan §8.2), each time
+ * the page loads rather than only in the answer to the suspension.
+ */
+export async function getVehicleForReview(id: string, now = new Date()) {
   const vehicle = await findVehicle(id);
-  const [host, settings] = await Promise.all([
+  const [host, settings, upcomingBookings] = await Promise.all([
     UserModel.findById(vehicle.hostId)
       .select(
         'firstName lastName email phone emailVerifiedAt phoneVerifiedAt hostProfile.status hostProfile.payoutsEnabled',
       )
       .lean(),
     getPlatformSettings(),
+    vehicle.status === 'SUSPENDED' ? upcomingFor({ vehicleId: vehicle._id }, now) : undefined,
   ]);
   return {
     vehicle: toHostVehicleView(vehicle, settings),
+    keyChanges: (vehicle.keyChanges ?? []).map((change) => ({
+      field: change.field,
+      ...(change.before !== undefined && { before: change.before }),
+      ...(change.after !== undefined && { after: change.after }),
+      changedAt: change.changedAt.toISOString(),
+    })),
+    ...(upcomingBookings && { upcomingBookings }),
     host: {
       id: vehicle.hostId.toString(),
       name: host ? `${host.firstName} ${host.lastName}` : 'Unknown',
@@ -310,6 +326,8 @@ export async function decideListing(
   );
   const before = vehicle.status;
   const live = before === 'ACTIVE' || before === 'INACTIVE';
+  /** New photos and documents approved on a live listing, for the Host's email. */
+  const changesApproved: string[] = [];
 
   if (decision === 'APPROVED') {
     if (host?.hostProfile?.status !== 'APPROVED') {
@@ -319,11 +337,17 @@ export async function decideListing(
       throw new HttpError(409, 'NOT_UNDER_REVIEW', 'Only a listing under review can be approved.');
     }
     const staff = new mongoose.Types.ObjectId(staffId);
-    for (const photo of vehicle.photos) if (photo.status === 'PENDING') photo.status = 'APPROVED';
+    for (const photo of vehicle.photos) {
+      if (photo.status === 'PENDING') {
+        photo.status = 'APPROVED';
+        changesApproved.push(`the ${PHOTO_ANGLE_NAMES[photo.type]} photo`);
+      }
+    }
     for (const document of vehicle.documents) {
       if (document.status === 'PENDING') {
         document.status = 'VERIFIED';
         document.reviewedBy = staff;
+        changesApproved.push(`the ${documentName(document.type)}`);
       }
     }
     if (before === 'UNDER_REVIEW') {
@@ -337,6 +361,14 @@ export async function decideListing(
     vehicle.status = decision;
   }
   vehicle.reviewNotes = notes;
+  // The key details changed on a live listing are settled by an approval or a rejection; a request for
+  // changes keeps them for the next look.
+  const keyChanges = vehicle.keyChanges?.map((change) => ({
+    field: change.field,
+    before: change.before,
+    after: change.after,
+  }));
+  if (decision !== 'CHANGES_REQUESTED') vehicle.set('keyChanges', undefined);
   await vehicle.save();
   forget('vehicles:featured');
 
@@ -345,11 +377,15 @@ export async function decideListing(
     action: `vehicle.${decision.toLowerCase().replace('_', '-')}`,
     entity: 'vehicle',
     entityId: vehicle.id,
-    before: { status: before },
+    before: { status: before, ...(keyChanges && keyChanges.length > 0 && { keyChanges }) },
     after: { status: vehicle.status, notes },
     ip,
   });
-  // A live listing's approved changes need no email; a listing's first decision does.
+  // A live listing's approved changes (plan §7: "Listing changes approved or rejected"); a listing's first
+  // decision has its own email below.
+  if (live && host && changesApproved.length > 0) {
+    await notifyChangesApproved(vehicle, host.firstName, changesApproved);
+  }
   if (!live && host) {
     const title = vehicleTitle(vehicle);
     // Approved before payout setup: say so, and send the Host to finish it, not to a listing nobody can find.
@@ -394,6 +430,7 @@ export async function decidePhoto(
   const vehicle = await findVehicle(id);
   const photo = vehicle.photos.find((candidate) => candidate._id?.toString() === photoId);
   if (!photo) throw notFound('photo');
+  const wasPending = photo.status === 'PENDING';
   photo.status = approve ? 'APPROVED' : 'REJECTED';
   if (!approve) photo.qualityFlag = 'ADMIN_FLAGGED';
   await vehicle.save();
@@ -406,16 +443,77 @@ export async function decidePhoto(
     after: { photoId, type: photo.type },
     ip,
   });
+  const host = await UserModel.findById(vehicle.hostId).select('firstName').lean();
+  const angle = PHOTO_ANGLE_NAMES[photo.type];
   if (!approve) {
     await notify({
       userId: vehicle.hostId,
       type: 'LISTING_PHOTO_REJECTED',
-      title: `Please retake the ${PHOTO_ANGLE_NAMES[photo.type]} photo`,
-      body: `Our team couldn't use the ${PHOTO_ANGLE_NAMES[photo.type]} photo of your ${vehicleTitle(vehicle)}.`,
+      title: `Please retake the ${angle} photo`,
+      body: `Our team couldn't use the ${angle} photo of your ${vehicleTitle(vehicle)}.`,
       link: `/host/vehicles/${vehicle.id}`,
+      // "Listing changes (new photos, documents) approved or rejected" (plan §7).
+      email: {
+        template: 'tripNotice',
+        props: {
+          firstName: host?.firstName ?? 'there',
+          heading: `Please retake the ${angle} photo of your ${vehicleTitle(vehicle)}`,
+          paragraphs: [
+            `Our team couldn't use the ${angle} photo of your ${vehicleTitle(vehicle)}: it may be too dark, blurry or not show the whole view.`,
+            'Please take a new one and upload it. Guests keep seeing the photos already approved meanwhile.',
+          ],
+          buttonLabel: 'Upload a new photo',
+          url: `${siteUrl()}/host/vehicles/${vehicle.id}/3`,
+        },
+      },
     });
+  } else if (wasPending && isLive(vehicle) && host) {
+    await notifyChangesApproved(vehicle, host.firstName, [`the ${angle} photo`]);
   }
   return toHostVehicleView(vehicle, await getPlatformSettings());
+}
+
+const isLive = (vehicle: VehicleDocument) => vehicle.status === 'ACTIVE' || vehicle.status === 'INACTIVE';
+
+const DOCUMENT_NAMES: Record<string, string> = {
+  REGO: 'registration',
+  WOF: 'WOF',
+  COF: 'Certificate of Fitness',
+  RUC: 'Road User Charges licence',
+  INSURANCE: 'insurance document',
+  OWNER_CONSENT: 'owner’s consent',
+  OTHER: 'document',
+};
+const documentName = (type: string) => DOCUMENT_NAMES[type] ?? 'document';
+
+/**
+ * New photos or documents on a live listing were approved (plan §7, "Listing changes approved"). One email a
+ * day for a car, however many staff approve in one sitting.
+ */
+async function notifyChangesApproved(vehicle: VehicleDocument, firstName: string, what: string[]) {
+  const title = vehicleTitle(vehicle);
+  const list = what.length === 1 ? what[0]! : `${what.slice(0, -1).join(', ')} and ${what.at(-1)!}`;
+  await notify({
+    userId: vehicle.hostId,
+    type: 'LISTING_CHANGES_APPROVED',
+    title: `Your changes to the ${title} are approved`,
+    body: `We approved ${list}.`,
+    link: `/host/vehicles/${vehicle.id}`,
+    email: {
+      template: 'tripNotice',
+      props: {
+        firstName,
+        heading: `Your changes to the ${title} are approved`,
+        paragraphs: [
+          `We’ve approved ${list} for your ${title}.`,
+          'Guests see the update on your listing now.',
+        ],
+        buttonLabel: 'View your car',
+        url: `${siteUrl()}/host/vehicles/${vehicle.id}`,
+      },
+    },
+    dedupeKey: `LISTING_CHANGES_APPROVED:${vehicle.id}:${nzDate(new Date())}`,
+  });
 }
 
 export async function decideDocument(
@@ -428,6 +526,7 @@ export async function decideDocument(
   const vehicle = await findVehicle(id);
   const document = vehicle.documents.find((candidate) => candidate._id?.toString() === documentId);
   if (!document) throw notFound('document');
+  const wasPending = document.status === 'PENDING';
   document.status = verify ? 'VERIFIED' : 'REJECTED';
   document.reviewedBy = new mongoose.Types.ObjectId(staffId);
   await vehicle.save();
@@ -439,14 +538,32 @@ export async function decideDocument(
     after: { documentId, type: document.type },
     ip,
   });
+  const host = await UserModel.findById(vehicle.hostId).select('firstName').lean();
+  const name = documentName(document.type);
   if (!verify) {
     await notify({
       userId: vehicle.hostId,
       type: 'LISTING_DOCUMENT_REJECTED',
       title: 'Please upload a document again',
-      body: `Our team couldn't accept a document for your ${vehicleTitle(vehicle)}.`,
+      body: `Our team couldn't accept the ${name} for your ${vehicleTitle(vehicle)}.`,
       link: `/host/vehicles/${vehicle.id}`,
+      // "Listing changes (new photos, documents) approved or rejected" (plan §7).
+      email: {
+        template: 'tripNotice',
+        props: {
+          firstName: host?.firstName ?? 'there',
+          heading: `Please upload the ${name} for your ${vehicleTitle(vehicle)} again`,
+          paragraphs: [
+            `Our team couldn't accept the ${name} you uploaded for your ${vehicleTitle(vehicle)}: it may be unreadable, out of date, or not match the car.`,
+            'Please upload a clear, current copy. If the registered owner isn’t you, add the owner’s written consent too.',
+          ],
+          buttonLabel: 'Upload it again',
+          url: `${siteUrl()}/host/vehicles/${vehicle.id}/2`,
+        },
+      },
     });
+  } else if (wasPending && isLive(vehicle) && host) {
+    await notifyChangesApproved(vehicle, host.firstName, [`the ${name}`]);
   }
   return toHostVehicleView(vehicle, await getPlatformSettings());
 }

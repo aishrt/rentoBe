@@ -35,7 +35,7 @@ import type {
  * The digital vehicle handover (spec §14, plan §8.2 and §9 Days 19–21). Check-in, by the Host with the
  * Guest or by the Guest alone, starts the trip; check-out ends it. Each is a set of timestamped photos of
  * every angle, the odometer, the fuel or battery level and any damage pinned on a car diagram, which the
- * other party reviews and confirms. New damage can be flagged at check-out and, by the Host, until the
+ * other party reviews and confirms. Either party can flag new damage at check-out and afterwards, until the
  * damage-report window closes.
  */
 
@@ -60,7 +60,8 @@ function partyOf(booking: Pick<Booking, 'guestId' | 'hostId'>, userId: Id | stri
   return 'STAFF' as const;
 }
 
-function toReportView(booking: BookingRecord, report: ReportRecord): ConditionReportView {
+/** A report as the Guest, the Host or staff see it; only staff see where each photo was taken. */
+function toReportView(booking: BookingRecord, report: ReportRecord, viewer: Viewer): ConditionReportView {
   return {
     stage: report.stage,
     odometer: report.odometer,
@@ -73,7 +74,12 @@ function toReportView(booking: BookingRecord, report: ReportRecord): ConditionRe
       url: fileLink(photo.url),
       takenBy: partyOf(booking, photo.takenBy),
       takenAt: photo.takenAt.toISOString(),
+      ...(photo.exifTakenAt && { exifTakenAt: photo.exifTakenAt.toISOString() }),
       uploadedAt: photo.uploadedAt.toISOString(),
+      // Where someone stood is evidence for support in a dispute, not something the other party needs.
+      ...(viewer === 'STAFF' &&
+        photo.lat !== undefined &&
+        photo.lng !== undefined && { lat: photo.lat, lng: photo.lng }),
     })),
     damagePins: report.damagePins.map((pin) => ({
       id: pin._id?.toString() ?? `${pin.x}-${pin.y}`,
@@ -151,8 +157,8 @@ export async function getHandover(
     fuelPolicy: booking.terms.fuelPolicy,
     requiredAngles: [...REQUIRED_INSPECTION_ANGLES],
     checkInOpensAt: opensAt.toISOString(),
-    checkIn: checkIn ? toReportView(record, checkIn) : null,
-    checkOut: checkOut ? toReportView(record, checkOut) : null,
+    checkIn: checkIn ? toReportView(record, checkIn, viewer) : null,
+    checkOut: checkOut ? toReportView(record, checkOut, viewer) : null,
     ...(windowEnds && { damageWindowEndsAt: windowEnds.toISOString() }),
     emailVerificationNeeded: emailNeeded,
     ...(checkIn && checkOut && { kilometres: kilometresFor(booking, checkIn, checkOut) }),
@@ -162,9 +168,9 @@ export async function getHandover(
       checkOut: Boolean(party) && booking.status === 'ACTIVE' && Boolean(checkIn) && !checkOut,
       confirmCheckIn: Boolean(party && checkIn) && !confirmedBy(checkIn, party!),
       confirmCheckOut: Boolean(party && checkOut) && !confirmedBy(checkOut, party!),
-      flagDamage:
-        Boolean(party && checkOut && windowEnds) &&
-        (party === 'HOST' ? now < windowEnds! : !confirmedBy(checkOut, 'GUEST')),
+      // Either party, for the whole damage-report window after check-out (plan §8.2): confirming the
+      // check-out doesn't end it, so a Guest who did the check-out can still flag what they spot later.
+      flagDamage: Boolean(party && checkOut && windowEnds) && now < windowEnds!,
     },
   };
 }
@@ -183,6 +189,8 @@ async function confirmPhotos(
       takenBy: new mongoose.Types.ObjectId(takenBy),
       // A device clock in the future can't be right; the server's time stands in.
       takenAt: new Date(Math.min(new Date(photo.takenAt).getTime(), now.getTime())),
+      // What the photo itself says; kept as sent, so an old gallery photo shows (plan §3).
+      ...(photo.exifTakenAt && { exifTakenAt: new Date(photo.exifTakenAt) }),
       uploadedAt: now,
       ...(photo.lat !== undefined && photo.lng !== undefined && { lat: photo.lat, lng: photo.lng }),
     })),
@@ -437,8 +445,8 @@ export async function confirmInspection(
 }
 
 /**
- * POST /bookings/{id}/inspections/CHECK_OUT/damage: new damage found after the trip. The Guest can add it
- * until they confirm the check-out; the Host until the damage-report window closes (plan §8.2).
+ * POST /bookings/{id}/inspections/CHECK_OUT/damage: new damage found after the trip. Either party can add
+ * it once the check-out is recorded, until the damage-report window in settings closes (plan §8.2).
  */
 export async function flagDamage(
   booking: BookingDocument,

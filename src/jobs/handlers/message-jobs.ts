@@ -2,6 +2,7 @@ import { env } from '../../env.js';
 import { unreadMessagesFor } from '../../modules/messages/messages.service.js';
 import { notify } from '../../modules/notifications/notify.js';
 import { syncIdentity } from '../../modules/users/identity.service.js';
+import { oneClickUnsubscribeUrl, unsubscribeUrl } from '../../modules/users/notification-prefs.js';
 import { UserModel } from '../../modules/users/user.model.js';
 import type { JobContext } from './index.js';
 
@@ -36,18 +37,23 @@ export async function unreadMessageEmailJob(
     title: count > 1 ? `${count} new messages from ${senderName}` : `New message from ${senderName}`,
     body: snippet,
     link: path,
-    email: {
-      template: 'newMessage',
-      props: {
-        firstName: recipient.firstName,
-        senderFirstName: senderName,
-        vehicleTitle: booking.vehicleSnapshot.title,
-        ref: booking.ref,
-        snippet,
-        count,
-        url,
+    // A non-essential email the recipient can turn off (plan §7).
+    ...(recipient.notificationPrefs?.unreadMessageEmail !== false && {
+      email: {
+        template: 'newMessage',
+        props: {
+          firstName: recipient.firstName,
+          senderFirstName: senderName,
+          vehicleTitle: booking.vehicleSnapshot.title,
+          ref: booking.ref,
+          snippet,
+          count,
+          url,
+          unsubscribeUrl: unsubscribeUrl(recipientId, 'MESSAGE_EMAILS'),
+        },
+        listUnsubscribe: oneClickUnsubscribeUrl(recipientId, 'MESSAGE_EMAILS'),
       },
-    },
+    }),
     ...(recipient.notificationPrefs?.unreadMessageSms && {
       sms: {
         body: `Rento Vroom: ${senderName} sent you a message about ${booking.ref}. Read it: ${url}`,

@@ -446,9 +446,11 @@ describe('Booking an Instant Book car', () => {
     expect((await BookingModel.findById(id).lean())!.status).toBe('EXPIRED');
     expect(await AvailabilityBlockModel.countDocuments({ bookingId: id })).toBe(0);
     expect((await PaymentModel.findOne({ bookingId: id }).lean())!.status).toBe('CANCELLED');
-    // The Guest can see what happened; the Host never heard of it, so it isn't in their bookings.
+    // Nothing was charged and nothing was booked: it's in neither list (a checkout left or started again
+    // would otherwise pile up as "Expired" trips), though its page still opens from a link.
     const guestList = await agent.get('/api/v1/bookings').query({ group: 'cancelled' });
-    expect(guestList.body.bookings).toEqual([expect.objectContaining({ ref, status: 'EXPIRED' })]);
+    expect(guestList.body.bookings).toEqual([]);
+    expect((await agent.get(`/api/v1/bookings/${ref}`)).body.booking).toMatchObject({ status: 'EXPIRED' });
     for (const query of [{ role: 'host', group: 'cancelled' }, { role: 'host' }]) {
       expect((await hostAgent.get('/api/v1/bookings').query(query)).body.bookings).toEqual([]);
     }
@@ -1199,11 +1201,11 @@ describe('Cancellations', () => {
     const preview = (reason: string) =>
       support.get(`/api/v1/admin/bookings/${ref}/cancellation-preview`).query({ reason });
 
-    // Support staff see the preview, though cancelling needs the refunds permission.
+    // Support staff see the preview; one that refunds money says it needs the refunds permission.
     const guestNoShow = await preview('GUEST_NO_SHOW');
     expect(guestNoShow.status).toBe(200);
     expect(guestNoShow.body).toMatchObject({
-      allowed: true,
+      allowed: false,
       kind: 'GUEST_CANCELLATION',
       refundCents: 4_500,
       feeCents: 33_870 - 4_500,
@@ -1212,6 +1214,7 @@ describe('Cancellations', () => {
     });
     expect(guestNoShow.body.hostShareCents).toBeGreaterThan(0);
     expect(guestNoShow.body.message).toContain('the Guest gets $45.00 back');
+    expect(guestNoShow.body.message).toContain('needs the refunds permission');
     const hostNoShow = await preview('HOST_NO_SHOW');
     expect(hostNoShow.body).toMatchObject({
       kind: 'HOST_CANCELLATION',

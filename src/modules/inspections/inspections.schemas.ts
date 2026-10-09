@@ -10,8 +10,16 @@ export const inspectionPhotoInputSchema = z
     angle: z.enum(INSPECTION_ANGLES),
     key: z.string().min(1).max(300).meta({ description: 'From POST /uploads/signature (INSPECTION_PHOTO)' }),
     takenAt: z.iso.datetime({ offset: true }).meta({ description: 'The device clock when it was taken' }),
-    lat: z.number().min(-90).max(90).optional(),
+    exifTakenAt: z.iso.datetime({ offset: true }).optional().meta({
+      description:
+        'When the photo says it was taken (EXIF DateTimeOriginal), for a photo chosen from the device rather than taken with the in-app camera',
+    }),
+    lat: z.number().min(-90).max(90).optional().meta({ description: 'Where the device was, if allowed' }),
     lng: z.number().min(-180).max(180).optional(),
+  })
+  .refine((value) => (value.lat === undefined) === (value.lng === undefined), {
+    error: 'Give the latitude and longitude together',
+    path: ['lng'],
   })
   .meta({ id: 'InspectionPhotoInput' });
 
@@ -89,7 +97,13 @@ export const conditionReportSchema = z
         url: z.string().meta({ description: 'A private link that works for 10 minutes' }),
         takenBy: party,
         takenAt: z.iso.datetime(),
+        exifTakenAt: z.iso.datetime().optional().meta({
+          description:
+            'When the photo says it was taken: more than an hour from takenAt shows a photo taken earlier',
+        }),
         uploadedAt: z.iso.datetime(),
+        lat: z.number().optional().meta({ description: 'Staff only: where the device was' }),
+        lng: z.number().optional().meta({ description: 'Staff only' }),
       }),
     ),
     damagePins: z.array(
@@ -122,7 +136,7 @@ export const handoverSchema = z
     checkIn: conditionReportSchema.nullable(),
     checkOut: conditionReportSchema.nullable(),
     damageWindowEndsAt: z.iso.datetime().optional().meta({
-      description: 'After check-out: new damage can be flagged until then',
+      description: 'After check-out: either party can flag new damage until then',
     }),
     emailVerificationNeeded: z.boolean().meta({
       description: 'The Guest must confirm their email address before check-in (plan §6.1)',

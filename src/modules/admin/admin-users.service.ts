@@ -1,13 +1,16 @@
 import mongoose, { type Types } from 'mongoose';
 import type { z } from 'zod';
 import { env } from '../../env.js';
+import { enqueue } from '../../jobs/queue.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
 import { nzDate } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { SessionModel } from '../auth/session.model.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
+import { confirmAfterSuspension } from '../bookings/booking.service.js';
 import { notify } from '../notifications/notify.js';
+import { disconnectUser } from '../../realtime/realtime.js';
 import { releaseHeldPayouts } from '../payouts/payouts.service.js';
 import { accountClosure } from '../users/privacy.service.js';
 import { UserModel, type Role, type User } from '../users/user.model.js';
@@ -194,6 +197,7 @@ export async function suspendUser(
     throw new HttpError(409, 'ALREADY_SUSPENDED', 'This account is already suspended.');
   await UserModel.updateOne({ _id: user._id }, { $set: { status: 'SUSPENDED', suspendedReason: reason } });
   await SessionModel.deleteMany({ userId: user._id });
+  disconnectUser(user._id.toString());
   await VehicleModel.updateMany({ hostId: user._id }, { $set: { hostSuspended: true } });
   forget('vehicles:featured');
   await recordAudit({
@@ -244,6 +248,8 @@ export async function unsuspendUser(
   );
   await VehicleModel.updateMany({ hostId: user._id }, { $unset: { hostSuspended: 1 } });
   await releaseHeldPayouts({ hostId: user._id }, 'SUSPENDED');
+  // Bookings on their cars approved while they were suspended go ahead now.
+  await confirmAfterSuspension({ hostId: user._id });
   forget('vehicles:featured');
   await recordAudit({
     actorId: staffId,
@@ -297,6 +303,24 @@ export async function closeAccount(
   const closure = await accountClosure(userId);
   if (!closure.allowed) throw new HttpError(409, 'CLOSURE_BLOCKED', closure.blockers[0]!.message);
   const now = new Date();
+  // The "Account closed" email (plan §7) goes to the address the member had, queued before it's anonymised:
+  // notify() sends nothing to a closed account.
+  await enqueue('email.send', {
+    to: user.email,
+    template: 'tripNotice',
+    props: {
+      firstName: user.firstName,
+      heading: 'Your Rento Vroom account is closed',
+      paragraphs: [
+        'We’ve closed your account as you asked, and removed your personal details from it.',
+        'We keep only the records the law asks us to, such as booking and payment records for tax, for the periods in our Privacy Policy. Your listings are no longer shown.',
+        'You’re welcome back any time: you can sign up again with this email address.',
+      ],
+      buttonLabel: 'Read our Privacy Policy',
+      url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/privacy`,
+      note: 'If you didn’t ask to close your account, reply to this email straight away.',
+    },
+  });
   await UserModel.updateOne(
     { _id: user._id },
     {
@@ -309,7 +333,12 @@ export async function closeAccount(
         closedAt: now,
         favouriteVehicleIds: [],
         blockedUserIds: [],
-        notificationPrefs: { marketingEmail: false, marketingSms: false, unreadMessageSms: false },
+        notificationPrefs: {
+          marketingEmail: false,
+          marketingSms: false,
+          unreadMessageSms: false,
+          unreadMessageEmail: false,
+        },
       },
       $unset: {
         phone: 1,
@@ -325,6 +354,7 @@ export async function closeAccount(
     },
   );
   await SessionModel.deleteMany({ userId: user._id });
+  disconnectUser(user._id.toString());
   await VehicleModel.updateMany({ hostId: user._id }, { $set: { status: 'INACTIVE', hostSuspended: true } });
   forget('vehicles:featured');
   await recordAudit({
@@ -367,7 +397,20 @@ export async function waiveHostFee(
   const owed = user.hostProfile?.feesOwedCents ?? 0;
   if (owed <= 0) throw new HttpError(409, 'NOTHING_OWED', 'This Host owes no cancellation fees.');
   const waived = Math.min(owed, amountCents ?? owed);
-  await UserModel.updateOne({ _id: user._id }, { $inc: { 'hostProfile.feesOwedCents': -waived } });
+  // Only while that much is still owed: a payout taking the same fees at that moment must not leave the
+  // Host owing less than nothing.
+  const taken = await UserModel.updateOne(
+    { _id: user._id, 'hostProfile.feesOwedCents': mongoose.trusted({ $gte: waived }) },
+    { $inc: { 'hostProfile.feesOwedCents': -waived } },
+  );
+  if (taken.modifiedCount === 0) {
+    throw new HttpError(
+      409,
+      'OWED_CHANGED',
+      'What this Host owes has just changed. Please refresh and try again.',
+    );
+  }
+  await recordWaiver(user._id, waived);
   await recordAudit({
     actorId: staffId,
     action: 'host-fee.waived',
@@ -378,6 +421,29 @@ export async function waiveHostFee(
     ...(ip && { ip }),
   });
   return userDetail(userId);
+}
+
+/**
+ * Spreads a waiver over the Host's cancellation fees, newest first (the ones most likely still owed: older ones
+ * came off earlier payouts), so earnings and the statement show the fee less what was waived.
+ */
+async function recordWaiver(hostId: Types.ObjectId, waivedCents: number) {
+  let left = waivedCents;
+  const bookings = await BookingModel.find({
+    hostId,
+    hostCancellationFeeCents: mongoose.trusted({ $gt: 0 }),
+  })
+    .select('hostCancellationFeeCents hostCancellationFeeWaivedCents')
+    .sort({ cancelledAt: -1 })
+    .lean();
+  for (const booking of bookings) {
+    if (left <= 0) break;
+    const open = (booking.hostCancellationFeeCents ?? 0) - (booking.hostCancellationFeeWaivedCents ?? 0);
+    const amount = Math.min(open, left);
+    if (amount <= 0) continue;
+    await BookingModel.updateOne({ _id: booking._id }, { $inc: { hostCancellationFeeWaivedCents: amount } });
+    left -= amount;
+  }
 }
 
 /** GET /admin/risk: people with risk flags waiting for review, most flags first (plan §9, Days 20–22). */

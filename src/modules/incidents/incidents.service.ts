@@ -567,14 +567,28 @@ export async function replyToIncident(
     incident.status === 'AWAITING_RESPONSE' ? { status: 'INVESTIGATING' } : {},
   );
   await tellParties(updated, booking, event, updated.events.length - 1, 'New update');
+  const title = `${role === 'GUEST' ? 'The guest' : 'The host'} added to case ${incident.caseRef}`;
+  const staffLink = `/admin/incidents/${incident.caseRef}`;
+  const dedupeKey = `INCIDENT_STAFF:${incident._id.toString()}:${updated.events.length - 1}`;
   if (incident.assignedTo) {
     await notify({
       userId: incident.assignedTo,
       type: 'INCIDENT_UPDATE',
-      title: `${role === 'GUEST' ? 'The guest' : 'The host'} added to case ${incident.caseRef}`,
+      title,
       body: input.note?.slice(0, 160),
-      link: `/admin/incidents/${incident.caseRef}`,
-      dedupeKey: `INCIDENT_STAFF:${incident._id.toString()}:${updated.events.length - 1}`,
+      link: staffLink,
+      dedupeKey,
+    });
+  } else {
+    // Nobody has the case yet: the whole team hears, so the update doesn't wait unseen (plan §7).
+    await alertStaff({
+      type: 'INCIDENT_UPDATE',
+      title,
+      body: `${role === 'GUEST' ? 'the guest' : 'the host'} added to the ${TYPE_WORDS[incident.type].toLowerCase()} case on booking ${booking.ref}${
+        input.note ? `: ${input.note.slice(0, 200)}` : ` (${plural(attachments.length, 'file')})`
+      }`,
+      link: staffLink,
+      dedupeKey,
     });
   }
   return toView(updated, booking, role, actor.userId);

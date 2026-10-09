@@ -52,7 +52,10 @@ export const hostPayoutSchema = z
       .datetime()
       .optional()
       .meta({ description: 'When it was sent to the Host’s Stripe balance' }),
-    expectedInBankBy: z.iso.datetime().optional().meta({ description: 'Usually in the Host’s bank by then' }),
+    expectedInBankBy: z.iso.datetime().optional().meta({
+      description:
+        'Usually in the Host’s bank by then: from the transfer once paid, or from the scheduled date while it’s scheduled',
+    }),
     booking: z.object({ ref: z.string(), vehicleTitle: z.string(), start: z.iso.datetime() }),
   })
   .meta({ id: 'HostPayout' });

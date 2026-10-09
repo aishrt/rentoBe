@@ -24,11 +24,13 @@ import {
 export function notificationsRouter() {
   const router = Router();
 
-  // The link in a marketing email works without signing in (plan §7).
+  // An unsubscribe link works without signing in (plan §7). An email app's one-click unsubscribe (RFC 8058)
+  // posts to the header's link, with the token in the address and a form body.
   router.post('/unsubscribe', async (req, res) => {
-    const { token } = validate(unsubscribeSchema, req.body);
-    await unsubscribe(token);
-    res.status(204).end();
+    const { token } = validate(unsubscribeSchema, {
+      token: (req.body as { token?: unknown } | undefined)?.token ?? req.query.token,
+    });
+    res.json({ unsubscribedFrom: await unsubscribe(token) });
   });
 
   router.use(requireAuth);

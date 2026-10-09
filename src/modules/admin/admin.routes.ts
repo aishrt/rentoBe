@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { auditStaffWrites } from '../../middleware/audit-log.js';
-import { requireActiveAccount, requireAuth, requirePermission, requireRole } from '../../middleware/auth.js';
+import {
+  hasPermission,
+  requireActiveAccount,
+  requireAuth,
+  requirePermission,
+  requireRole,
+} from '../../middleware/auth.js';
 import {
   adminCancelBooking,
   adminCancellationPreview,
@@ -13,7 +19,9 @@ import {
   adminCancelSchema,
   identityReviewSchema,
 } from '../bookings/bookings.schemas.js';
+import { recordAudit } from '../audit/audit.service.js';
 import { resetStaffMfa } from '../auth/mfa.service.js';
+import { AvailabilityBlockModel } from '../availability/availability-block.model.js';
 import { createTestPayment, getTestPayment } from '../payments/test-payment.service.js';
 import { staffInviteInputSchema } from '../staff/staff.schemas.js';
 import { inviteSupport, listStaff, removeSupport, revokeInvite } from '../staff/staff.service.js';
@@ -87,6 +95,9 @@ async function findVehicleForCalendar(id: string) {
   if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No such car.');
   return vehicle;
 }
+
+const NEEDS_REFUNDS_PERMISSION =
+  'Cancelling it refunds the Guest, which needs the refunds permission: ask the administrator.';
 
 /**
  * Mounted at /api/v1/admin. Every route needs an active staff account, and every write is recorded
@@ -233,13 +244,19 @@ export function adminRouter() {
     });
   });
 
-  // Staff cancel a booking: a no-show or a platform cancellation, with its refund (plan §8.2).
-  router.post('/bookings/:id/cancel', requirePermission('REFUNDS'), async (req, res) => {
+  // Staff cancel a booking: a no-show, a Host cancellation or a platform cancellation, with its refund
+  // (plan §8.2). Support edit booking status; a cancellation that refunds money also needs the refunds
+  // permission (plan §6.2), while one that refunds nothing (a request, whose authorisation is released) doesn't.
+  router.post('/bookings/:id/cancel', async (req, res) => {
     const { reason, note } = validate(adminCancelSchema, req.body);
     const { booking } = await findBookingFor(
       { userId: req.auth!.userId, roles: req.auth!.roles },
       String(req.params.id),
     );
+    const preview = await adminCancellationPreview(booking, reason);
+    if (preview.refundCents > 0 && !(await hasPermission(req.auth!.userId, 'REFUNDS'))) {
+      throw new HttpError(403, 'FORBIDDEN', NEEDS_REFUNDS_PERMISSION);
+    }
     const cancelled = await adminCancelBooking(booking, req.auth!.userId, reason, note);
     res.json({ booking: await bookingView(cancelled, 'STAFF') });
   });
@@ -251,7 +268,12 @@ export function adminRouter() {
       { userId: req.auth!.userId, roles: req.auth!.roles },
       String(req.params.id),
     );
-    res.json(await adminCancellationPreview(booking, reason));
+    const preview = await adminCancellationPreview(booking, reason);
+    if (preview.allowed && preview.refundCents > 0 && !(await hasPermission(req.auth!.userId, 'REFUNDS'))) {
+      res.json({ ...preview, allowed: false, message: `${preview.message} ${NEEDS_REFUNDS_PERMISSION}` });
+      return;
+    }
+    res.json(preview);
   });
 
   // A trip whose check-out is missing 24 h after the return: support completes it with the Host's
@@ -397,15 +419,51 @@ export function adminRouter() {
     });
   });
 
+  // Each override is audit-logged with its dates (plan §3: "written to the audit log"), including what an
+  // unblock freed, which the calendar no longer shows once the block is gone.
   router.post('/vehicles/:id/blocks', async (req, res) => {
     const vehicle = await findVehicleForCalendar(String(req.params.id));
     const input = validate(blockInputSchema, req.body);
-    res.status(201).json({ block: await blockDates(vehicle._id, input, req.auth!.userId, 'ADMIN') });
+    const block = await blockDates(vehicle._id, input, req.auth!.userId, 'ADMIN');
+    await recordAudit({
+      actorId: req.auth!.userId,
+      action: 'calendar.blocked',
+      entity: 'vehicle',
+      entityId: vehicle._id.toString(),
+      after: {
+        blockId: block.id,
+        start: block.start,
+        end: block.end,
+        ...(block.note && { note: block.note }),
+      },
+      ...(req.ip && { ip: req.ip }),
+    });
+    res.status(201).json({ block });
   });
 
   router.delete('/vehicles/:id/blocks/:blockId', async (req, res) => {
     const vehicle = await findVehicleForCalendar(String(req.params.id));
-    await unblockDates(vehicle._id, String(req.params.blockId), ['ADMIN', 'HOST_BLOCK', 'RECURRING']);
+    const blockId = String(req.params.blockId);
+    const block = mongoose.isValidObjectId(blockId)
+      ? await AvailabilityBlockModel.findOne({ _id: blockId, vehicleId: vehicle._id }).lean()
+      : null;
+    await unblockDates(vehicle._id, blockId, ['ADMIN', 'HOST_BLOCK', 'RECURRING']);
+    await recordAudit({
+      actorId: req.auth!.userId,
+      action: 'calendar.unblocked',
+      entity: 'vehicle',
+      entityId: vehicle._id.toString(),
+      ...(block && {
+        before: {
+          blockId,
+          reason: block.reason,
+          start: block.startAt.toISOString(),
+          end: block.endAt.toISOString(),
+          ...(block.note && { note: block.note }),
+        },
+      }),
+      ...(req.ip && { ip: req.ip }),
+    });
     res.status(204).end();
   });
 

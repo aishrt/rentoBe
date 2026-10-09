@@ -4,11 +4,13 @@ import { BOOKING_STATUSES, EXTRA_CHARGE_STATUSES, EXTRA_CHARGE_TYPES } from '../
 import { bookingViewSchema } from '../bookings/bookings.schemas.js';
 import { homeHeroSchema, isLinkAddress, legalPageSchema, siteFooterSchema } from '../cms/content.schemas.js';
 import { INCIDENT_STATUSES, INCIDENT_TYPES } from '../incidents/incident.model.js';
-import { PAYMENT_STATUSES, PAYMENT_TYPES } from '../payments/payment.model.js';
+import { PAYMENT_STATUSES, PAYMENT_TYPES, REFUND_FUNDERS, REFUND_KINDS } from '../payments/payment.model.js';
 import { PAYOUT_HOLD_REASONS, PAYOUT_STATUSES, PAYOUT_TYPES } from '../payouts/payout.model.js';
 import { REPORT_STATUSES, REPORT_TARGET_TYPES } from '../moderation/report.model.js';
 import { moderationReviewSchema } from '../reviews/reviews.schemas.js';
 import { TICKET_CATEGORIES, TICKET_STATUSES } from '../support/support-ticket.model.js';
+import { ticketFilesSchema } from '../support/support.schemas.js';
+import { attachmentViewSchema } from '../uploads/uploads.schemas.js';
 import {
   EMAIL_PROBLEMS,
   HOST_STATUSES,
@@ -104,7 +106,7 @@ export const adminUsersResponseSchema = z
   .object({ users: z.array(adminUserRowSchema), total: z.number().int(), page: z.number().int() })
   .meta({ id: 'AdminUsers' });
 
-const bookingRowSchema = z
+export const bookingRowSchema = z
   .object({
     id: z.string(),
     ref: z.string(),
@@ -234,6 +236,14 @@ export const adminStatusEditSchema = z
 
 export const adminRefundSchema = z
   .object({
+    paymentId: z
+      .string()
+      .regex(/^[a-f0-9]{24}$/)
+      .optional()
+      .meta({
+        description:
+          'One of the booking’s payments to refund, e.g. an extra charge (plan §8.1, item 11). Leave out for the booking’s own payment.',
+      }),
     amountCents: z.number().int().min(1, { error: 'Enter an amount' }),
     reason,
     fundedBy: z.enum(['PLATFORM', 'HOST']).meta({
@@ -312,6 +322,92 @@ export const adminPayoutsResponseSchema = z
 
 export const holdPayoutSchema = z.object({ reason }).meta({ id: 'HoldPayoutRequest' });
 
+// Refunds ----------------------------------------------------------------------------------------------------
+
+const REFUND_STATUSES = ['PENDING', 'SUCCEEDED', 'FAILED'] as const;
+
+export const refundListQuerySchema = z.object({
+  q: z.string().trim().max(20).optional().meta({ description: 'A booking reference, or part of one' }),
+  status: z.enum(REFUND_STATUSES).optional(),
+  fundedBy: z.enum(REFUND_FUNDERS).optional(),
+  kind: z.enum(REFUND_KINDS).optional(),
+  page,
+});
+
+export const adminRefundRowSchema = z
+  .object({
+    id: z.string(),
+    paymentId: z.string(),
+    paymentType: z.enum(PAYMENT_TYPES),
+    bookingRef: z.string(),
+    guest: z.object({ id: z.string(), name: z.string() }),
+    amountCents: cents,
+    reason: z.string(),
+    kind: z.enum(REFUND_KINDS).optional().meta({
+      description:
+        'A cancellation’s own refund, a payment that arrived after its booking ended, or one staff issued. Older refunds have none.',
+    }),
+    fundedBy: z.enum(REFUND_FUNDERS),
+    status: z.enum(REFUND_STATUSES),
+    failureReason: z.string().optional(),
+    issuedBy: z
+      .object({ id: z.string(), name: z.string() })
+      .optional()
+      .meta({ description: 'Staff refunds' }),
+    hostRecovery: z
+      .object({
+        deductedCents: cents.meta({ description: 'Taken off the Host’s payouts' }),
+        reversedCents: cents.meta({ description: 'Taken back from a paid payout’s Stripe transfer' }),
+        owedCents: cents.meta({ description: 'Still owed: comes off the Host’s next payout' }),
+      })
+      .optional()
+      .meta({
+        description: 'A Host-funded refund: how it has been recovered from the Host (plan §8.1, item 15)',
+      }),
+    createdAt: iso,
+  })
+  .meta({ id: 'AdminRefundRow' });
+
+export const adminRefundsResponseSchema = z
+  .object({ refunds: z.array(adminRefundRowSchema), total: z.number().int(), page: z.number().int() })
+  .meta({ id: 'AdminRefunds' });
+
+// Unpaid extra charges ---------------------------------------------------------------------------------------
+
+export const extraChargeListQuerySchema = z.object({
+  status: z.enum(['PENDING', 'FAILED']).optional().meta({ description: 'Both when left out' }),
+  page,
+});
+
+export const adminExtraChargeRowSchema = z
+  .object({
+    id: z.string(),
+    bookingRef: z.string(),
+    guest: z.object({ id: z.string(), name: z.string() }),
+    type: z.enum(EXTRA_CHARGE_TYPES),
+    description: z.string(),
+    amountCents: cents,
+    status: z.enum(EXTRA_CHARGE_STATUSES),
+    paymentStatus: z
+      .enum(PAYMENT_STATUSES)
+      .optional()
+      .meta({ description: 'Its payment, once the saved card has been tried' }),
+    failureReason: z.string().optional().meta({ description: 'Why the last try failed' }),
+    attempts: z
+      .number()
+      .int()
+      .optional()
+      .meta({ description: 'Tries on the saved card so far, while their record is kept (30 days)' }),
+    nextTryAt: iso.optional().meta({ description: 'When the saved card is tried again' }),
+    incidentRef: z.string().optional().meta({ description: 'The case it was charged from' }),
+    createdAt: iso,
+  })
+  .meta({ id: 'AdminExtraChargeRow' });
+
+export const adminExtraChargesResponseSchema = z
+  .object({ charges: z.array(adminExtraChargeRowSchema), total: z.number().int(), page: z.number().int() })
+  .meta({ id: 'AdminExtraCharges' });
+
 const personSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -352,6 +448,20 @@ export const adminBookingDetailSchema = z
       description:
         'The trip’s payout was sent (or is being sent, or the booking ended without one), so a Host-funded refund comes off the Host’s next payout or is taken back from the transfer',
     }),
+    refundableCharges: z
+      .array(
+        z.object({
+          paymentId: z.string(),
+          type: z.enum(EXTRA_CHARGE_TYPES),
+          description: z.string(),
+          refundableCents: cents,
+          payoutSent: z.boolean().meta({
+            description:
+              'The Host’s share of the charge was paid, so a Host-funded refund is taken back another way',
+          }),
+        }),
+      )
+      .meta({ description: 'Paid extra charges with something left to refund (plan §8.1, item 11)' }),
     hostRefund: z
       .object({
         recoveredFrom: z.enum(['THIS_PAYOUT', 'NEXT_PAYOUT', 'REVERSE_TRANSFER']),
@@ -412,6 +522,7 @@ export const staffTicketSchema = staffTicketRowSchema
         from: z.enum(['USER', 'STAFF']),
         authorName: z.string(),
         body: z.string(),
+        attachments: z.array(attachmentViewSchema),
         internal: z.boolean(),
         createdAt: iso,
       }),
@@ -428,6 +539,10 @@ export const staffTicketReplySchema = z
     body: z.string().trim().min(1, { error: 'Write a reply' }).max(5000),
     internal: z.boolean().default(false).meta({ description: 'A note for the team only' }),
     status: z.enum(TICKET_STATUSES).optional().meta({ description: 'Defaults to PENDING after a reply' }),
+    attachments: ticketFilesSchema.default([]).meta({
+      description:
+        'Photos and PDFs uploaded first with purpose SUPPORT_FILE. A reply has them only when the sender has an account to see them in (400 otherwise); a note always can',
+    }),
   })
   .meta({ id: 'StaffTicketReplyRequest' });
 
@@ -454,6 +569,10 @@ export const adminReportSchema = z
     }),
     // A reported review, whole, so staff can read it and hide it from the report.
     review: moderationReviewSchema.optional(),
+    messageRemoved: z
+      .object({ at: iso, reason: z.string().optional() })
+      .optional()
+      .meta({ description: 'A reported message support removed: when, and why' }),
     resolution: z.string().optional(),
     createdAt: iso,
   })

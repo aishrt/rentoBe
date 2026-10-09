@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -6,8 +7,10 @@ import { UserModel } from './user.model.js';
 
 /*
  * Notification preferences (plan §7): booking and account messages always go out; marketing email and
- * SMS only with consent (NZ Unsolicited Electronic Messages Act 2007), and texts for unread messages
- * only when asked for. Every marketing email carries an unsubscribe link that works without signing in.
+ * SMS only with consent (NZ Unsolicited Electronic Messages Act 2007), texts for unread messages only when
+ * asked for, and emails about unread messages unless turned off (the non-essential email people choose).
+ * Every marketing email, and each unread-message email, carries an unsubscribe link that works without
+ * signing in, and a List-Unsubscribe header (plan §7, deliverability).
  */
 
 export const notificationPrefsSchema = z
@@ -15,6 +18,9 @@ export const notificationPrefsSchema = z
     marketingEmail: z.boolean().meta({ description: 'News and offers by email' }),
     marketingSms: z.boolean().meta({ description: 'News and offers by text' }),
     unreadMessageSms: z.boolean().meta({ description: 'A text when a message is unread after 10 minutes' }),
+    unreadMessageEmail: z
+      .boolean()
+      .meta({ description: 'An email when a message is unread after 10 minutes (on unless turned off)' }),
   })
   .meta({ id: 'NotificationPrefs' });
 export type NotificationPrefsView = z.infer<typeof notificationPrefsSchema>;
@@ -27,17 +33,36 @@ export const unsubscribeSchema = z
   .object({ token: z.string().min(10).max(200) })
   .meta({ id: 'UnsubscribeRequest' });
 
-const key = () => createHash('sha256').update(`unsubscribe:${env.ENCRYPTION_KEY}`).digest();
-const sign = (userId: string) => createHmac('sha256', key()).update(userId).digest('base64url');
+export const unsubscribeResponseSchema = z
+  .object({ unsubscribedFrom: z.enum(['MARKETING', 'MESSAGE_EMAILS']) })
+  .meta({ id: 'UnsubscribeResponse' });
 
-/** The token in a marketing email's unsubscribe link: the user's id, signed. */
-export function unsubscribeToken(userId: string): string {
-  return `${userId}.${sign(userId)}`;
+/** What an unsubscribe link turns off: marketing email and texts, or the emails about unread messages. */
+export type UnsubscribeScope = 'MARKETING' | 'MESSAGE_EMAILS';
+
+const key = () => createHash('sha256').update(`unsubscribe:${env.ENCRYPTION_KEY}`).digest();
+// A marketing token signs the id alone, as the first links did; other scopes sign the scope too.
+const sign = (userId: string, scope: UnsubscribeScope = 'MARKETING') =>
+  createHmac('sha256', key())
+    .update(scope === 'MARKETING' ? userId : `${userId}:${scope}`)
+    .digest('base64url');
+
+/** The token in an unsubscribe link: the user's id (and what it turns off, unless marketing), signed. */
+export function unsubscribeToken(userId: string, scope: UnsubscribeScope = 'MARKETING'): string {
+  return scope === 'MARKETING' ? `${userId}.${sign(userId)}` : `${userId}.${scope}.${sign(userId, scope)}`;
 }
 
-/** The unsubscribe link for a marketing email (plan §7). */
-export function unsubscribeUrl(userId: string): string {
-  return `${env.FRONTEND_URL.replace(/\/+$/, '')}/unsubscribe?token=${unsubscribeToken(userId)}`;
+/** The unsubscribe page's link (plan §7), for the email's own text. */
+export function unsubscribeUrl(userId: string, scope: UnsubscribeScope = 'MARKETING'): string {
+  return `${env.FRONTEND_URL.replace(/\/+$/, '')}/unsubscribe?token=${unsubscribeToken(userId, scope)}`;
+}
+
+/**
+ * The List-Unsubscribe header's link (RFC 8058): the API itself, so an email app's one-click unsubscribe
+ * (a POST with no browser) works.
+ */
+export function oneClickUnsubscribeUrl(userId: string, scope: UnsubscribeScope = 'MARKETING'): string {
+  return `${env.API_PUBLIC_URL.replace(/\/+$/, '')}/api/v1/notifications/unsubscribe?token=${unsubscribeToken(userId, scope)}`;
 }
 
 export async function getNotificationPrefs(userId: string): Promise<NotificationPrefsView> {
@@ -46,6 +71,7 @@ export async function getNotificationPrefs(userId: string): Promise<Notification
     marketingEmail: user?.notificationPrefs?.marketingEmail ?? false,
     marketingSms: user?.notificationPrefs?.marketingSms ?? false,
     unreadMessageSms: user?.notificationPrefs?.unreadMessageSms ?? false,
+    unreadMessageEmail: user?.notificationPrefs?.unreadMessageEmail ?? true,
   };
 }
 
@@ -62,16 +88,25 @@ export async function updateNotificationPrefs(
 }
 
 /**
- * POST /notifications/unsubscribe: the link in a marketing email turns off marketing email and SMS, without
- * signing in, straight away (well within the 5 working days the law allows).
+ * POST /notifications/unsubscribe: an unsubscribe link turns off what it's for without signing in, straight
+ * away (well within the 5 working days the law allows): marketing email and SMS, or unread-message emails.
  */
-export async function unsubscribe(token: string): Promise<void> {
-  const [userId, signature] = token.split('.');
-  const expected = userId ? sign(userId) : '';
+export async function unsubscribe(token: string): Promise<UnsubscribeScope> {
+  const parts = token.split('.');
+  const [userId, scopeOrSignature, maybeSignature] = parts;
+  const scope: UnsubscribeScope | null =
+    parts.length === 2 ? 'MARKETING' : scopeOrSignature === 'MESSAGE_EMAILS' ? 'MESSAGE_EMAILS' : null;
+  const signature = parts.length === 2 ? scopeOrSignature : maybeSignature;
+  const expected = Buffer.from(userId && scope ? sign(userId, scope) : '');
+  // Compared as bytes: a tampered link may hold characters longer than one byte.
+  const given = Buffer.from(signature ?? '');
   const valid =
-    Boolean(userId && signature) &&
-    signature!.length === expected.length &&
-    timingSafeEqual(Buffer.from(signature!), Buffer.from(expected));
+    parts.length <= 3 &&
+    // A token reshuffled into a signed "id" that isn't one (e.g. "<id>:MESSAGE_EMAILS") is refused here.
+    mongoose.isValidObjectId(userId) &&
+    Boolean(userId && scope && signature) &&
+    given.length === expected.length &&
+    timingSafeEqual(given, expected);
   if (!valid)
     throw new HttpError(
       400,
@@ -80,6 +115,12 @@ export async function unsubscribe(token: string): Promise<void> {
     );
   await UserModel.updateOne(
     { _id: userId },
-    { $set: { 'notificationPrefs.marketingEmail': false, 'notificationPrefs.marketingSms': false } },
+    {
+      $set:
+        scope === 'MESSAGE_EMAILS'
+          ? { 'notificationPrefs.unreadMessageEmail': false }
+          : { 'notificationPrefs.marketingEmail': false, 'notificationPrefs.marketingSms': false },
+    },
   );
+  return scope!;
 }

@@ -2,8 +2,12 @@ import { z } from 'zod';
 import { HOST_STATUSES } from '../users/user.model.js';
 import { hostVehicleSchema } from '../vehicles/host-vehicles.schemas.js';
 import { VEHICLE_STATUSES } from '../vehicles/vehicle.model.js';
+import { bookingRowSchema } from './admin-ops.schemas.js';
 
 /* The staff portal's approval queues (plan §9, Days 8–11): Host applications and listings. */
+
+/** The details that send a live listing back for review when its Host changes them (plan §3). */
+const KEY_DETAILS = ['regoPlate', 'vin', 'chassisNo', 'make', 'model', 'year'] as const;
 
 export const hostApplicationSchema = z
   .object({
@@ -52,6 +56,9 @@ export const reviewQueueItemSchema = z
     city: z.string().optional(),
     pendingPhotos: z.number().int(),
     pendingDocuments: z.number().int(),
+    keyChanges: z.array(z.enum(KEY_DETAILS)).meta({
+      description: 'Key details the Host changed on the live listing, which sent it back for review',
+    }),
     flags: z.number().int(),
     updatedAt: z.iso.datetime(),
   })
@@ -109,9 +116,29 @@ export const adminVehiclesResponseSchema = z
   })
   .meta({ id: 'AdminVehicles' });
 
+export const keyChangeSchema = z
+  .object({
+    field: z.enum(KEY_DETAILS),
+    before: z
+      .string()
+      .optional()
+      .meta({ description: 'While the listing was live; left out when it had none' }),
+    after: z.string().optional().meta({ description: 'Now; left out when the Host removed it' }),
+    changedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'KeyChange' });
+
 export const adminVehicleSchema = z
   .object({
     vehicle: hostVehicleSchema,
+    keyChanges: z.array(keyChangeSchema).meta({
+      description:
+        'What the Host changed among the plate, VIN, chassis number, make, model and year since the listing was live (plan §3). Empty until they change one; cleared when staff approve or reject the listing.',
+    }),
+    upcomingBookings: z.array(bookingRowSchema).optional().meta({
+      description:
+        'While the car is suspended: its pending, confirmed and current bookings, for staff to keep or cancel (plan §8.2)',
+    }),
     host: z.object({
       id: z.string(),
       name: z.string(),

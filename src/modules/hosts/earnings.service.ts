@@ -53,7 +53,7 @@ const sumLines = (booking: BookingRecord, codes: string[], field: 'amountCents' 
  */
 function rowFor(
   booking: BookingRecord,
-  hostRefunds: number,
+  { all: hostRefunds, staff: hostStaffRefunds }: { all: number; staff: number },
   extraChargeCommission: Map<string, number>,
   settings: { commissionPct: number; gstPct: number },
 ): EarningsRow {
@@ -74,8 +74,14 @@ function rowFor(
     : booking.price.subtotalCents + booking.price.deliveryCents - booking.price.hostPayoutCents;
   const keptFee = cancelled ? (booking.hostShareCents ?? 0) + tripCommission : 0;
   const commission = tripCommission + extrasCommission;
-  const hostFee = booking.hostCancellationFeeCents ?? 0;
-  const refunds = cancelled ? 0 : hostRefunds;
+  // Less any part an admin waived (plan §8.1, item 10).
+  const hostFee = Math.max(
+    0,
+    (booking.hostCancellationFeeCents ?? 0) - (booking.hostCancellationFeeWaivedCents ?? 0),
+  );
+  // A cancelled booking's cancellation refund is already out of its kept fee; a Host-funded refund staff made
+  // after it still comes off the Host's payouts, so it counts here too.
+  const refunds = cancelled ? hostStaffRefunds : hostRefunds;
   return {
     ref: booking.ref,
     vehicleTitle: booking.vehicleSnapshot.title,
@@ -132,12 +138,18 @@ async function earningsRows(hostId: string, from?: Date, to?: Date): Promise<Ear
   const rates = { commissionPct: settings.fees.hostCommissionPct, gstPct: settings.fees.gstRatePct };
   return bookings
     .map((booking) => {
-      const refunds = payments
+      const hostFunded = payments
         .filter((payment) => payment.bookingId.equals(booking._id))
         .flatMap((payment) => payment.refunds)
-        .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED')
-        .reduce((sum, refund) => sum + refund.amountCents, 0);
-      return rowFor(booking, refunds, extraChargeCommission, rates);
+        .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED');
+      const sum = (refunds: typeof hostFunded) =>
+        refunds.reduce((total, refund) => total + refund.amountCents, 0);
+      return rowFor(
+        booking,
+        { all: sum(hostFunded), staff: sum(hostFunded.filter((refund) => refund.kind === 'STAFF')) },
+        extraChargeCommission,
+        rates,
+      );
     })
     .filter((row) => row.status !== 'CANCELLED' || row.keptFeeCents > 0 || row.hostCancellationFeeCents > 0);
 }
@@ -173,7 +185,6 @@ export async function hostEarnings(hostId: string, now = new Date()) {
   const thisMonth = startOfNzMonth(year, month);
   const nextMonth = month === 12 ? startOfNzMonth(year + 1, 1) : startOfNzMonth(year, month + 1);
   const lastMonth = month === 1 ? startOfNzMonth(year - 1, 12) : startOfNzMonth(year, month - 1);
-  const far = new Date(8.64e15);
 
   const months: { month: string; netCents: number }[] = [];
   for (let back = 11; back >= 0; back -= 1) {
@@ -194,6 +205,8 @@ export async function hostEarnings(hostId: string, now = new Date()) {
     { $group: { _id: null, total: { $sum: '$amountCents' } } },
   ]);
   const monthRows = rows.filter((row) => new Date(row.start) >= thisMonth && new Date(row.start) < nextMonth);
+  // Lifetime runs to the end of this month, like the chart: a trip booked for next year isn't earned yet.
+  const toDate = rows.filter((row) => new Date(row.start) < nextMonth);
 
   return {
     summary: {
@@ -201,10 +214,10 @@ export async function hostEarnings(hostId: string, now = new Date()) {
       weekCents: total(rows, week, addNzDays(week, 7)),
       monthCents: total(rows, thisMonth, nextMonth),
       previousMonthCents: total(rows, lastMonth, thisMonth),
-      lifetimeCents: total(rows, new Date(0), far),
+      lifetimeCents: total(toDate, new Date(0), nextMonth),
       upcomingPayoutsCents: upcoming[0]?.total ?? 0,
       platformFeesMonthCents: monthRows.reduce((sum, row) => sum + row.commissionCents, 0),
-      platformFeesLifetimeCents: rows.reduce((sum, row) => sum + row.commissionCents, 0),
+      platformFeesLifetimeCents: toDate.reduce((sum, row) => sum + row.commissionCents, 0),
     },
     months,
     bookings: rows.slice(0, 100),

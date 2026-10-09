@@ -172,8 +172,8 @@ describe('two-way reviews', () => {
     expect(hostProfile.body.profile.asHost).toMatchObject({ rating: { avg: 5, count: 1 } });
     expect(hostProfile.body.reviews).toEqual([expect.objectContaining({ direction: 'GUEST_TO_HOST' })]);
 
-    // Signed in only; a suspended or closed account isn't shown.
-    expect((await browserAgent().get(`/api/v1/users/${host.id}/reviews`)).status).toBe(401);
+    // Open to visitors too; a suspended or closed account isn't shown.
+    expect((await browserAgent().get(`/api/v1/users/${host.id}/reviews`)).status).toBe(200);
     await createUser({ email: 'tama@example.co.nz', firstName: 'Tama' });
     const member = await signIn('tama@example.co.nz');
     expect((await member.get(`/api/v1/users/${host.id}/reviews`)).status).toBe(200);

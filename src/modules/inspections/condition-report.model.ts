@@ -51,9 +51,14 @@ export interface InspectionPhoto {
   takenBy: Types.ObjectId;
   /** The device clock in the capture flow. */
   takenAt: Date;
+  /**
+   * When the photo itself says it was taken (its EXIF DateTimeOriginal), for one chosen from the device
+   * rather than taken with the in-app camera: far from takenAt, it shows an old gallery photo (plan §3).
+   */
   exifTakenAt?: Date;
   /** Server time. */
   uploadedAt: Date;
+  /** Where the device was during the inspection, if the person allowed it to share its location. */
   lat?: number;
   lng?: number;
 }

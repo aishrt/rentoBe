@@ -13,6 +13,13 @@ export interface Message {
   systemGenerated: boolean;
   /** When the other participant read it. System messages don't have one. */
   readAt?: Date;
+  /**
+   * Removed by support after a report (plan §6.2: moderation). Both participants then see a notice instead of
+   * the words and photos; staff still see the original, marked removed.
+   */
+  hiddenAt?: Date;
+  hiddenBy?: Types.ObjectId;
+  hiddenReason?: string;
   createdAt: Date;
 }
 
@@ -24,6 +31,9 @@ const messageSchema = new Schema<Message>(
     attachments: { type: [attachmentSchema], default: [] },
     systemGenerated: { type: Boolean, default: false },
     readAt: Date,
+    hiddenAt: Date,
+    hiddenBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    hiddenReason: { type: String, maxlength: 500 },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );

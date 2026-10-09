@@ -293,6 +293,19 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
   return [...days.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
+/**
+ * The money in a range as the reports count it, for the overview (spec §18): what Guests paid for trips,
+ * extra charges and kept fees, less the refunds of that money (a cancellation's own refund is already out of
+ * the fee kept, and a late payment's was never counted), and the platform's fees.
+ */
+export async function rangeMoney(range: ReportRange) {
+  const sum = sumOf((await dailyFigures(range)).map(([, figures]) => figures));
+  return {
+    bookingRevenueCents: sum.tripsCents + sum.extraChargesCents + sum.keptFeesCents - sum.givenBackCents,
+    platformFeesCents: sum.platformFeesCents,
+  };
+}
+
 /** GET /admin/reports/summary: the figures for a range. */
 export async function platformReport(
   from: string,

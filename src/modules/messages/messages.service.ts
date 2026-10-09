@@ -10,11 +10,18 @@ import { findBookingFor, type Actor } from '../bookings/booking.service.js';
 import { isConfirmed, type Viewer } from '../bookings/booking-view.js';
 import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.model.js';
 import { ReportModel } from '../moderation/report.model.js';
+import { NotificationModel } from '../notifications/notification.model.js';
 import { SupportTicketModel } from '../support/support-ticket.model.js';
 import { confirmBookingFiles } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import { MessageModel } from './message.model.js';
-import type { MessageView, SendMessageInput, ThreadDetail, ThreadSummary } from './messages.schemas.js';
+import {
+  REMOVED_MESSAGE_NOTICE,
+  type MessageView,
+  type SendMessageInput,
+  type ThreadDetail,
+  type ThreadSummary,
+} from './messages.schemas.js';
 import {
   bookingHasThread,
   emitMessage,
@@ -31,7 +38,8 @@ import { ThreadModel, type ThreadDocument } from './thread.model.js';
  * Messaging (spec §13, plan §9 Days 17–19): one thread per booking between its Guest and Host, live
  * over Socket.IO. Contact details are hidden until the booking is confirmed, a thread becomes read-only
  * 30 days after the trip (a setting) unless an incident is open, blocking stops messages from that
- * person, and support staff open a thread only from a report, incident or ticket (plan §6.2).
+ * person, a suspended account's messages stop (plan §8.2), and support staff open a thread only from a
+ * report, incident or ticket (plan §6.2) and can remove a reported message.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -44,6 +52,10 @@ const ENDED = ['CANCELLED', 'DECLINED', 'EXPIRED'];
 
 const noThread = () =>
   new HttpError(404, 'NO_THREAD', 'Messages open once the booking has been sent to the host.');
+
+/** Why a suspended member can't send messages (plan §8.2: messages from them stop). */
+const SUSPENDED_SENDER =
+  'Your account is suspended, so you can’t send messages. Contact support if you think this is a mistake.';
 
 /** When a thread becomes read-only: a number of days after the trip ends, or after the booking ended early. */
 function closesAt(booking: BookingRecord, days: number): Date {
@@ -182,7 +194,7 @@ async function detail(access: ThreadAccess, userId: string, now: Date): Promise<
   const settings = await getPlatformSettings();
   const otherId = viewer === 'GUEST' ? booking.hostId : booking.guestId;
   const [me, other, incidentOpen] = await Promise.all([
-    UserModel.findById(userId).select('blockedUserIds').lean(),
+    UserModel.findById(userId).select('blockedUserIds status').lean(),
     UserModel.findById(otherId).select('blockedUserIds closedAt status').lean(),
     hasOpenIncident(booking._id),
   ]);
@@ -194,7 +206,12 @@ async function detail(access: ThreadAccess, userId: string, now: Date): Promise<
 
   let readOnlyReason: string | undefined;
   if (readOnly) readOnlyReason = 'This conversation closed after the trip. Contact support if you need help.';
+  else if (me?.status !== 'ACTIVE') readOnlyReason = SUSPENDED_SENDER;
   else if (!other || other.closedAt) readOnlyReason = 'This member has closed their account.';
+  // Their messages stop while they're suspended (plan §8.2), so the conversation waits too. Rento Vroom's
+  // booking messages still arrive.
+  else if (other.status !== 'ACTIVE')
+    readOnlyReason = `${summary!.otherParty.firstName}’s account is on hold, so you can’t message them for now. Contact support if you need help with this booking.`;
   else if (blockedByMe)
     readOnlyReason = `You blocked ${summary!.otherParty.firstName}. Unblock them to send messages.`;
   else if (blockedMe) readOnlyReason = `${summary!.otherParty.firstName} isn’t taking messages.`;
@@ -276,6 +293,9 @@ export async function sendMessage(
   now = new Date(),
 ): Promise<MessageView> {
   const access = await openThreadFor(actor, ref);
+  // A suspended account sends nothing (plan §8.2), whichever conversation it is.
+  const sender = await UserModel.findById(actor.userId).select('status').lean();
+  if (sender?.status !== 'ACTIVE') throw new HttpError(403, 'ACCOUNT_SUSPENDED', SUSPENDED_SENDER);
   const state = await detail(access, actor.userId, now);
   if (!state.canSend)
     throw new HttpError(409, 'THREAD_CLOSED', state.readOnlyReason ?? 'Messages can’t be sent here.');
@@ -341,10 +361,12 @@ export async function unreadMessagesFor(threadId: string, recipientId: string) {
   const booking = await BookingModel.findById(thread.bookingId).lean<BookingRecord>();
   if (!booking) return null;
   const since = readAtFor(thread, recipientId) ?? new Date(0);
+  // A message support removed isn't sent on by email or text.
   const unread = await MessageModel.find({
     threadId: thread._id,
     senderId: mongoose.trusted({ $exists: true, $ne: new mongoose.Types.ObjectId(recipientId) }),
     createdAt: mongoose.trusted({ $gt: since }),
+    hiddenAt: mongoose.trusted({ $exists: false }),
   })
     .sort({ createdAt: 1 })
     .lean<MessageRecord[]>();
@@ -429,4 +451,66 @@ export async function openThreadForStaff(
     host: { id: booking.hostId.toString(), firstName: host?.firstName ?? 'Former member' },
     messages: messages.map((message) => toMessageView(message, booking, 'STAFF', staffId)),
   };
+}
+
+/**
+ * POST /admin/moderation/messages/{id}/remove: support remove a member's message, usually one reported to
+ * them. Both sides then see a notice in its place, in the conversation, the inbox and any later email;
+ * staff still see the original, marked removed. Written to the audit log with the reason.
+ */
+export async function removeMessage(staffId: string, messageId: string, reason: string, ip?: string) {
+  const message = mongoose.isValidObjectId(messageId)
+    ? await MessageModel.findById(messageId).lean<MessageRecord>()
+    : null;
+  if (!message) throw new HttpError(404, 'NOT_FOUND', 'No such message.');
+  if (!message.senderId)
+    throw new HttpError(409, 'SYSTEM_MESSAGE', 'Rento Vroom’s own booking messages can’t be removed.');
+  if (message.hiddenAt) throw new HttpError(409, 'ALREADY_REMOVED', 'This message has already been removed.');
+  // Staff act on a message someone reported (plan §6.2: staff see a conversation only from a report, an
+  // incident or a ticket), so a message id alone opens nothing.
+  if (!(await ReportModel.exists({ targetType: 'MESSAGE', targetId: message._id }))) {
+    throw new HttpError(
+      409,
+      'NOT_REPORTED',
+      'Only a reported message can be removed. Open it from its report.',
+    );
+  }
+  const thread = await ThreadModel.findById(message.threadId).select('bookingId').lean();
+  const booking = thread && (await BookingModel.findById(thread.bookingId).lean<BookingRecord>());
+  if (!booking) throw new HttpError(404, 'NOT_FOUND', 'No such message.');
+
+  const hiddenAt = new Date();
+  const removed = await MessageModel.findOneAndUpdate(
+    { _id: message._id, hiddenAt: mongoose.trusted({ $exists: false }) },
+    { $set: { hiddenAt, hiddenBy: new mongoose.Types.ObjectId(staffId), hiddenReason: reason } },
+    { new: true },
+  ).lean<MessageRecord>();
+  if (!removed) throw new HttpError(409, 'ALREADY_REMOVED', 'This message has already been removed.');
+  await recordAudit({
+    actorId: staffId,
+    action: 'message.removed',
+    entity: 'message',
+    entityId: message._id.toString(),
+    // Not the words themselves: they stay on the message, which the retention rules delete in time.
+    after: { bookingRef: booking.ref, senderId: message.senderId.toString(), reason },
+    ...(ip && { ip }),
+  });
+  // The words also left the message in the recipient's "new message" notice: that goes too.
+  const recipient = message.senderId.equals(booking.guestId) ? booking.hostId : booking.guestId;
+  const notices = {
+    userId: recipient,
+    type: 'NEW_MESSAGE',
+    createdAt: mongoose.trusted({ $gte: message.createdAt }),
+  };
+  await NotificationModel.updateMany(
+    { ...notices, channel: 'IN_APP', 'payload.link': `/messages/${booking.ref}` },
+    { $set: { 'payload.body': REMOVED_MESSAGE_NOTICE } },
+  );
+  await NotificationModel.updateMany(
+    { ...notices, channel: 'EMAIL', 'payload.props.ref': booking.ref },
+    { $set: { 'payload.props.snippet': REMOVED_MESSAGE_NOTICE } },
+  );
+  // Open conversations swap it for the notice straight away.
+  emitMessage(booking, removed);
+  return { id: removed._id.toString(), removed: true as const };
 }

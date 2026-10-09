@@ -262,8 +262,9 @@ export async function scheduleHostReminders(now = new Date()) {
 export async function runHostReminders(now = new Date()): Promise<number> {
   await scheduleHostReminders(now);
   let sent = 0;
+  // Suspended cars too: staff may let their booked trips go ahead, which still need valid documents.
   const vehicles = await VehicleModel.find({
-    status: mongoose.trusted({ $in: ['ACTIVE', 'INACTIVE'] }),
+    status: mongoose.trusted({ $in: ['ACTIVE', 'INACTIVE', 'SUSPENDED'] }),
   }).lean<VehicleRecord[]>();
   /** Each car's latest odometer reading, for the RUC checks. */
   const odometers = new Map<string, number | null>();
@@ -314,7 +315,21 @@ export async function runHostReminders(now = new Date()): Promise<number> {
         type: 'RUC_RUNNING_OUT',
         title: `${title}: Road User Charges running out`,
         body: `The licence runs to ${vehicle.rucValidToKm.toLocaleString('en-NZ')} km; the car was last at ${odometer.toLocaleString('en-NZ')} km.`,
-        link: `/host/vehicles/${vehicle._id.toString()}`,
+        link: `/host/vehicles/${vehicle._id.toString()}/2`,
+        // The "RUC licence running out" email (plan §7).
+        email: {
+          template: 'tripNotice',
+          props: {
+            firstName: host.firstName,
+            heading: `Your ${title}'s Road User Charges are running out`,
+            paragraphs: [
+              `The Road User Charges licence for your ${title} runs to ${vehicle.rucValidToKm.toLocaleString('en-NZ')} km, and the car was last at ${odometer.toLocaleString('en-NZ')} km.`,
+              'Buy more kilometres from NZTA before the next trip, then record the new end reading on the car’s documents. A trip can’t go past the licence’s end reading.',
+            ],
+            buttonLabel: 'Update the RUC reading',
+            url: editUrl,
+          },
+        },
         dedupeKey: `RUC_RUNNING_OUT:${vehicle._id.toString()}:${vehicle.rucValidToKm}`,
       });
       sent += 1;
@@ -340,7 +355,8 @@ export async function runHostReminders(now = new Date()): Promise<number> {
             url: `${siteUrl()}/host/vehicles/${vehicle._id.toString()}/maintenance`,
           },
         },
-        dedupeKey: `MAINTENANCE_DUE:${reminder._id?.toString() ?? reminder.title}`,
+        // An edited due date or reading is a new reminder.
+        dedupeKey: `MAINTENANCE_DUE:${reminder._id?.toString() ?? reminder.title}:${reminder.dueAt ? nzDate(reminder.dueAt) : ''}:${reminder.dueOdometer ?? ''}`,
       });
       sent += 1;
     }

@@ -142,6 +142,54 @@ describe('check-in', () => {
     });
     expect(unverified.body.error.code).toBe('EMAIL_NOT_VERIFIED');
   });
+
+  it('keeps when a chosen photo says it was taken and where the device was, and shows the place to staff only', async () => {
+    const { booking, hostAgent, guestAgent } = await trip();
+    const shots = await photos(hostAgent, booking.ref);
+    const record = (photos: object[]) =>
+      hostAgent
+        .post(`/api/v1/bookings/${booking.ref}/inspections`)
+        .send({ stage: 'CHECK_IN', odometer: 45210, fuelOrBatteryPct: 80, photos });
+    const [first, ...rest] = shots;
+    const auckland = { lat: -36.84846, lng: 174.76334 };
+
+    // Out of range, half a position, or EXIF's own date format: refused.
+    for (const wrong of [
+      { ...first, lat: 120, lng: 174 },
+      { ...first, lat: -36.8 },
+      { ...first, exifTakenAt: '2026:01:05 09:30:00' },
+    ]) {
+      const refused = await record([wrong, ...rest]);
+      expect(refused.status).toBe(400);
+      expect(refused.body.error.code).toBe('VALIDATION_ERROR');
+    }
+
+    const done = await record([
+      { ...first, ...auckland, exifTakenAt: '2026-01-05T09:30:00+13:00' },
+      ...rest.map((shot) => ({ ...shot, ...auckland })),
+    ]);
+    expect(done.status).toBe(201);
+    const stored = await ConditionReportModel.findOne({ bookingId: booking._id }).lean();
+    expect(stored!.photos[0]).toMatchObject({
+      exifTakenAt: new Date('2026-01-04T20:30:00.000Z'),
+      ...auckland,
+    });
+    expect(stored!.photos[1]!.exifTakenAt).toBeUndefined();
+    expect(stored!.photos[1]).toMatchObject(auckland);
+
+    const forGuest = (await guestAgent.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover;
+    expect(forGuest.checkIn.photos[0]).toMatchObject({ exifTakenAt: '2026-01-04T20:30:00.000Z' });
+    expect(forGuest.checkIn.photos[0].lat).toBeUndefined();
+    expect(forGuest.checkIn.photos[1].exifTakenAt).toBeUndefined();
+
+    await createStaff('sam@example.co.nz', 'SUPPORT');
+    const staff = await staffAgent('sam@example.co.nz');
+    const forStaff = (await staff.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover;
+    expect(forStaff.checkIn.photos[0]).toMatchObject({
+      exifTakenAt: '2026-01-04T20:30:00.000Z',
+      ...auckland,
+    });
+  });
 });
 
 describe('check-out', () => {
@@ -190,8 +238,26 @@ describe('check-out', () => {
     expect(await NotificationModel.countDocuments({ type: 'TRIP_COMPLETED', channel: 'IN_APP' })).toBe(2);
   });
 
-  it('lets the host flag new damage until the window closes', async () => {
+  /** Moves the check-out back in time; createdAt is immutable in Mongoose, so in the database itself. */
+  async function checkOutHoursAgo(bookingId: unknown, hours: number) {
+    await ConditionReportModel.collection.updateOne(
+      { bookingId, stage: 'CHECK_OUT' },
+      { $set: { createdAt: new Date(Date.now() - hours * HOUR_MS) } },
+    );
+  }
+
+  const flag = (agent: Agent, ref: string, body: object) =>
+    agent.post(`/api/v1/bookings/${ref}/inspections/CHECK_OUT/damage`).send(body);
+
+  it('lets either party flag new damage until the damage-report window closes', async () => {
     const { booking, guestAgent, hostAgent } = await checkedIn();
+    // Only once there's a check-out to add it to.
+    const tooSoon = await flag(guestAgent, booking.ref, { damagePins: [{ x: 50, y: 50 }] });
+    expect(tooSoon.body.error).toMatchObject({
+      code: 'DAMAGE_WINDOW_CLOSED',
+      message: 'New damage is flagged at check-out.',
+    });
+
     const shots6 = await photos(guestAgent, booking.ref);
     await guestAgent.post(`/api/v1/bookings/${booking.ref}/inspections`).send({
       stage: 'CHECK_OUT',
@@ -199,22 +265,32 @@ describe('check-out', () => {
       fuelOrBatteryPct: 80,
       photos: shots6,
     });
-    const shots7 = await photos(hostAgent, booking.ref, ['DAMAGE']);
-    await guestAgent.post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/confirm`);
-    const guestLate = await guestAgent
-      .post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/damage`)
-      .send({ damagePins: [{ x: 50, y: 50 }] });
-    expect(guestLate.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
+    // The Guest did the check-out, so it counts as confirmed on their side: that doesn't stop them flagging.
+    const forGuest = (await guestAgent.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover;
+    expect(forGuest.checkOut.confirmedByGuestAt).toEqual(expect.any(String));
+    expect(forGuest.actions.flagDamage).toBe(true);
+    await checkOutHoursAgo(booking._id, 47);
+    const guestFlag = await flag(guestAgent, booking.ref, {
+      damagePins: [{ x: 50, y: 6, note: 'Chip in the windscreen' }],
+    });
+    expect(guestFlag.status).toBe(200);
 
-    const flagged = await hostAgent
-      .post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/damage`)
-      .send({
-        damagePins: [{ x: 60, y: 40 }],
-        photos: shots7,
-        note: 'Dent in the rear door',
-      });
+    await hostAgent.post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/confirm`);
+    const shots7 = await photos(hostAgent, booking.ref, ['DAMAGE']);
+    const flagged = await flag(hostAgent, booking.ref, {
+      damagePins: [{ x: 60, y: 40 }],
+      photos: shots7,
+      note: 'Dent in the rear door',
+    });
     expect(flagged.status).toBe(200);
     expect(flagged.body.handover.checkOut.damagePins).toEqual([
+      expect.objectContaining({
+        x: 50,
+        y: 6,
+        newDamage: true,
+        flaggedBy: 'GUEST',
+        note: 'Chip in the windscreen',
+      }),
       expect.objectContaining({
         x: 60,
         y: 40,
@@ -224,15 +300,33 @@ describe('check-out', () => {
       }),
     ]);
 
-    // createdAt is immutable in Mongoose: move it back in the database itself.
-    await ConditionReportModel.collection.updateOne(
-      { bookingId: booking._id, stage: 'CHECK_OUT' },
-      { $set: { createdAt: new Date(Date.now() - 49 * HOUR_MS) } },
-    );
-    const closed = await hostAgent
-      .post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/damage`)
-      .send({ damagePins: [{ x: 10, y: 10 }] });
-    expect(closed.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
+    await checkOutHoursAgo(booking._id, 49);
+    for (const agent of [guestAgent, hostAgent]) {
+      const handover = (await agent.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover;
+      expect(handover.actions.flagDamage).toBe(false);
+      const closed = await flag(agent, booking.ref, { damagePins: [{ x: 10, y: 10 }] });
+      expect(closed.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
+    }
+  });
+
+  it('closes the window for a Guest who never confirmed the Host’s check-out', async () => {
+    const { booking, guestAgent, hostAgent } = await checkedIn();
+    const shots = await photos(hostAgent, booking.ref);
+    await hostAgent.post(`/api/v1/bookings/${booking.ref}/inspections`).send({
+      stage: 'CHECK_OUT',
+      odometer: 45100,
+      fuelOrBatteryPct: 80,
+      photos: shots,
+    });
+    const inside = await flag(guestAgent, booking.ref, { damagePins: [{ x: 13, y: 79 }] });
+    expect(inside.status).toBe(200);
+    expect(inside.body.handover.checkOut.confirmedByGuestAt).toBeUndefined();
+
+    await checkOutHoursAgo(booking._id, 49);
+    const forGuest = (await guestAgent.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover;
+    expect(forGuest.actions).toMatchObject({ confirmCheckOut: true, flagDamage: false });
+    const late = await flag(guestAgent, booking.ref, { damagePins: [{ x: 10, y: 10 }] });
+    expect(late.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
   });
 
   it('opens a damage case with the damage flagged at check-out, once', async () => {

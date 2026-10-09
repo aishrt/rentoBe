@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import mongoose from 'mongoose';
+import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { encrypt } from '../../lib/encryption.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
@@ -31,7 +31,50 @@ export function licenceNumberHash(number: string): string {
   return createHmac('sha256', key).update(number.replace(/\s+/g, '').toUpperCase()).digest('hex');
 }
 
+/** A keyed hash of a date of birth (2026-10-09) read from an ID, kept instead of the date itself. */
+export function documentDobHash(date: string): string {
+  const key = createHmac('sha256', env.ENCRYPTION_KEY).update('document-dob').digest();
+  return createHmac('sha256', key).update(date).digest('hex');
+}
+
 export type EligibilityProblem = CheckoutReadiness['problems'][number];
+
+/**
+ * The same licence on more than one account raises a risk flag on each of them (plan §3, same person,
+ * several accounts), rather than an error, so support can merge a genuine re-registration. `numberHash` is the
+ * licence entered, or one an ID check read.
+ */
+export async function flagDuplicateLicence(userId: Types.ObjectId, numberHash: string, now = new Date()) {
+  const others = await UserModel.find({
+    _id: mongoose.trusted({ $ne: userId }),
+    $or: [
+      { 'driverLicence.numberHash': numberHash },
+      { 'identityVerification.documentNumberHash': numberHash },
+    ],
+  })
+    .select('_id')
+    .lean();
+  if (others.length === 0) return;
+  for (const id of [userId, ...others.map((other) => other._id)]) {
+    await UserModel.updateOne(
+      {
+        _id: id,
+        riskFlags: mongoose.trusted({
+          $not: { $elemMatch: { code: 'DUPLICATE_LICENCE', clearedAt: { $exists: false } } },
+        }),
+      },
+      {
+        $push: {
+          riskFlags: {
+            code: 'DUPLICATE_LICENCE',
+            detail: 'The same licence number is on another account',
+            createdAt: now,
+          },
+        },
+      },
+    );
+  }
+}
 
 type EligibilityUser = Pick<User, 'phoneVerifiedAt' | 'dob' | 'driverLicence' | 'identityVerification'>;
 
@@ -199,11 +242,22 @@ export async function saveDriverLicence(
 
   const numberHash = licenceNumberHash(input.number);
   const unchanged = user.driverLicence?.numberHash === numberHash;
-  // A new date of birth wasn't the one compared with the ID.
-  if (user.dob?.getTime() !== dob.getTime() && user.identityVerification?.documentDobMatched !== undefined) {
-    user.identityVerification.documentDobMatched = undefined;
+  const identity = user.identityVerification;
+  // The date of birth is compared with the one the ID showed, when the check read one.
+  if (identity?.documentDobHash) {
+    identity.documentDobMatched = identity.documentDobHash === documentDobHash(nzDate(dob));
+  } else if (identity && user.dob?.getTime() !== dob.getTime()) {
+    // A new date of birth wasn't the one compared with the ID.
+    identity.documentDobMatched = undefined;
   }
   user.dob = dob;
+  // A licence entered after a passed ID check that read a driving licence: the same number and date of birth
+  // confirm it, as they would have if it had been entered first (plan §9, Days 19–20); a difference goes to
+  // support.
+  const matchedById =
+    identity?.status === 'APPROVED' &&
+    identity.documentNumberHash === numberHash &&
+    identity.documentDobMatched === true;
   user.driverLicence = {
     number: encrypt(input.number),
     numberHash,
@@ -215,22 +269,13 @@ export async function saveDriverLicence(
     ...(input.englishProof && { englishProof: input.englishProof }),
     issuedAt,
     expiry,
-    // Changed details are checked again; unchanged ones keep their review.
-    status: unchanged && user.driverLicence ? user.driverLicence.status : 'PENDING',
+    // Changed details are checked again (unless the ID confirmed them); unchanged ones keep their review.
+    status:
+      unchanged && user.driverLicence ? user.driverLicence.status : matchedById ? 'APPROVED' : 'PENDING',
   };
 
-  const elsewhere = await UserModel.exists({
-    'driverLicence.numberHash': numberHash,
-    _id: mongoose.trusted({ $ne: user._id }),
-  });
-  if (elsewhere && !user.riskFlags.some((flag) => flag.code === 'DUPLICATE_LICENCE' && !flag.clearedAt)) {
-    user.riskFlags.push({
-      code: 'DUPLICATE_LICENCE',
-      detail: 'The same licence number is on another account',
-      createdAt: new Date(),
-    });
-  }
   await user.save();
+  await flagDuplicateLicence(user._id, numberHash);
   await recordAudit({ actorId: user._id, action: 'licence.saved', entity: 'user', entityId: user.id, ip });
   return checkoutReadiness(userId);
 }

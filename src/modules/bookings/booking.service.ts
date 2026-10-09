@@ -7,8 +7,13 @@ import { forget } from '../../lib/memo.js';
 import { randomRef } from '../../lib/refs.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
-import { reserveTripDates } from '../availability/availability.service.js';
+import {
+  extendTripHold,
+  reserveTripDates,
+  tripDatesStillHeld,
+} from '../availability/availability.service.js';
 import { PaymentModel } from '../payments/payment.model.js';
+import { ReviewModel } from '../reviews/review.model.js';
 import { checkBookingVelocity } from '../risk/risk-signals.js';
 import { eligibilityProblems, verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel, type Role } from '../users/user.model.js';
@@ -24,6 +29,8 @@ import {
   captureIntent,
   refundIntent,
   statusAfterRefunds,
+  vehicleSuspended,
+  vehicleTakesBookings,
   type RefundRecord,
 } from './booking-payments.js';
 import { endBooking } from './booking-transitions.js';
@@ -59,6 +66,8 @@ import { evaluateTrip, tripProblemError } from './trip.service.js';
  */
 
 const MINUTE_MS = 60_000;
+/** How long a payment still processing at the bank keeps its dates: past the next check, 5 minutes on. */
+const PROCESSING_HOLD_MS = 15 * MINUTE_MS;
 /** A signed-in Guest's dates are held for 30 minutes while they pay (plan §8.2). */
 export const PAYMENT_HOLD_MINUTES = 30;
 
@@ -282,6 +291,14 @@ const REACHED_THE_HOST = {
   ],
 };
 
+/**
+ * The Guest's Cancelled trips leave out checkouts they left or replaced (nothing was paid, plan §8.2), but keep
+ * a request that expired and a payment that went through and was given back.
+ */
+const GUEST_SAW_IT = {
+  $or: [...REACHED_THE_HOST.$or, { paymentReturnedAt: mongoose.trusted({ $exists: true }) }],
+};
+
 /** GET /bookings: a Guest's trips or a Host's bookings, grouped as in plan §8.2 (dashboard grouping). */
 export async function listBookings(userId: string, role: 'guest' | 'host', group?: string, now = new Date()) {
   const owner = role === 'guest' ? { guestId: userId } : { hostId: userId };
@@ -289,7 +306,7 @@ export async function listBookings(userId: string, role: 'guest' | 'host', group
     group && GROUP_FILTERS[group]
       ? GROUP_FILTERS[group]!(now)
       : { status: mongoose.trusted({ $ne: 'PAYMENT_PENDING' }) };
-  const filter = { ...owner, $and: role === 'host' ? [grouped, REACHED_THE_HOST] : [grouped] };
+  const filter = { ...owner, $and: [grouped, role === 'host' ? REACHED_THE_HOST : GUEST_SAW_IT] };
   const ascending = group === 'upcoming' || group === 'requests';
   const bookings = await BookingModel.find(filter)
     .sort({ startAt: ascending ? 1 : -1 })
@@ -300,13 +317,15 @@ export async function listBookings(userId: string, role: 'guest' | 'host', group
       $in: bookings.map((booking) => (role === 'guest' ? booking.hostId : booking.guestId)),
     }),
   })
-    .select('firstName avatarUrl')
+    .select('firstName avatarUrl identityVerification.status')
     .lean();
   const vehicles = await VehicleModel.find({
     _id: mongoose.trusted({ $in: bookings.map((booking) => booking.vehicleId) }),
   })
     .select('slug')
     .lean();
+  // A Host answers a request from the list: the Guest's verification, rating and trips (plan §9, Days 16–19).
+  const guestStats = role === 'host' ? await guestStatsFor(others.map((other) => other._id)) : null;
 
   return bookings.map((booking) => {
     const other = others.find((candidate) =>
@@ -327,6 +346,11 @@ export async function listBookings(userId: string, role: 'guest' | 'host', group
       otherParty: {
         firstName: other?.firstName ?? 'Former member',
         ...(other?.avatarUrl && { avatarUrl: other.avatarUrl }),
+        ...(guestStats && {
+          verified: other?.identityVerification?.status === 'APPROVED',
+          rating: guestStats.rating.get(other?._id.toString() ?? '') ?? { avg: 0, count: 0 },
+          tripCount: guestStats.trips.get(other?._id.toString() ?? '') ?? 0,
+        }),
       },
       amountCents: role === 'guest' ? booking.price.totalCents : booking.price.hostPayoutCents,
       ...(booking.status === 'PENDING' &&
@@ -335,6 +359,32 @@ export async function listBookings(userId: string, role: 'guest' | 'host', group
       ...(booking.status === 'PENDING' && booking.hostAcceptedAt && { hostAccepted: true }),
     };
   });
+}
+
+/** Guests' published ratings from Hosts and their completed trips, for the Host's booking lists (plan §6.2). */
+async function guestStatsFor(guestIds: Types.ObjectId[]) {
+  const [ratings, trips] = await Promise.all([
+    ReviewModel.aggregate<{ _id: Types.ObjectId; avg: number; count: number }>([
+      {
+        $match: {
+          subjectId: { $in: guestIds },
+          direction: 'HOST_TO_GUEST',
+          status: 'PUBLISHED',
+        },
+      },
+      { $group: { _id: '$subjectId', avg: { $avg: '$overall' }, count: { $sum: 1 } } },
+    ]),
+    BookingModel.aggregate<{ _id: Types.ObjectId; count: number }>([
+      { $match: { guestId: { $in: guestIds }, status: 'COMPLETED' } },
+      { $group: { _id: '$guestId', count: { $sum: 1 } } },
+    ]),
+  ]);
+  return {
+    rating: new Map(
+      ratings.map((row) => [row._id.toString(), { avg: Math.round(row.avg * 100) / 100, count: row.count }]),
+    ),
+    trips: new Map(trips.map((row) => [row._id.toString(), row.count])),
+  };
 }
 
 /**
@@ -411,6 +461,8 @@ export async function acceptBooking(
   if (!booking.requestExpiresAt || booking.requestExpiresAt <= now) {
     throw new HttpError(409, 'REQUEST_EXPIRED', 'This request has expired.');
   }
+  // A suspended car takes no new bookings (plan §8.2): the request waits for staff, or expires.
+  if (!(await vehicleTakesBookings(booking.vehicleId))) throw vehicleSuspended();
 
   if (booking.verificationReview?.status === 'PENDING') {
     const accepted = await withTransaction(async (session) => {
@@ -467,6 +519,34 @@ async function capturePending(booking: BookingDocument, now: Date): Promise<void
     );
   }
   await withTransaction((session) => applyPaymentIntent(intent, session, now));
+}
+
+/**
+ * A suspension lifted (a car's, or its Host's): bookings that waited only for it, with the Guest's check
+ * approved and the Host's answer given (or Instant Book), are captured and confirmed while their time lasts.
+ */
+export async function confirmAfterSuspension(
+  filter: { vehicleId: Types.ObjectId } | { hostId: Types.ObjectId },
+  now = new Date(),
+): Promise<string[]> {
+  const ready = await BookingModel.find({
+    ...filter,
+    status: 'PENDING',
+    'verificationReview.status': 'APPROVED',
+    requestExpiresAt: mongoose.trusted({ $gt: now }),
+    $or: [{ instantBook: true }, { hostAcceptedAt: mongoose.trusted({ $exists: true }) }],
+  });
+  const confirmed: string[] = [];
+  for (const booking of ready) {
+    if (!(await vehicleTakesBookings(booking.vehicleId))) continue;
+    try {
+      await capturePending(booking, now);
+      confirmed.push(booking.ref);
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.code !== 'PAYMENT_EXPIRED') throw error;
+    }
+  }
+  return confirmed;
 }
 
 /** POST /bookings/{id}/decline: the Host declines; the authorisation is released, with no fee (plan §8.2). */
@@ -728,7 +808,8 @@ export async function cancelBooking(
 
 /**
  * What a staff cancellation does (plan §8.2). A confirmed booking: a Guest no-show is a Guest cancellation at
- * the start time, a Host no-show a Host cancellation, and a platform cancellation a full refund. A request,
+ * the start time (whenever support records it, which is usually after the start), a Host no-show or a Host
+ * cancellation made for the Host is a Host cancellation, and a platform cancellation a full refund. A request,
  * or a booking waiting for the Guest's verification, was only authorised: it's a platform cancellation that
  * releases the authorisation, with no fee for anyone.
  */
@@ -742,7 +823,7 @@ async function adminOutcome(
       throw new HttpError(
         409,
         'NOT_CONFIRMED',
-        'A no-show applies only to a confirmed booking. Cancel this request as a platform cancellation.',
+        'A no-show or a Host cancellation applies only to a confirmed booking. Cancel this request as a platform cancellation.',
       );
     }
     return { ...platformCancellation(booking, now), refundCents: 0 };
@@ -756,8 +837,8 @@ async function adminOutcome(
   }
   const settings = await getPlatformSettings();
   return reason === 'GUEST_NO_SHOW'
-    ? guestCancellation(booking, settings, now > booking.startAt ? now : booking.startAt)
-    : reason === 'HOST_NO_SHOW'
+    ? guestCancellation(booking, settings, booking.startAt)
+    : reason === 'HOST_NO_SHOW' || reason === 'HOST_CANCELLED'
       ? hostCancellation(booking, settings, now)
       : platformCancellation(booking, now);
 }
@@ -907,7 +988,16 @@ export async function expirePaymentHold(
       await withTransaction((session) => applyPaymentIntent(intent, session, now));
       return 'paid';
     }
-    if (intent.status === 'processing') return 'waiting';
+    if (intent.status === 'processing') {
+      // The bank is still deciding: keep the dates held until the next check, unless someone else booked
+      // them since the hold ran out (then the payment is refunded if it goes through).
+      await withTransaction(async (session) => {
+        if (await tripDatesStillHeld(booking, session, now)) {
+          await extendTripHold(booking._id, new Date(now.getTime() + PROCESSING_HOLD_MS), session);
+        }
+      });
+      return 'waiting';
+    }
     await cancelIntent(payment);
   }
   await withTransaction(async (session) => {
@@ -985,6 +1075,7 @@ export async function resolveVerificationReview(
   now = new Date(),
 ): Promise<VerificationOutcome> {
   const result = { confirmed: [] as string[], waitingForHost: [] as string[], released: [] as string[] };
+  const carSuspended: string[] = [];
   const waiting = await BookingModel.find({
     guestId,
     status: 'PENDING',
@@ -1022,6 +1113,11 @@ export async function resolveVerificationReview(
       result.waitingForHost.push(decided.ref);
       continue;
     }
+    // A suspended car takes no new bookings (plan §8.2): this one waits for the suspension to be lifted.
+    if (!(await vehicleTakesBookings(decided.vehicleId))) {
+      carSuspended.push(decided.ref);
+      continue;
+    }
     try {
       await capturePending(decided, now);
       result.confirmed.push(decided.ref);
@@ -1032,5 +1128,5 @@ export async function resolveVerificationReview(
     }
   }
   forget('vehicles:featured');
-  return result;
+  return { ...result, ...(carSuspended.length > 0 && { carSuspended }) };
 }

@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 /**
  * What an upload is for; each has its own folder and allowed file types (plan §3, content and files).
- * Vehicle files belong to a car; message photos, inspection photos and incident evidence to a booking.
+ * Vehicle files belong to a car; message photos, inspection photos and incident evidence to a booking;
+ * support ticket files to the member who uploads them.
  */
 export const UPLOAD_PURPOSES = [
   'VEHICLE_PHOTO',
@@ -10,6 +11,7 @@ export const UPLOAD_PURPOSES = [
   'MESSAGE_PHOTO',
   'INSPECTION_PHOTO',
   'INCIDENT_FILE',
+  'SUPPORT_FILE',
 ] as const;
 export type UploadPurpose = (typeof UPLOAD_PURPOSES)[number];
 
@@ -30,7 +32,9 @@ const objectId = z.string().regex(/^[0-9a-f]{24}$/, { error: 'Unknown car' });
 
 export const uploadRequestSchema = z
   .object({
-    purpose: z.enum(UPLOAD_PURPOSES),
+    purpose: z.enum(UPLOAD_PURPOSES).meta({
+      description: 'SUPPORT_FILE: a photo or PDF for one of your support tickets, needing no car or booking',
+    }),
     vehicleId: objectId.optional().meta({ description: 'For VEHICLE_PHOTO and VEHICLE_DOCUMENT' }),
     bookingId: z
       .string()
@@ -49,7 +53,8 @@ export const uploadRequestSchema = z
     if (forBooking && !input.bookingId) {
       context.addIssue({ code: 'custom', path: ['bookingId'], message: 'Choose the booking' });
     }
-    if (!forBooking && !input.vehicleId) {
+    // A support ticket's files go in the uploader's own folder, so they need neither.
+    if (!forBooking && input.purpose !== 'SUPPORT_FILE' && !input.vehicleId) {
       context.addIssue({ code: 'custom', path: ['vehicleId'], message: 'Unknown car' });
     }
   })
@@ -69,7 +74,9 @@ export const uploadTargetSchema = z
       .record(z.string(), z.string())
       .optional()
       .meta({ description: 'POST: a multipart form with these fields, then the file as `file`' }),
-    key: z.string().meta({ description: 'Attach the file to the car or booking with this once it is sent' }),
+    key: z.string().meta({
+      description: 'Attach the file to the car, booking or support ticket with this once it is sent',
+    }),
     maxBytes: z.number().int(),
   })
   .meta({
@@ -78,7 +85,10 @@ export const uploadTargetSchema = z
       'Where to send one file: the API itself in development (`local`), or the S3 bucket (`s3`, a presigned POST with no cookies).',
   });
 
-/** A file sent with a message, an inspection or an incident: the upload's key, and how to show it. */
+/**
+ * A file sent with a message, an inspection, an incident or a support ticket: the upload's key, and how to
+ * show it.
+ */
 export const attachmentInputSchema = z
   .object({
     key: z.string().min(1).max(300),

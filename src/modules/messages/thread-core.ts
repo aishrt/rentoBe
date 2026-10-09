@@ -6,7 +6,7 @@ import { isConfirmed, type Viewer } from '../bookings/booking-view.js';
 import { attachmentView } from '../uploads/upload-folders.js';
 import { maskContactDetails } from './masking.js';
 import { MessageModel, type Message } from './message.model.js';
-import type { MessageView } from './messages.schemas.js';
+import { REMOVED_MESSAGE_NOTICE, type MessageView } from './messages.schemas.js';
 import { ThreadModel, type Thread, type ThreadDocument } from './thread.model.js';
 
 /*
@@ -48,7 +48,10 @@ export async function ensureThread(
 export const readAtFor = (thread: Pick<Thread, 'reads'>, userId: Id | string) =>
   thread.reads.find((read) => read.userId.equals(userId))?.at;
 
-/** A message as one viewer sees it. Support staff see the booking as it is, contact details included. */
+/**
+ * A message as one viewer sees it. Support staff see the booking as it is, contact details included, and a
+ * message they removed as it was, marked removed; the Guest and Host see only the notice in its place.
+ */
 export function toMessageView(
   message: MessageRecord,
   booking: Pick<BookingRecord, 'guestId' | 'hostId' | 'status'>,
@@ -58,14 +61,21 @@ export function toMessageView(
   const sender = !message.senderId ? 'SYSTEM' : message.senderId.equals(booking.guestId) ? 'GUEST' : 'HOST';
   const mine = message.senderId?.equals(viewerId) ?? false;
   const hide = viewer !== 'STAFF' && !message.systemGenerated && !isConfirmed(booking.status);
+  const removed = Boolean(message.hiddenAt) && viewer !== 'STAFF';
   return {
     id: message._id.toString(),
     from: sender === 'SYSTEM' ? 'SYSTEM' : mine || (viewer === 'STAFF' && sender === 'HOST') ? 'ME' : 'THEM',
     sender,
-    body: hide ? maskContactDetails(message.body) : message.body,
-    attachments: message.attachments.map(attachmentView),
+    body: removed ? REMOVED_MESSAGE_NOTICE : hide ? maskContactDetails(message.body) : message.body,
+    attachments: removed ? [] : message.attachments.map(attachmentView),
     createdAt: message.createdAt.toISOString(),
     ...(mine && message.readAt && { readAt: message.readAt.toISOString() }),
+    ...(message.hiddenAt && {
+      removed: {
+        at: message.hiddenAt.toISOString(),
+        ...(viewer === 'STAFF' && message.hiddenReason && { reason: message.hiddenReason }),
+      },
+    }),
   };
 }
 

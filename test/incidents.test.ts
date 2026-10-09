@@ -131,10 +131,14 @@ describe('incidents', () => {
       .post('/api/v1/incidents')
       .send({ bookingRef: booking.ref, type: 'DAMAGE', description: 'Dent in the passenger door.' });
     expect(late.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
-    // A toll notice can arrive weeks later.
-    const toll = await hostAgent
-      .post('/api/v1/incidents')
-      .send({ bookingRef: booking.ref, type: 'TOLL', description: 'Unpaid toll on the Northern Gateway.' });
+    // A toll notice can arrive weeks later, reported with the notice itself.
+    const notice = await evidence(hostAgent, booking.ref);
+    const toll = await hostAgent.post('/api/v1/incidents').send({
+      bookingRef: booking.ref,
+      type: 'TOLL',
+      description: 'Unpaid toll on the Northern Gateway.',
+      attachments: [notice],
+    });
     expect(toll.status).toBe(201);
 
     await createUser({ email: 'nosy@example.co.nz' });
@@ -402,5 +406,41 @@ describe('incidents', () => {
           .send({ type: 'FUEL', description: 'Fuel', amountCents: 5000 })
       ).status,
     ).toBe(403);
+  });
+});
+
+describe('staff alerts on a party’s update', () => {
+  it('alerts the whole team while nobody has the case, then only whoever has it', async () => {
+    const { booking, guestAgent, hostAgent } = await trip({ status: 'ACTIVE' });
+    const aroha = await createStaff('aroha@example.co.nz', 'ADMIN');
+    const mere = await createStaff('mere@example.co.nz', 'SUPPORT');
+    const opened = await guestAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: booking.ref, type: 'BREAKDOWN', description: 'Warning light and no power.' });
+    const caseRef = opened.body.incident.caseRef as string;
+    const updates = (userId: unknown, channel = 'IN_APP') =>
+      NotificationModel.countDocuments({ type: 'INCIDENT_UPDATE', channel, userId });
+
+    // Nobody has it yet: the whole team hears about the host's update, in the portal and by email.
+    await hostAgent.post(`/api/v1/incidents/${caseRef}/events`).send({ note: 'Roadside is on the way.' });
+    expect(await updates(aroha._id)).toBe(1);
+    expect(await updates(mere._id)).toBe(1);
+    expect(await updates(mere._id, 'EMAIL')).toBe(1);
+    expect(
+      await NotificationModel.findOne({ type: 'INCIDENT_UPDATE', channel: 'IN_APP', userId: mere._id }),
+    ).toMatchObject({
+      payload: {
+        title: `The host added to case ${caseRef}`,
+        body: `The host added to the breakdown case on booking ${booking.ref}: Roadside is on the way.`,
+        link: `/admin/incidents/${caseRef}`,
+      },
+    });
+
+    // Once Mere has it, only she is told.
+    const admin = await staffAgent();
+    await admin.post(`/api/v1/admin/incidents/${caseRef}/assignee`).send({ userId: mere.id });
+    await guestAgent.post(`/api/v1/incidents/${caseRef}/events`).send({ note: 'Thanks, it’s here now.' });
+    expect(await updates(aroha._id)).toBe(1);
+    expect(await updates(mere._id)).toBe(2);
   });
 });

@@ -294,6 +294,14 @@ export async function resetPassword(
   );
   await SessionModel.deleteMany({ userId: user._id });
   await sendPasswordChangedEmail(user);
+  // The reset link proved the address too: welcome them, as confirming it from the sign-up email does.
+  if (!user.emailVerifiedAt) {
+    await enqueue('email.send', {
+      to: user.email,
+      template: 'welcome',
+      props: { firstName: user.firstName, browseUrl: env.FRONTEND_URL },
+    });
+  }
   await recordAudit({
     actorId: user._id,
     action: 'password.reset',

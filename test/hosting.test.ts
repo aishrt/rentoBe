@@ -458,6 +458,8 @@ describe('Vehicle onboarding', () => {
       status: 'REJECTED',
       qualityFlag: 'ADMIN_FLAGGED',
     });
-    expect(await NotificationModel.countDocuments({ type: 'LISTING_PHOTO_REJECTED' })).toBe(1);
+    expect(
+      await NotificationModel.countDocuments({ type: 'LISTING_PHOTO_REJECTED', channel: 'IN_APP' }),
+    ).toBe(1);
   });
 });

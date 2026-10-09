@@ -89,7 +89,7 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   api.use('/reviews', reviewWritingRouter());
   api.use('/help', helpRouter());
   api.use('/support', supportRouter({ rateLimit }));
-  api.use('/uploads', uploadsRouter());
+  api.use('/uploads', uploadsRouter({ rateLimit }));
   api.use('/files', filesRouter());
   api.use('/notifications', notificationsRouter());
   api.use('/host', hostRouter());

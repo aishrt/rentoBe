@@ -5,6 +5,14 @@ import { attachmentInputSchema, attachmentViewSchema } from '../uploads/uploads.
 /** Up to 6 photos in one message. */
 export const MAX_MESSAGE_PHOTOS = 6;
 
+/** What both sides of a conversation see in place of a message support removed. */
+export const REMOVED_MESSAGE_NOTICE = 'This message was removed by Rento Vroom support.';
+
+/** What removing a message answers: no words or photos, which staff see in the conversation itself. */
+export const removedMessageResponseSchema = z
+  .object({ id: z.string(), removed: z.literal(true) })
+  .meta({ id: 'RemovedMessageResponse' });
+
 export const messageViewSchema = z
   .object({
     id: z.string(),
@@ -21,6 +29,16 @@ export const messageViewSchema = z
       .datetime()
       .optional()
       .meta({ description: 'Your own messages: when the other side read it' }),
+    removed: z
+      .object({
+        at: z.iso.datetime(),
+        reason: z.string().optional().meta({ description: 'Support staff only: why it was removed' }),
+      })
+      .optional()
+      .meta({
+        description:
+          'Removed by support. The Guest and Host get the notice as the body and no photos; support staff still see the original.',
+      }),
   })
   .meta({ id: 'Message' });
 export type MessageView = z.infer<typeof messageViewSchema>;
@@ -117,6 +135,10 @@ export const staffThreadQuerySchema = z.object({
     })
     .meta({ description: 'REPORT:<report id>, INCIDENT:<case number> or TICKET:<ticket reference>' }),
 });
+
+export const removeMessageSchema = z
+  .object({ reason: z.string().trim().min(3, { error: 'Say why' }).max(500) })
+  .meta({ id: 'RemoveMessageRequest' });
 
 export const staffThreadResponseSchema = z
   .object({

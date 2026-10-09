@@ -42,7 +42,8 @@ export async function accountClosure(userId: string): Promise<AccountClosure> {
       guestId: id,
       extraCharges: mongoose.trusted({ $elemMatch: { status: { $in: ['PENDING', 'FAILED'] } } }),
     }),
-    PayoutModel.exists({ hostId: id, status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD'] }) }),
+    // A payout that failed is still owed to the Host, like one scheduled or held.
+    PayoutModel.exists({ hostId: id, status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }) }),
   ]);
   const found = {
     UPCOMING_TRIP: trip,

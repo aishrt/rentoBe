@@ -1,6 +1,6 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, relative } from 'node:path';
-import express, { Router, type Response } from 'express';
+import express, { Router, type RequestHandler, type Response } from 'express';
 import mongoose from 'mongoose';
 import { localFilePath, localUploadRoot } from '../../integrations/storage/local-files.js';
 import {
@@ -12,6 +12,7 @@ import {
 import { HttpError, forbidden } from '../../lib/http-error.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { uploadRateLimit } from '../../middleware/rate-limit.js';
 import { findBookingFor } from '../bookings/booking.service.js';
 import { isStaff } from '../users/user.service.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
@@ -23,9 +24,9 @@ import {
   type BookingUploadPurpose,
   type UploadPurpose,
 } from './uploads.schemas.js';
-import { bookingUploadFolder, uploadFolder } from './upload-folders.js';
+import { bookingUploadFolder, supportUploadFolder, uploadFolder } from './upload-folders.js';
 
-/** Purposes that take photos only; documents and incident evidence can also be a PDF. */
+/** Purposes that take photos only; documents, incident evidence and support ticket files can also be a PDF. */
 const PHOTO_PURPOSES: UploadPurpose[] = ['VEHICLE_PHOTO', 'MESSAGE_PHOTO', 'INSPECTION_PHOTO'];
 
 const isBookingPurpose = (purpose: UploadPurpose): purpose is BookingUploadPurpose =>
@@ -58,11 +59,12 @@ async function sendLocalFile(res: Response, key: string, cacheControl: string) {
 }
 
 /** Mounted at /api/v1/uploads. */
-export function uploadsRouter() {
+export function uploadsRouter(options: { rateLimit: boolean } = { rateLimit: true }) {
   const router = Router();
+  const limit = (make: () => RequestHandler) => (options.rateLimit ? [make()] : []);
 
   // A signed upload target for one file (plan §11: POST /uploads/signature).
-  router.post('/signature', requireAuth, async (req, res) => {
+  router.post('/signature', requireAuth, ...limit(uploadRateLimit), async (req, res) => {
     const input = validate(uploadRequestSchema, req.body);
     const photosOnly = PHOTO_PURPOSES.includes(input.purpose);
     const allowed: readonly string[] = photosOnly ? PHOTO_TYPES_ALLOWED : DOCUMENT_TYPES_ALLOWED;
@@ -80,6 +82,9 @@ export function uploadsRouter() {
         input.bookingId!,
       );
       target = bookingUploadFolder(input.purpose, booking.id);
+    } else if (input.purpose === 'SUPPORT_FILE') {
+      // Anyone signed in can write to support; their files go in their own folder (plan §3).
+      target = supportUploadFolder(req.auth!.userId);
     } else {
       const vehicle = await VehicleModel.findById(input.vehicleId).select('hostId').lean();
       if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No car with that id.');

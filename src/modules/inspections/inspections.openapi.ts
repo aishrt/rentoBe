@@ -56,7 +56,7 @@ export function registerInspectionPaths(registry: OpenAPIRegistry) {
     tags: ['Handover'],
     summary: 'Flag new damage after the trip',
     description:
-      'The Guest until they confirm the check-out; the Host until the damage-report window in settings closes. Open an incident to claim for it.',
+      'Either party, once the check-out is recorded, until the damage-report window in settings closes (409 DAMAGE_WINDOW_CLOSED after it). Open an incident to claim for it.',
     security: signedIn,
     request: { params: bookingParams, body: jsonBody(flagDamageSchema) },
     responses: {

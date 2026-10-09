@@ -17,7 +17,12 @@ import { NotificationModel } from './notification.model.js';
 
 /** An email template with its own props, so notify() checks them against the template. */
 export type EmailContent = {
-  [Name in EmailTemplateName]: { template: Name; props: EmailTemplateProps<Name> };
+  [Name in EmailTemplateName]: {
+    template: Name;
+    props: EmailTemplateProps<Name>;
+    /** For non-transactional mail: the one-click unsubscribe link sent as List-Unsubscribe (plan §7). */
+    listUnsubscribe?: string;
+  };
 }[EmailTemplateName];
 
 export interface SmsContent {

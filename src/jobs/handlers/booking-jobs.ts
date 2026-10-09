@@ -5,7 +5,12 @@ import { stripe } from '../../integrations/stripe.js';
 import { formatNzDateTime, formatNzdExact } from '../../lib/format.js';
 import { getPlatformSettings } from '../../modules/admin/platform-settings.service.js';
 import { BookingModel } from '../../modules/bookings/booking.model.js';
-import { refundIntent, statusAfterRefunds } from '../../modules/bookings/booking-payments.js';
+import {
+  cancelIntent,
+  refundIntent,
+  statusAfterRefunds,
+  type UnwantedReason,
+} from '../../modules/bookings/booking-payments.js';
 import { expirePaymentHold, expireRequest } from '../../modules/bookings/booking.service.js';
 import { notify } from '../../modules/notifications/notify.js';
 import { PaymentModel } from '../../modules/payments/payment.model.js';
@@ -112,16 +117,65 @@ export async function paymentReceiptJob({ paymentId }: { paymentId: string }, { 
 
 /**
  * `payment.refundUnwanted`: a payment that went through after its booking had ended is refunded in full,
- * and the Guest is told why.
+ * and the Guest is told why. With a reason, the payment went through but its booking couldn't be made
+ * (plan §8.2): the dates were booked by someone else after its hold ran out (`DATES_TAKEN`), or the car was
+ * suspended meanwhile (`CAR_UNAVAILABLE`); an authorisation is released instead of refunded.
  */
-export async function refundUnwantedJob({ paymentId }: { paymentId: string }, { log }: JobContext) {
+export async function refundUnwantedJob(
+  { paymentId, reason }: { paymentId: string; reason?: UnwantedReason },
+  { log }: JobContext,
+) {
   const payment = await PaymentModel.findById(paymentId);
-  if (!payment || payment.status !== 'SUCCEEDED' || payment.refunds.length > 0) return;
+  if (!payment || payment.refunds.length > 0) return;
+  if (payment.status !== 'SUCCEEDED' && !(payment.status === 'AUTHORISED' && reason)) return;
   const booking = await BookingModel.findById(payment.bookingId)
-    .select('status ref guestId vehicleSnapshot.title')
+    .select('status ref guestId vehicleSnapshot.title startAt statusHistory.status')
     .lean();
   if (!booking || !['EXPIRED', 'CANCELLED', 'DECLINED'].includes(booking.status)) return;
+  // A booking that was confirmed and then cancelled refunded what its policy gives; nothing more here.
+  if (booking.statusHistory.some((change) => change.status === 'CONFIRMED')) return;
   const guest = await UserModel.findById(booking.guestId).select('firstName').lean();
+  const tripUrl = `${env.FRONTEND_URL.replace(/\/+$/, '')}/trips/${booking.ref}`;
+  const takenParagraph =
+    reason === 'CAR_UNAVAILABLE'
+      ? `The ${booking.vehicleSnapshot.title} was taken off Rento Vroom while your payment was still being processed, so booking ${booking.ref} for ${formatNzDateTime(booking.startAt)} wasn’t made.`
+      : `The dates for ${booking.vehicleSnapshot.title} from ${formatNzDateTime(booking.startAt)} were booked by someone else while your payment was still being processed by your bank, so booking ${booking.ref} wasn’t made.`;
+  const shortWhy =
+    reason === 'CAR_UNAVAILABLE'
+      ? 'The car was taken off Rento Vroom while your payment was processing'
+      : 'The dates were taken while your payment was processing';
+
+  if (payment.status === 'AUTHORISED') {
+    // Only authorised: nothing was taken, and the hold on the card is released.
+    await cancelIntent(payment);
+    await PaymentModel.updateOne(
+      { _id: payment._id, status: 'AUTHORISED' },
+      { $set: { status: 'CANCELLED' } },
+    );
+    await notify({
+      userId: booking.guestId,
+      type: 'BOOKING_EXPIRED',
+      title: `Booking ${booking.ref} wasn’t made`,
+      body: `${shortWhy}. The hold on your card is released.`,
+      link: `/trips/${booking.ref}`,
+      email: {
+        template: 'tripNotice',
+        props: {
+          firstName: guest?.firstName ?? 'there',
+          heading: `Booking ${booking.ref} wasn’t made`,
+          paragraphs: [
+            takenParagraph,
+            'Nothing was charged: the hold on your card is released, and your bank removes it within a few days. Sorry about that. Please choose other dates or another car.',
+          ],
+          buttonLabel: 'Find another car',
+          url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/search`,
+        },
+      },
+      dedupeKey: `BOOKING_EXPIRED:${paymentId}:unwanted`,
+    });
+    log.warn({ paymentId, reason }, 'Released an authorisation whose booking could not be made');
+    return;
+  }
 
   const refund = await refundIntent(payment, payment.amountCents, `refund-${payment.id}-unwanted`);
   await withTransaction(async (session) => {
@@ -129,7 +183,12 @@ export async function refundUnwantedJob({ paymentId }: { paymentId: string }, { 
     if (!fresh || fresh.refunds.length > 0) return;
     fresh.refunds.push({
       amountCents: refund.amountCents,
-      reason: 'Paid after the booking had ended',
+      reason:
+        reason === 'DATES_TAKEN'
+          ? 'The dates were booked by someone else while the payment was processing'
+          : reason === 'CAR_UNAVAILABLE'
+            ? 'The car was suspended while the payment was processing'
+            : 'Paid after the booking had ended',
       kind: 'LATE_PAYMENT',
       fundedBy: 'PLATFORM',
       stripeRefundId: refund.stripeRefundId,
@@ -138,25 +197,43 @@ export async function refundUnwantedJob({ paymentId }: { paymentId: string }, { 
     });
     fresh.status = statusAfterRefunds(fresh);
     await fresh.save({ session });
+    // A refund Stripe refused at once alerted staff (refundIntent), who return the money another way.
+    if (refund.status === 'FAILED') return;
     const amount = formatNzdExact(refund.amountCents);
     await notify(
       {
         userId: booking.guestId,
         type: 'REFUND_ISSUED',
         title: `${amount} refunded`,
-        body: 'Your payment went through after the booking had ended, so nothing was booked.',
+        body: reason
+          ? `${shortWhy}, so nothing was booked.`
+          : 'Your payment went through after the booking had ended, so nothing was booked.',
         link: `/trips/${booking.ref}`,
-        email: {
-          template: 'refundIssued',
-          props: {
-            firstName: guest?.firstName ?? 'there',
-            ref: booking.ref,
-            vehicleTitle: booking.vehicleSnapshot.title,
-            amount,
-            url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/trips/${booking.ref}`,
-            afterBookingEnded: true,
-          },
-        },
+        email: reason
+          ? {
+              template: 'tripNotice',
+              props: {
+                firstName: guest?.firstName ?? 'there',
+                heading: `${amount} refunded: booking ${booking.ref} wasn’t made`,
+                paragraphs: [
+                  takenParagraph,
+                  `We’ve refunded all ${amount} NZD to the card you paid with. It usually reaches your account within 5–10 business days. Sorry about that.`,
+                ],
+                buttonLabel: 'View the booking',
+                url: tripUrl,
+              },
+            }
+          : {
+              template: 'refundIssued',
+              props: {
+                firstName: guest?.firstName ?? 'there',
+                ref: booking.ref,
+                vehicleTitle: booking.vehicleSnapshot.title,
+                amount,
+                url: tripUrl,
+                afterBookingEnded: true,
+              },
+            },
         dedupeKey: `REFUND_ISSUED:${paymentId}:unwanted`,
       },
       { session },

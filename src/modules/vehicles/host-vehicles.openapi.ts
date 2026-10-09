@@ -13,6 +13,8 @@ import {
 } from '../hosts/host-reminders.schemas.js';
 import { uploadRequestSchema, uploadTargetSchema } from '../uploads/uploads.schemas.js';
 import {
+  allCarsCalendarQuerySchema,
+  allCarsCalendarSchema,
   blockInputSchema,
   calendarBlockSchema,
   calendarResponseSchema,
@@ -214,6 +216,21 @@ export function registerHostPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The calendar', calendarResponseSchema),
       ...errorResponses(401, 403, 404),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/host/calendar',
+    tags: ['Hosting'],
+    summary: 'The calendar across all my cars',
+    description:
+      'The Host’s own cars with a calendar (not drafts, rejected or suspended listings), in the order they were added, each with its blocks between two NZ days: up to 62 days at a time. Blocks are as on each car’s own calendar. 400 VALIDATION_ERROR for a longer or backwards range.',
+    security: signedIn,
+    request: { query: allCarsCalendarQuerySchema },
+    responses: {
+      200: jsonResponse('Each car’s calendar', allCarsCalendarSchema),
+      ...errorResponses(400, 401),
     },
   });
 

@@ -4,6 +4,8 @@ export interface EmailMessage {
   html: string;
   text: string;
   replyTo?: string;
+  /** Extra headers, e.g. List-Unsubscribe on non-transactional mail (plan §7, deliverability). */
+  headers?: Record<string, string>;
 }
 
 export interface SentEmail {

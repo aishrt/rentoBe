@@ -25,13 +25,35 @@ export function bookingUploadFolder(purpose: BookingUploadPurpose, bookingId: st
   return { folder: `bookings/${bookingId}/${BOOKING_FOLDERS[purpose]}`, isPrivate: true };
 }
 
+/**
+ * The folder of a member's support ticket files, private (plan §3, public and private files). It's their
+ * own, so a ticket only takes files its author uploaded.
+ */
+export function supportUploadFolder(userId: string) {
+  return { folder: `support/${userId}`, isPrivate: true };
+}
+
 /** Checks each uploaded file belongs to the booking's folder, and turns it into what's saved. */
 export async function confirmBookingFiles(
   purpose: BookingUploadPurpose,
   bookingId: string,
   files: AttachmentInput[],
 ): Promise<FileAttachment[]> {
-  const { folder, isPrivate } = bookingUploadFolder(purpose, bookingId);
+  return confirmFiles(bookingUploadFolder(purpose, bookingId), files);
+}
+
+/** Checks each file is one this member uploaded for a support ticket, and turns it into what's saved. */
+export async function confirmSupportFiles(
+  userId: string,
+  files: AttachmentInput[],
+): Promise<FileAttachment[]> {
+  return confirmFiles(supportUploadFolder(userId), files);
+}
+
+async function confirmFiles(
+  { folder, isPrivate }: { folder: string; isPrivate: boolean },
+  files: AttachmentInput[],
+): Promise<FileAttachment[]> {
   return Promise.all(
     files.map(async (file) => ({
       url: await getStorage().confirmUpload({ folder, isPrivate, ref: file.key }),

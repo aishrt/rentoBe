@@ -39,12 +39,11 @@ export function registerReviewPaths(registry: OpenAPIRegistry) {
     tags: ['Reviews'],
     summary: 'A member’s public profile and the published reviews about them',
     description:
-      'Only what each party may see of the other (plan §6.2), and the reviews about them as Guest and as Host, without the booking each came from. This is the public profile plan §11 lists as GET /users/{id}/profile. A closed or suspended account is not found.',
-    security: signedIn,
+      'Only what each party may see of the other (plan §6.2), and the reviews about them as Guest and as Host, without the booking each came from. This is the public profile plan §11 lists as GET /users/{id}/profile, open to visitors. A closed or suspended account is not found.',
     request: { params: z.object({ id: z.string() }) },
     responses: {
       200: jsonResponse('Profile and reviews', userReviewsResponseSchema),
-      ...errorResponses(401, 404),
+      ...errorResponses(404),
     },
   });
 
