@@ -1,6 +1,7 @@
 import mongoose, { type Types } from 'mongoose';
 import { HttpError } from '../../lib/http-error.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
+import { BookingModel } from '../bookings/booking.model.js';
 import { MessageModel } from '../messages/message.model.js';
 import { ThreadModel } from '../messages/thread.model.js';
 import { raiseRiskFlag } from '../risk/risk-flags.js';
@@ -49,10 +50,28 @@ async function subjectOf(reporterId: string, input: ReportInput): Promise<Types.
   }
 }
 
+/**
+ * The booking a member was reported from, when they were reported from its conversation. It must be a
+ * booking between the reporter and that member, as support may then read its thread (plan §6.2).
+ */
+async function bookingOf(reporterId: string, input: ReportInput, subject: Types.ObjectId) {
+  if (input.targetType !== 'USER' || !input.bookingRef) return undefined;
+  const booking = await BookingModel.findOne({ ref: input.bookingRef.toUpperCase() })
+    .select('guestId hostId')
+    .lean();
+  const between =
+    booking &&
+    ((booking.guestId.equals(reporterId) && booking.hostId.equals(subject)) ||
+      (booking.hostId.equals(reporterId) && booking.guestId.equals(subject)));
+  if (!between) throw notFound();
+  return booking._id;
+}
+
 /** POST /reports. Reporting the same thing twice keeps the first report. */
 export async function createReport(reporterId: string, input: ReportInput, now = new Date()) {
   const subject = await subjectOf(reporterId, input);
   if (subject.equals(reporterId)) throw new HttpError(409, 'OWN_CONTENT', "You can't report yourself.");
+  const bookingId = await bookingOf(reporterId, input, subject);
 
   const existing = await ReportModel.findOne({
     reporterId,
@@ -60,6 +79,11 @@ export async function createReport(reporterId: string, input: ReportInput, now =
     targetId: input.targetId,
     status: 'OPEN',
   });
+  // A report made elsewhere first gains the conversation it's now made from.
+  if (existing && bookingId && !existing.bookingId) {
+    existing.bookingId = bookingId;
+    await existing.save();
+  }
   const report =
     existing ??
     (await ReportModel.create({
@@ -67,6 +91,7 @@ export async function createReport(reporterId: string, input: ReportInput, now =
       targetType: input.targetType,
       targetId: input.targetId,
       subjectUserId: subject,
+      ...(bookingId && { bookingId }),
       reason: input.reason,
       ...(input.note && { note: input.note }),
     }));

@@ -11,6 +11,7 @@ import {
   incidentsResponseSchema,
   newIncidentSchema,
   staffIncidentUpdateSchema,
+  staffNewIncidentSchema,
 } from './incidents.schemas.js';
 
 const refParams = z.object({ ref: z.string().meta({ description: 'The case number, e.g. IN-4F7K2Q' }) });
@@ -73,6 +74,21 @@ export function registerIncidentPaths(registry: OpenAPIRegistry) {
   });
 
   registry.registerPath({
+    method: 'post',
+    path: '/admin/incidents',
+    tags: ['Admin'],
+    summary: 'Staff: open a case on a booking',
+    description:
+      'Outside the damage-report window, on any booking past checkout (404 otherwise). For both parties, only the Guest or the Host it’s about, or the team only (INTERNAL) until an update is shared; a party never sees a case with nothing for them. The staff member who opens it has it. Holds the booking’s payouts until the case is settled, tells the parties who can see it, and is written to the audit log.',
+    security: signedIn,
+    request: { body: jsonBody(staffNewIncidentSchema) },
+    responses: {
+      201: jsonResponse('Opened', incidentResponseSchema),
+      ...errorResponses(400, 401, 403, 404),
+    },
+  });
+
+  registry.registerPath({
     method: 'get',
     path: '/admin/incidents/assignees',
     tags: ['Admin'],
@@ -101,12 +117,12 @@ export function registerIncidentPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: post an update, change the status or take the case',
     description:
-      'Updates go to both parties, one of them, or the team only (INTERNAL). Resolving or closing the last open case on a booking releases its payouts.',
+      'Updates go to both parties, one of them, or the team only (INTERNAL). The status moves only to one of the case’s `nextStatuses`: nothing goes back to OPEN, a resolved case can be reopened (INVESTIGATING or AWAITING_RESPONSE), and a closed one is final (409 INVALID_STATUS_CHANGE; 409 CASE_CHANGED when someone else changed the status meanwhile). Resolving or closing the last open case on a booking releases its payouts; reopening a case holds the unpaid ones again.',
     security: signedIn,
     request: { params: refParams, body: jsonBody(staffIncidentUpdateSchema) },
     responses: {
       200: jsonResponse('Updated', incidentResponseSchema),
-      ...errorResponses(400, 401, 403, 404),
+      ...errorResponses(400, 401, 403, 404, 409),
     },
   });
 

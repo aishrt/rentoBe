@@ -25,6 +25,7 @@ import {
   returnReminderJob,
   revealReviewsJob,
   reviewRequestJob,
+  reviewRevealSweepJob,
   startCheckJob,
 } from './trip-jobs.js';
 
@@ -57,6 +58,7 @@ export const jobHandlers = {
   'daily.hostReminders': hostRemindersJob,
   'trip.reviewRequest': reviewRequestJob,
   'reviews.reveal': revealReviewsJob,
+  'daily.reviewReveal': reviewRevealSweepJob,
   'identity.sync': identitySyncJob,
   'daily.dataRetention': dataRetentionJob,
   'risk.paymentCheck': paymentRiskCheckJob,

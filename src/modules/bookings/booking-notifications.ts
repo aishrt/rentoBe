@@ -3,6 +3,7 @@ import { env } from '../../env.js';
 import { formatNzDateTime, formatNzdExact } from '../../lib/format.js';
 import { requestOutcomeHeadings, type RequestOutcome } from '../../emails/templates/booking-emails.js';
 import { notify } from '../notifications/notify.js';
+import { alertStaff } from '../staff/staff-alerts.js';
 import type { CancellationOutcome } from './policies.js';
 import {
   awaitsVerification,
@@ -74,6 +75,17 @@ export async function notifyRequestReceived(
       },
       { session },
     );
+    // Support has 24 hours to decide, or the booking expires (plan §8.2).
+    await alertStaff(
+      {
+        type: 'VERIFICATION_BOOKING_WAITING',
+        title: `Booking ${booking.ref} waits for a verification review`,
+        body: `${guestName}'s booking of the ${booking.vehicleSnapshot.title} is held until their identity check or licence is approved. It expires at ${expiresAt} if nobody decides.`,
+        link: '/admin/verifications',
+        dedupeKey: `BOOKING_VERIFICATION_REVIEW:${booking._id.toString()}:staff`,
+      },
+      { session },
+    );
     if (booking.instantBook) return;
   }
 
@@ -98,6 +110,9 @@ export async function notifyRequestReceived(
       },
       sms: {
         body: `Rento Vroom: ${guestName} wants to book your ${booking.vehicleSnapshot.title}, ${shortDates(booking)}. Accept or decline within 24 hours: ${hostBookingUrl(booking)}`,
+        // Held by quiet hours: not sent if the request was answered, withdrawn or ran out meanwhile.
+        whileBooking: { id: booking._id, statuses: ['PENDING'] },
+        ...(booking.requestExpiresAt && { expiresAt: booking.requestExpiresAt }),
       },
       dedupeKey: `BOOKING_REQUEST:${booking._id.toString()}`,
     },
@@ -189,6 +204,7 @@ export async function notifyConfirmed(
       ...(booking.instantBook && {
         sms: {
           body: `Rento Vroom: ${guestName} has booked your ${booking.vehicleSnapshot.title}, ${shortDates(booking)}. Details: ${hostBookingUrl(booking)}`,
+          whileBooking: { id: booking._id, statuses: ['CONFIRMED', 'ACTIVE'] },
         },
       }),
       dedupeKey: `BOOKING_CONFIRMED:${booking._id.toString()}:host`,
@@ -208,7 +224,7 @@ export async function notifyHostAccepted(
       userId: booking.guestId,
       type: 'BOOKING_HOST_ACCEPTED',
       title: `${context.host?.firstName ?? 'Your host'} accepted your request`,
-      body: "We're finishing your identity check. Your booking is confirmed as soon as it's approved.",
+      body: "We're finishing the check of your ID and licence. Your booking is confirmed as soon as it's approved.",
       link: `/trips/${booking.ref}`,
       dedupeKey: `BOOKING_HOST_ACCEPTED:${booking._id.toString()}`,
     },
@@ -274,13 +290,16 @@ export async function notifyRequestEnded(
   }
 }
 
-/** Cancellation to both parties, and the refund to the Guest (plan §7, §8.1 item 10). */
+/**
+ * Cancellation to both parties, and the refund to the Guest (plan §7, §8.1 item 10). `released`: the
+ * booking was a request or waited for the Guest's verification, so its card authorisation was released.
+ */
 export async function notifyCancelled(
   booking: BookingRecord,
   context: BookingContext,
   outcome: CancellationOutcome,
   cancelledBy: 'GUEST' | 'HOST' | 'SUPPORT',
-  { session }: Options = {},
+  { session, released = false }: Options & { released?: boolean } = {},
 ) {
   const id = booking._id.toString();
   const withdrawn = outcome.kind === 'WITHDRAW_REQUEST';
@@ -292,7 +311,9 @@ export async function notifyCancelled(
       body:
         outcome.refundCents > 0
           ? `${formatNzdExact(outcome.refundCents)} is on its way back to your card.`
-          : undefined,
+          : released && !withdrawn
+            ? "Your card hasn't been charged."
+            : undefined,
       link: `/trips/${booking.ref}`,
       email: {
         template: 'bookingCancelled',
@@ -302,6 +323,7 @@ export async function notifyCancelled(
           audience: 'GUEST',
           cancelledBy,
           ...(withdrawn && { withdrawn: true }),
+          ...(released && !withdrawn && { released: true }),
           ...(outcome.refundCents > 0 && { refund: formatNzdExact(outcome.refundCents) }),
           ...(outcome.feeCents > 0 && { fee: formatNzdExact(outcome.feeCents) }),
           url: tripUrl(booking),
@@ -311,8 +333,9 @@ export async function notifyCancelled(
     },
     { session },
   );
-  // An Instant Book withdrawn while it waited for the Guest's verification never reached the Host.
-  if (!(withdrawn && booking.instantBook)) {
+  // An Instant Book withdrawn or cancelled while it waited for the Guest's verification never reached
+  // the Host.
+  if (!((withdrawn || released) && booking.instantBook)) {
     await notify(
       {
         userId: booking.hostId,

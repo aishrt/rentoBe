@@ -6,6 +6,7 @@ import { logger } from '../../integrations/logger.js';
 import { reportError } from '../../integrations/sentry.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
+import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
 import { ensureCustomer } from '../payments/stripe-customer.js';
 import { checkFailedPayments, queuePaymentRiskCheck } from '../risk/risk-signals.js';
@@ -67,9 +68,10 @@ export async function preparePayment(
     await user.save();
   }
 
-  // A check that needs a manual review turns even an Instant Book into a request (plan §8.2): the
-  // card is authorised now, and charged once support approves the check.
-  const inReview = verificationInReview(user);
+  // A check that needs a manual review (the identity check, or a licence no ID document confirmed) turns
+  // even an Instant Book into a request (plan §8.2): the card is authorised now, and charged once support
+  // approves it.
+  const inReview = verificationInReview(user, await getPlatformSettings());
   if (inReview !== (booking.verificationReview?.status === 'PENDING')) {
     booking.verificationReview = inReview ? { status: 'PENDING' } : undefined;
     await booking.save();

@@ -61,6 +61,54 @@ export const reviewQueueResponseSchema = z
   .object({ vehicles: z.array(reviewQueueItemSchema) })
   .meta({ id: 'ReviewQueue' });
 
+/** GET /admin/vehicles/search: every car, not only those waiting for review (plan §12.6). */
+export const vehicleListQuerySchema = z.object({
+  q: z
+    .string()
+    .trim()
+    .max(100)
+    .optional()
+    .meta({ description: 'Words to match: the year, make or model, the plate, or the Host’s name or email' }),
+  status: z.enum(VEHICLE_STATUSES).optional(),
+  hostId: z
+    .string()
+    .regex(/^[0-9a-f]{24}$/i, { error: 'Not a user id' })
+    .optional()
+    .meta({ description: 'Only this Host’s cars' }),
+  page: z.coerce.number().int().min(1).max(500).default(1),
+});
+
+export const adminVehicleRowSchema = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    status: z.enum(VEHICLE_STATUSES),
+    regoPlate: z.string().optional(),
+    city: z.string().optional(),
+    host: z.object({ id: z.string(), name: z.string(), email: z.string() }),
+    waitingForPayouts: z
+      .boolean()
+      .meta({ description: 'Approved, but hidden until the Host finishes payout setup (plan §8.2)' }),
+    hostSuspended: z
+      .boolean()
+      .meta({ description: 'Hidden while its Host’s account is suspended (plan §8.2)' }),
+    tripCount: z.number().int(),
+    updatedAt: z.iso.datetime(),
+  })
+  .meta({ id: 'AdminVehicleRow' });
+
+export const adminVehiclesResponseSchema = z
+  .object({
+    vehicles: z.array(adminVehicleRowSchema),
+    total: z.number().int(),
+    page: z.number().int(),
+    host: z
+      .object({ id: z.string(), name: z.string() })
+      .optional()
+      .meta({ description: 'The Host named by hostId, to label the filter' }),
+  })
+  .meta({ id: 'AdminVehicles' });
+
 export const adminVehicleSchema = z
   .object({
     vehicle: hostVehicleSchema,

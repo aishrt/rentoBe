@@ -37,6 +37,31 @@ export const newIncidentSchema = z
   .meta({ id: 'NewIncidentRequest' });
 export type NewIncidentInput = z.infer<typeof newIncidentSchema>;
 
+/** Support opens a case themselves (plan §3: staff can, outside the damage-report window). */
+export const staffNewIncidentSchema = z
+  .object({
+    bookingRef: z
+      .string()
+      .regex(/^RV-[A-Za-z0-9]{6}$/, { error: 'Enter a booking reference like RV-7K2Q9M' }),
+    type: z.enum(INCIDENT_TYPES, { error: 'Choose what happened' }),
+    description: z
+      .string()
+      .trim()
+      .min(10, { error: 'Say what happened (at least 10 characters)' })
+      .max(5000, { error: 'Keep it under 5,000 characters' }),
+    attachments: z
+      .array(attachmentInputSchema)
+      .max(10, { error: 'Up to 10 files' })
+      .default([])
+      .meta({ description: 'Photos and documents, uploaded first with purpose INCIDENT_FILE' }),
+    visibility: z.enum(EVENT_VISIBILITIES).default('BOTH').meta({
+      description:
+        'Who sees the case: BOTH parties, only the GUEST or the HOST it’s about, or INTERNAL to support staff until an update is shared with a party',
+    }),
+  })
+  .meta({ id: 'StaffNewIncidentRequest' });
+export type StaffNewIncidentInput = z.infer<typeof staffNewIncidentSchema>;
+
 export const incidentReplySchema = z
   .object({
     note: z.string().trim().max(5000).default(''),
@@ -134,6 +159,10 @@ export const incidentViewSchema = incidentSummarySchema
       .array(incidentEventViewSchema)
       .meta({ description: 'Oldest first; only those the viewer may see' }),
     canReply: z.boolean(),
+    nextStatuses: z.array(z.enum(INCIDENT_STATUSES)).optional().meta({
+      description:
+        'Staff only: the statuses the case can move to now. A resolved case can be reopened; a closed one is final',
+    }),
     extraCharges: z
       .array(
         z.object({

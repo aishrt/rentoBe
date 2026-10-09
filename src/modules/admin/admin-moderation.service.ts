@@ -16,8 +16,8 @@ import type { adminReportSchema } from './admin-ops.schemas.js';
 /*
  * The moderation queue (spec §18; plan §9 Days 20–22): what members reported, with what was reported, so
  * support can act on it (hide a review, suspend someone, take a car down) or dismiss it, with a recorded
- * reason. A reported message's booking is given so its thread can be opened from the report, and a
- * reported review comes whole, so it can be hidden from there.
+ * reason. A reported message's booking, or the booking a member was reported from, is given so its thread
+ * can be opened from the report, and a reported review comes whole, so it can be hidden from there.
  */
 
 type Id = Types.ObjectId;
@@ -56,7 +56,12 @@ async function previews(reports: ReportRecord[]) {
     .select('bookingId')
     .lean();
   const bookings = await BookingModel.find({
-    _id: mongoose.trusted({ $in: threads.map((thread) => thread.bookingId) }),
+    _id: mongoose.trusted({
+      $in: [
+        ...threads.map((thread) => thread.bookingId),
+        ...reports.flatMap((report) => report.bookingId ?? []),
+      ],
+    }),
   })
     .select('ref')
     .lean();
@@ -90,8 +95,11 @@ async function previews(reports: ReportRecord[]) {
             : 'The car has been deleted.',
         };
       }
-      default:
-        return { preview: name(report.targetId) };
+      default: {
+        // A member reported from a booking's conversation.
+        const booking = report.bookingId && find(bookings, report.bookingId);
+        return { preview: name(report.targetId), ...(booking && { bookingRef: booking.ref }) };
+      }
     }
   };
 }

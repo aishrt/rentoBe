@@ -10,6 +10,14 @@ export const reportInputSchema = z
     targetId: objectId,
     reason: z.enum(REPORT_REASONS, { error: 'Choose a reason' }),
     note: z.string().trim().max(2000, { error: 'Keep it under 2,000 characters' }).optional(),
+    bookingRef: z
+      .string()
+      .regex(/^RV-[A-Za-z0-9]{6}$/, { error: 'Booking references look like RV-7K2Q9M' })
+      .optional()
+      .meta({
+        description:
+          'A member reported from a booking’s conversation: that booking, which must be between the two of them, so support can read the conversation (plan §6.2)',
+      }),
   })
   .meta({ id: 'ReportRequest' });
 export type ReportInput = z.infer<typeof reportInputSchema>;

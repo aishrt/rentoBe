@@ -10,7 +10,7 @@ import { recordAudit } from '../audit/audit.service.js';
 import { reserveTripDates } from '../availability/availability.service.js';
 import { PaymentModel } from '../payments/payment.model.js';
 import { checkBookingVelocity } from '../risk/risk-signals.js';
-import { eligibilityProblems } from '../users/driver-licence.service.js';
+import { eligibilityProblems, verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel, type Role } from '../users/user.model.js';
 import { isStaff } from '../users/user.service.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
@@ -35,7 +35,14 @@ import {
   type BookingRecord,
   type Viewer,
 } from './booking-view.js';
-import type { BookingView, CancellationPreview, CreateBookingInput } from './bookings.schemas.js';
+import type {
+  AdminCancellationPreview,
+  AdminCancelReason,
+  BookingView,
+  CancellationPreview,
+  CreateBookingInput,
+  VerificationOutcome,
+} from './bookings.schemas.js';
 import {
   guestCancellation,
   hostCancellation,
@@ -333,7 +340,8 @@ export async function listBookings(userId: string, role: 'guest' | 'host', group
 /**
  * The share of requests a Host answered before they expired, shown to Guests (plan §6.2). A request
  * the Host accepted counts as answered even if the Guest's verification then stopped it, and one that
- * ended because the Guest wasn't verified, before the Host answered, isn't counted at all.
+ * ended because the Guest wasn't verified, or that support cancelled, before the Host answered, isn't
+ * counted at all.
  */
 export async function updateResponseRate(hostId: Types.ObjectId) {
   const [row] = await BookingModel.aggregate<{ total: number; expired: number }>([
@@ -345,6 +353,13 @@ export async function updateResponseRate(hostId: Types.ObjectId) {
         status: { $nin: ['PENDING', 'PAYMENT_PENDING'] },
         cancellationReason: { $ne: 'REQUEST_WITHDRAWN' },
         $or: [{ 'verificationReview.status': { $ne: 'REJECTED' } }, { hostAcceptedAt: { $exists: true } }],
+        $nor: [
+          {
+            cancellationReason: 'PLATFORM',
+            hostAcceptedAt: { $exists: false },
+            'statusHistory.status': { $ne: 'CONFIRMED' },
+          },
+        ],
       },
     },
     {
@@ -500,6 +515,8 @@ async function outcomeFor(
 }
 
 const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+/** A booking payment that went through, perhaps already refunded in part. */
+const isPaid = (status: string) => status === 'SUCCEEDED' || status === 'PARTIALLY_REFUNDED';
 
 export async function cancellationPreview(
   booking: BookingDocument,
@@ -575,11 +592,14 @@ async function carryOut(
   const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
     createdAt: -1,
   });
+  // An unpaid checkout or a request was only authorised: the authorisation is released, not refunded.
+  const uncaptured = booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING';
   let refund: RefundRecord | undefined;
-  if (outcome.kind === 'ABANDON_CHECKOUT' || outcome.kind === 'WITHDRAW_REQUEST') {
+  if (uncaptured) {
     await cancelIntent(payment);
   } else if (outcome.refundCents > 0) {
-    if (!payment || payment.status !== 'SUCCEEDED') {
+    // A payment staff already refunded in part can still be refunded, up to what's left.
+    if (!payment || !isPaid(payment.status)) {
       throw new HttpError(409, 'NOT_PAID', "This booking's payment isn't complete. Please contact support.");
     }
     refund = await refundIntent(payment, outcome.refundCents, `refund-${booking.id}-cancellation`);
@@ -592,7 +612,7 @@ async function carryOut(
         ? { to: 'EXPIRED', from: ['PAYMENT_PENDING'], by: input.by, reason: 'Checkout abandoned', now }
         : {
             to: 'CANCELLED',
-            from: outcome.kind === 'WITHDRAW_REQUEST' ? ['PENDING'] : ['CONFIRMED'],
+            from: booking.status === 'PENDING' ? ['PENDING'] : ['CONFIRMED'],
             by: input.by,
             reason: input.note,
             now,
@@ -615,6 +635,7 @@ async function carryOut(
           fresh.refunds.push({
             amountCents: refund.amountCents,
             reason: `Cancellation (${input.reason})`,
+            kind: 'CANCELLATION',
             issuedBy: new mongoose.Types.ObjectId(input.by),
             // A policy refund of rental the Host would otherwise get (plan §8.1, item 15).
             fundedBy:
@@ -646,7 +667,7 @@ async function carryOut(
         await loadBookingContext(record(ended)),
         outcome,
         input.cancelledBy,
-        { session },
+        { session, released: uncaptured },
       );
     }
     return ended;
@@ -657,10 +678,14 @@ async function carryOut(
     action: `booking.${outcome.kind.toLowerCase().replace(/_/g, '-')}`,
     entity: 'booking',
     entityId: booking.id,
+    before: { status: booking.status },
     after: {
-      refundCents: outcome.refundCents,
+      refundCents: refund?.amountCents ?? outcome.refundCents,
       feeCents: outcome.feeCents,
       hostFeeCents: outcome.hostFeeCents,
+      ...(uncaptured && { authorisationReleased: true }),
+      // Staff give a reason and a note (plan §8.2).
+      ...(input.cancelledBy === 'SUPPORT' && { reason: input.reason, note: input.note }),
     },
   });
   if (outcome.kind === 'HOST_CANCELLATION') await flagRepeatedHostCancellations(booking.hostId, now);
@@ -702,26 +727,134 @@ export async function cancelBooking(
 }
 
 /**
- * Staff cancel a confirmed booking (plan §8.2): a Guest no-show is a Guest cancellation at the start
- * time, a Host no-show a Host cancellation, and a platform cancellation a full refund.
+ * What a staff cancellation does (plan §8.2). A confirmed booking: a Guest no-show is a Guest cancellation at
+ * the start time, a Host no-show a Host cancellation, and a platform cancellation a full refund. A request,
+ * or a booking waiting for the Guest's verification, was only authorised: it's a platform cancellation that
+ * releases the authorisation, with no fee for anyone.
  */
+async function adminOutcome(
+  booking: BookingDocument,
+  reason: AdminCancelReason,
+  now: Date,
+): Promise<CancellationOutcome> {
+  if (booking.status === 'PENDING') {
+    if (reason !== 'PLATFORM') {
+      throw new HttpError(
+        409,
+        'NOT_CONFIRMED',
+        'A no-show applies only to a confirmed booking. Cancel this request as a platform cancellation.',
+      );
+    }
+    return { ...platformCancellation(booking, now), refundCents: 0 };
+  }
+  if (booking.status !== 'CONFIRMED') {
+    throw new HttpError(
+      409,
+      'NOT_CANCELLABLE',
+      'Only a confirmed booking or a request waiting for an answer can be cancelled here.',
+    );
+  }
+  const settings = await getPlatformSettings();
+  return reason === 'GUEST_NO_SHOW'
+    ? guestCancellation(booking, settings, now > booking.startAt ? now : booking.startAt)
+    : reason === 'HOST_NO_SHOW'
+      ? hostCancellation(booking, settings, now)
+      : platformCancellation(booking, now);
+}
+
+/** Staff cancel a confirmed booking or a pending one (plan §8.2), with the normal path's side effects. */
 export async function adminCancelBooking(
   booking: BookingDocument,
   staffId: string,
-  reason: 'GUEST_NO_SHOW' | 'HOST_NO_SHOW' | 'PLATFORM',
+  reason: AdminCancelReason,
   note: string,
   now = new Date(),
 ) {
-  if (booking.status !== 'CONFIRMED')
-    throw new HttpError(409, 'NOT_CANCELLABLE', 'Only a confirmed booking can be cancelled here.');
-  const settings = await getPlatformSettings();
-  const outcome =
-    reason === 'GUEST_NO_SHOW'
-      ? guestCancellation(booking, settings, now > booking.startAt ? now : booking.startAt)
-      : reason === 'HOST_NO_SHOW'
-        ? hostCancellation(booking, settings, now)
-        : platformCancellation(booking, now);
+  const outcome = await adminOutcome(booking, reason, now);
   return carryOut(booking, outcome, { by: staffId, cancelledBy: 'SUPPORT', reason, note }, now);
+}
+
+/**
+ * GET /admin/bookings/{id}/cancellation-preview (plan §8.2: "refund preview and choice"): what cancelling
+ * for this reason would refund and cost, from the same policy engine as the cancellation itself.
+ */
+export async function adminCancellationPreview(
+  booking: BookingDocument,
+  reason: AdminCancelReason,
+  now = new Date(),
+): Promise<AdminCancellationPreview> {
+  const none = { refundCents: 0, feeCents: 0, hostShareCents: 0, hostFeeCents: 0, releasedCents: 0 };
+  let outcome: CancellationOutcome;
+  try {
+    outcome = await adminOutcome(booking, reason, now);
+  } catch (error) {
+    if (!(error instanceof HttpError)) throw error;
+    return {
+      reason,
+      allowed: false,
+      kind: null,
+      ...none,
+      refundPct: 0,
+      hoursBeforeStart: 0,
+      message: error.message,
+    };
+  }
+  const base = {
+    reason,
+    kind: outcome.kind as AdminCancellationPreview['kind'],
+    refundPct: outcome.refundPct,
+    hoursBeforeStart: outcome.hoursBeforeStart,
+  };
+  const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
+    createdAt: -1,
+  });
+
+  if (booking.status === 'PENDING') {
+    const releasedCents = payment?.amountCents ?? booking.price.totalCents;
+    return {
+      ...base,
+      allowed: true,
+      ...none,
+      releasedCents,
+      message: `Nothing has been charged yet: the ${formatDollars(releasedCents)} held on the Guest’s card is released, and nobody pays a fee.`,
+    };
+  }
+  if (outcome.refundCents > 0 && (!payment || !isPaid(payment.status))) {
+    return {
+      ...base,
+      allowed: false,
+      ...none,
+      message: "This booking's payment isn't complete, so there's nothing to refund yet.",
+    };
+  }
+  // Earlier refunds come off what can still go back to the card.
+  const refunded = (payment?.refunds ?? [])
+    .filter((item) => item.status !== 'FAILED')
+    .reduce((sum, item) => sum + item.amountCents, 0);
+  const refundCents = Math.min(outcome.refundCents, Math.max(0, (payment?.amountCents ?? 0) - refunded));
+  const policy = booking.cancellationTerms
+    ? `the ${booking.cancellationTerms.name} policy`
+    : 'the cancellation policy';
+  const capped =
+    refundCents < outcome.refundCents
+      ? ` That's ${formatDollars(outcome.refundCents)} under the policy, less what was already refunded.`
+      : '';
+  const message =
+    outcome.kind === 'GUEST_CANCELLATION'
+      ? `A Guest cancellation at the start time, under ${policy}: the Guest gets ${formatDollars(refundCents)} back${outcome.feeCents > 0 ? ` and ${formatDollars(outcome.feeCents)} is kept, of which the Host gets ${formatDollars(outcome.hostShareCents)}` : ''}.${capped}`
+      : outcome.kind === 'HOST_CANCELLATION'
+        ? `A Host cancellation: the Guest gets ${formatDollars(refundCents)} back, a full refund.${capped} ${outcome.hostFeeCents > 0 ? `A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off the Host’s next payout.` : 'The Host cancellation fee in the settings is $0.'}`
+        : `The Guest gets ${formatDollars(refundCents)} back, a full refund, and the Host pays no fee.${capped}`;
+  return {
+    ...base,
+    allowed: true,
+    refundCents,
+    feeCents: outcome.feeCents,
+    hostShareCents: outcome.hostShareCents,
+    hostFeeCents: outcome.hostFeeCents,
+    releasedCents: 0,
+    message,
+  };
 }
 
 /** Repeated Host cancellations raise a risk flag for admins (plan §8.1, item 10). */
@@ -839,9 +972,10 @@ export async function expireRequest(
 }
 
 /**
- * Support has decided a Guest's verification (plan §8.2). Approved: each booking that waited for it is
- * confirmed by capturing its authorisation, unless its Host still has to accept the request. Rejected:
- * each is ended and its authorisation released.
+ * Support has decided a Guest's verification (plan §8.2): their identity check or their licence. Approved:
+ * once neither waits for support any more, each booking that waited is confirmed by capturing its
+ * authorisation, unless its Host still has to accept the request; while the other part still waits, the
+ * bookings keep waiting for it. Rejected: each is ended and its authorisation released.
  */
 export async function resolveVerificationReview(
   guestId: string,
@@ -849,13 +983,19 @@ export async function resolveVerificationReview(
   /** Support's decision; left out when Stripe Identity approved the check itself. */
   staffId: string | undefined,
   now = new Date(),
-): Promise<{ confirmed: string[]; waitingForHost: string[]; released: string[] }> {
+): Promise<VerificationOutcome> {
   const result = { confirmed: [] as string[], waitingForHost: [] as string[], released: [] as string[] };
   const waiting = await BookingModel.find({
     guestId,
     status: 'PENDING',
     'verificationReview.status': 'PENDING',
   }).sort({ createdAt: 1 });
+  if (decision === 'APPROVE' && waiting.length > 0) {
+    const guest = await UserModel.findById(guestId).select('identityVerification driverLicence').lean();
+    if (guest && verificationInReview(guest, await getPlatformSettings())) {
+      return { ...result, stillInReview: waiting.map((booking) => booking.ref) };
+    }
+  }
 
   for (const booking of waiting) {
     const decided = await BookingModel.findOneAndUpdate(

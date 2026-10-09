@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import request from 'supertest';
 import Stripe from 'stripe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +8,7 @@ import { stripe } from '../src/integrations/stripe.js';
 import type { JobContext } from '../src/jobs/handlers/index.js';
 import { tripExtraChargesJob } from '../src/jobs/handlers/payout-jobs.js';
 import { JobModel } from '../src/jobs/job.model.js';
+import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { confirmBooking, endBooking } from '../src/modules/bookings/booking-transitions.js';
 import { ConditionReportModel } from '../src/modules/inspections/condition-report.model.js';
@@ -19,7 +21,7 @@ import { runPayout } from '../src/modules/payouts/payouts.service.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel, liveVehicleFilter } from '../src/modules/vehicles/vehicle.model.js';
 import { createBookingRecord, createHost, createPaymentRecord, createVehicle } from './fixtures.js';
-import { PASSWORD, browserAgent, createUser, testApp } from './helpers.js';
+import { PASSWORD, browserAgent, createStaff, createUser, staffAgent, testApp } from './helpers.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -478,5 +480,369 @@ describe('earnings', () => {
     expect(statement.text).toMatch(/Total,,,,267\.00/);
 
     expect((await agent.get('/api/v1/host/earnings/statement').query({ period: 'soon' })).status).toBe(400);
+  });
+});
+
+/** Another trip for the same Host, Guest and car, which ended a week ago, with its payout due now. */
+async function anotherTrip({ host, guest, vehicle }: Awaited<ReturnType<typeof trip>>) {
+  const startAt = new Date(Date.now() - 10 * DAY_MS);
+  const booking = await createBookingRecord(
+    { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
+    { status: 'PAYMENT_PENDING', startAt, endAt: new Date(startAt.getTime() + 3 * DAY_MS) },
+  );
+  const payment = await createPaymentRecord(booking);
+  await withTransaction((session) => confirmBooking(booking, payment, session));
+  await checkIn(booking._id, host._id);
+  return {
+    booking: (await BookingModel.findById(booking._id))!,
+    payout: (await PayoutModel.findOne({ bookingId: booking._id, type: 'TRIP' }))!,
+  };
+}
+
+const feesOwed = async (hostId: unknown) =>
+  (await UserModel.findById(hostId).lean())!.hostProfile!.feesOwedCents;
+const refundsOwed = async (hostId: unknown) =>
+  (await UserModel.findById(hostId).lean())!.hostProfile!.refundsOwed ?? [];
+
+describe('payout deductions', () => {
+  it('are reserved before the transfer, so two payouts sent at once take a fee only once', async () => {
+    const first = await trip();
+    await checkIn(first.booking._id, first.host._id);
+    const second = await anotherTrip(first);
+    await UserModel.updateOne({ _id: first.host._id }, { $set: { 'hostProfile.feesOwedCents': 2500 } });
+
+    const outcomes = await Promise.all([runPayout(first.payout.id), runPayout(second.payout.id)]);
+    expect(outcomes).toEqual(['paid', 'paid']);
+    const paid = await PayoutModel.find({ hostId: first.host._id, status: 'PAID' });
+    const fees = paid
+      .flatMap((payout) => payout.deductions)
+      .filter((deduction) => deduction.type === 'HOST_CANCELLATION_FEE');
+    expect(fees).toEqual([expect.objectContaining({ amountCents: 2500, owed: true })]);
+    expect(transfers.reduce((sum, transfer) => sum + transfer.amount!, 0)).toBe(2 * 21360 - 2500);
+    expect(await feesOwed(first.host._id)).toBe(0);
+  });
+
+  /** A trip whose transfer failed without a clear answer from Stripe, after its deductions were reserved. */
+  async function failedTransfer() {
+    const parts = await trip();
+    await checkIn(parts.booking._id, parts.host._id);
+    await UserModel.updateOne({ _id: parts.host._id }, { $set: { 'hostProfile.feesOwedCents': 2500 } });
+    vi.mocked(client.transfers.create).mockRejectedValueOnce(
+      new Stripe.errors.StripeAPIError({ message: 'Stripe is having a moment', statusCode: 500 }),
+    );
+    await expect(runPayout(parts.payout.id)).rejects.toThrow(/moment/);
+    return parts;
+  }
+
+  it('are kept when a transfer fails, so the retry sends the same amount', async () => {
+    const { payout, host } = await failedTransfer();
+    const failed = await PayoutModel.findById(payout._id);
+    expect(failed).toMatchObject({ status: 'FAILED', deductionsReservedAt: expect.any(Date) });
+    expect(failed!.deductions).toEqual([
+      expect.objectContaining({ type: 'HOST_CANCELLATION_FEE', amountCents: 2500 }),
+    ]);
+    expect(await feesOwed(host._id)).toBe(0);
+
+    // A fee added meanwhile waits for a later payout: the retry sends what the first try would have.
+    await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.feesOwedCents': 1000 } });
+    expect(await runPayout(payout.id)).toBe('paid');
+    expect(transfers.map((transfer) => transfer.amount)).toEqual([21360 - 2500]);
+    expect(await PayoutModel.findById(payout._id)).toMatchObject({ status: 'PAID', amountCents: 18860 });
+    expect(await feesOwed(host._id)).toBe(1000);
+  });
+
+  it('are given back when the payout is cancelled unpaid', async () => {
+    const { booking, payout, host } = await failedTransfer();
+    await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.feesOwedCents': 1000 } });
+    await BookingModel.updateOne({ _id: booking._id }, { $set: { status: 'CANCELLED' } });
+    expect(await runPayout(payout.id)).toBe('skipped');
+    const cancelled = await PayoutModel.findById(payout._id);
+    expect(cancelled).toMatchObject({ status: 'CANCELLED' });
+    expect(cancelled!.deductions).toEqual([]);
+    expect(cancelled!.deductionsReservedAt).toBeUndefined();
+    expect(await feesOwed(host._id)).toBe(3500);
+    expect(transfers).toHaveLength(0);
+  });
+
+  it('come back to the Host when a reserved trip payout is replaced on cancellation', async () => {
+    const { booking, payout, host } = await trip();
+    await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.feesOwedCents': 2500 } });
+    await PayoutModel.updateOne(
+      { _id: payout._id },
+      {
+        $set: {
+          status: 'HELD',
+          holdReason: 'INCIDENT',
+          deductionsReservedAt: new Date(),
+          deductions: [{ type: 'HOST_CANCELLATION_FEE', amountCents: 2000, owed: true }],
+        },
+      },
+    );
+    await withTransaction((session) =>
+      endBooking(
+        booking,
+        {
+          to: 'CANCELLED',
+          from: ['CONFIRMED'],
+          cancellation: {
+            reason: 'PLATFORM',
+            refundCents: 33870,
+            feeCents: 0,
+            hostShareCents: 0,
+            hostFeeCents: 0,
+          },
+        },
+        session,
+      ),
+    );
+    expect(await PayoutModel.findById(payout._id)).toMatchObject({ status: 'CANCELLED' });
+    expect(await feesOwed(host._id)).toBe(4500);
+  });
+
+  it('leave a payout staff held on its MANUAL hold when a card dispute opens', async () => {
+    const { payout, payment } = await trip();
+    await PayoutModel.updateOne({ _id: payout._id }, { $set: { status: 'HELD', holdReason: 'MANUAL' } });
+    const dispute = {
+      id: 'dp_manual',
+      object: 'dispute',
+      payment_intent: payment.stripePaymentIntentId,
+      reason: 'fraudulent',
+      status: 'needs_response',
+    };
+    expect((await webhook('charge.dispute.created', dispute)).status).toBe(200);
+    expect(await PayoutModel.findById(payout._id)).toMatchObject({ status: 'HELD', holdReason: 'MANUAL' });
+  });
+});
+
+describe('Host-funded refunds', () => {
+  let refundNumber = 0;
+
+  beforeEach(() => {
+    refundNumber = 0;
+    vi.spyOn(client.refunds, 'create').mockImplementation(async () => {
+      refundNumber += 1;
+      return { id: `re_${refundNumber}`, status: 'succeeded' } as Stripe.Response<Stripe.Refund>;
+    });
+  });
+
+  /** A trip already paid out to the Host, and an admin signed in to the staff portal. */
+  async function paidTrip() {
+    const parts = await trip();
+    await checkIn(parts.booking._id, parts.host._id);
+    expect(await runPayout(parts.payout.id)).toBe('paid');
+    await createStaff();
+    return { ...parts, admin: await staffAgent() };
+  }
+
+  const refund = (
+    admin: Awaited<ReturnType<typeof staffAgent>>,
+    ref: string,
+    body: Record<string, unknown> = {},
+  ) =>
+    admin
+      .post(`/api/v1/admin/bookings/${ref}/refunds`)
+      .send({ amountCents: 5000, reason: 'Car was not cleaned', fundedBy: 'HOST', ...body });
+
+  it('made before the payout come off it, a line each', async () => {
+    const parts = await trip();
+    await checkIn(parts.booking._id, parts.host._id);
+    await createStaff();
+    const admin = await staffAgent();
+    const before = await admin.get(`/api/v1/admin/bookings/${parts.booking.ref}`);
+    expect(before.body.tripPayoutSent).toBe(false);
+
+    const refunded = await refund(admin, parts.booking.ref);
+    expect(refunded.status).toBe(200);
+    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'THIS_PAYOUT' });
+    expect(await refundsOwed(parts.host._id)).toEqual([]);
+
+    expect(await runPayout(parts.payout.id)).toBe('paid');
+    const paid = await PayoutModel.findById(parts.payout._id);
+    expect(paid!.deductions).toEqual([
+      expect.objectContaining({ type: 'HOST_FUNDED_REFUND', stripeRefundId: 're_1', amountCents: 5000 }),
+    ]);
+    expect(transfers[0]!.amount).toBe(21360 - 5000);
+  });
+
+  it('made after the payout come off the next one as their own line, and the Host is told', async () => {
+    const parts = await paidTrip();
+    const detail = await parts.admin.get(`/api/v1/admin/bookings/${parts.booking.ref}`);
+    expect(detail.body.tripPayoutSent).toBe(true);
+
+    const refunded = await refund(parts.admin, parts.booking.ref);
+    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 5000 });
+    // Not a Host cancellation fee: those stay separate, and only those can be waived.
+    expect(await feesOwed(parts.host._id)).toBe(0);
+    expect(await refundsOwed(parts.host._id)).toEqual([
+      expect.objectContaining({ stripeRefundId: 're_1', amountCents: 5000, bookingId: parts.booking._id }),
+    ]);
+    expect(
+      await NotificationModel.countDocuments({ userId: parts.host._id, type: 'HOST_REFUND_RECOVERED' }),
+    ).toBe(2);
+    const audit = await AuditLogModel.findOne({ action: 'refund.issued', entityId: parts.booking.id });
+    expect(audit!.after).toMatchObject({ recoverFrom: 'NEXT_PAYOUT', hostRefund: { owedCents: 5000 } });
+
+    const host = browserAgent();
+    await host.post('/api/v1/auth/login').send({ email: parts.host.email, password: PASSWORD });
+    expect((await host.get('/api/v1/host/payouts')).body.account).toMatchObject({
+      feesOwedCents: 0,
+      refundsOwedCents: 5000,
+    });
+
+    const next = await anotherTrip(parts);
+    await UserModel.updateOne({ _id: parts.host._id }, { $set: { 'hostProfile.feesOwedCents': 1500 } });
+    expect(await runPayout(next.payout.id)).toBe('paid');
+    expect(transfers.at(-1)!.amount).toBe(21360 - 1500 - 5000);
+    expect(await refundsOwed(parts.host._id)).toEqual([]);
+    expect(await feesOwed(parts.host._id)).toBe(0);
+
+    const payouts = (await host.get('/api/v1/host/payouts')).body.payouts;
+    expect(payouts.find((payout: { id: string }) => payout.id === next.payout.id).deductions).toEqual([
+      { type: 'HOST_CANCELLATION_FEE', amountCents: 1500 },
+      { type: 'HOST_FUNDED_REFUND', amountCents: 5000, bookingRef: parts.booking.ref },
+    ]);
+    // The payout email has a row for each.
+    const email = await NotificationModel.findOne({
+      userId: parts.host._id,
+      type: 'PAYOUT_PAID',
+      channel: 'EMAIL',
+      dedupeKey: `PAYOUT_PAID:${next.payout.id}`,
+    });
+    expect((email!.payload as { props: { rows: { label: string }[] } }).props.rows).toEqual(
+      expect.arrayContaining([
+        { label: 'Host cancellation fee', value: '−$15.00' },
+        { label: `Refund for ${parts.booking.ref}`, value: '−$50.00' },
+      ]),
+    );
+  });
+
+  it('can be taken back from the transfer, or from the next payout when Stripe refuses', async () => {
+    const parts = await paidTrip();
+    const reversal = vi
+      .spyOn(client.transfers, 'createReversal')
+      .mockResolvedValueOnce({ id: 'trr_1' } as Stripe.Response<Stripe.TransferReversal>);
+
+    const reversed = await refund(parts.admin, parts.booking.ref, { recoverFrom: 'REVERSE_TRANSFER' });
+    expect(reversed.body.hostRefund).toEqual({ recoveredFrom: 'REVERSE_TRANSFER', reversedCents: 5000 });
+    expect(reversal).toHaveBeenCalledWith(
+      'tr_1',
+      expect.objectContaining({
+        amount: 5000,
+        metadata: expect.objectContaining({ stripeRefundId: 're_1' }),
+      }),
+      { idempotencyKey: 'reversal-re_1' },
+    );
+    expect((await PayoutModel.findById(parts.payout._id))!.reversals).toEqual([
+      expect.objectContaining({ stripeReversalId: 'trr_1', amountCents: 5000, stripeRefundId: 're_1' }),
+    ]);
+    expect(await refundsOwed(parts.host._id)).toEqual([]);
+
+    const host = browserAgent();
+    await host.post('/api/v1/auth/login').send({ email: parts.host.email, password: PASSWORD });
+    expect((await host.get(`/api/v1/bookings/${parts.booking.ref}`)).body.booking.payout).toMatchObject({
+      paidCents: 21360 - 5000,
+      refunds: [expect.objectContaining({ amountCents: 5000, fundedBy: 'HOST' })],
+    });
+    expect((await host.get('/api/v1/host/payouts')).body.payouts[0]).toMatchObject({ reversedCents: 5000 });
+
+    reversal.mockRejectedValueOnce(
+      new Stripe.errors.StripeInvalidRequestError({
+        message: 'Insufficient funds in the connected account',
+        statusCode: 400,
+      }),
+    );
+    const fallback = await refund(parts.admin, parts.booking.ref, {
+      amountCents: 2000,
+      recoverFrom: 'REVERSE_TRANSFER',
+    });
+    expect(fallback.body.hostRefund).toEqual({
+      recoveredFrom: 'NEXT_PAYOUT',
+      owedCents: 2000,
+      note: expect.stringMatching(/Insufficient funds/),
+    });
+    expect(await refundsOwed(parts.host._id)).toEqual([
+      expect.objectContaining({ stripeRefundId: 're_2', amountCents: 2000 }),
+    ]);
+    const audit = await AuditLogModel.findOne({ action: 'refund.issued', 'after.amountCents': 2000 });
+    expect(audit!.after).toMatchObject({
+      recoverFrom: 'REVERSE_TRANSFER',
+      hostRefund: { recoveredFrom: 'NEXT_PAYOUT', note: expect.stringMatching(/next payout/) },
+    });
+  });
+
+  it('that fail are no longer owed, and staff are told what the Host already paid', async () => {
+    const parts = await paidTrip();
+    // The first is taken off the next payout; the second still waits when both fail.
+    await refund(parts.admin, parts.booking.ref);
+    const next = await anotherTrip(parts);
+    expect(await runPayout(next.payout.id)).toBe('paid');
+    await refund(parts.admin, parts.booking.ref, { amountCents: 3000 });
+    expect(await refundsOwed(parts.host._id)).toEqual([
+      expect.objectContaining({ stripeRefundId: 're_2', amountCents: 3000 }),
+    ]);
+
+    for (const id of ['re_1', 're_2']) {
+      const failed = await webhook('refund.failed', {
+        id,
+        object: 'refund',
+        status: 'failed',
+        failure_reason: 'expired_or_canceled_card',
+      });
+      expect(failed.status).toBe(200);
+    }
+    expect(await refundsOwed(parts.host._id)).toEqual([]);
+    const alerts = await NotificationModel.find({ type: 'REFUND_FAILED', channel: 'IN_APP' });
+    const bodies = alerts.map((alert) => (alert.payload as { body: string }).body);
+    expect(bodies).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          /already paid for it \(\$50\.00 taken off a payout\): please return that to the Host/,
+        ),
+        expect.stringMatching(/The Host funded it: it no longer comes off their next payout/),
+      ]),
+    );
+  });
+});
+
+describe('earnings with extra charges', () => {
+  it('use the commission the extra charge’s payout was made with', async () => {
+    const { host, booking } = await trip();
+    const chargeId = new mongoose.Types.ObjectId();
+    await BookingModel.updateOne(
+      { _id: booking._id },
+      {
+        $push: {
+          extraCharges: {
+            _id: chargeId,
+            type: 'EXTRA_KM',
+            description: '50 extra km',
+            amountCents: 1750,
+            status: 'SUCCEEDED',
+          },
+        },
+      },
+    );
+    // Made when the commission was lower than today's 20 %.
+    await PayoutModel.create({
+      hostId: host._id,
+      bookingId: booking._id,
+      type: 'EXTRA_CHARGE',
+      extraChargeId: chargeId,
+      amountCents: 1450,
+      grossCents: 1750,
+      commissionCents: 300,
+      commissionGstCents: 39,
+      status: 'PAID',
+      scheduledFor: new Date(),
+      paidAt: new Date(),
+    });
+    const agent = browserAgent();
+    await agent.post('/api/v1/auth/login').send({ email: host.email, password: PASSWORD });
+    const earnings = await agent.get('/api/v1/host/earnings');
+    expect(earnings.body.bookings[0]).toMatchObject({
+      extraChargesCents: 1750,
+      commissionCents: 5340 + 300,
+      netCents: 21360 + 1450,
+    });
   });
 });

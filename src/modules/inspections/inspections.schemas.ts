@@ -43,6 +43,27 @@ export const inspectionInputSchema = z
   .meta({ id: 'InspectionRequest' });
 export type InspectionInput = z.infer<typeof inspectionInputSchema>;
 
+/**
+ * Support completes a trip whose check-out is missing (plan §8.2) with the Host's odometer and fuel or
+ * battery reading, and any photos the Host sent: they become the check-out record.
+ */
+export const staffCompletionSchema = inspectionInputSchema
+  .omit({ stage: true, photos: true })
+  .extend({
+    notes: z
+      .string()
+      .trim()
+      .max(2000)
+      .optional()
+      .meta({ description: 'Where the readings came from, e.g. "From the Host’s photo, 9 Oct"' }),
+    photos: z
+      .array(inspectionPhotoInputSchema)
+      .max(40)
+      .default([])
+      .meta({ description: 'The Host’s photos, if they sent any (uploaded with purpose INSPECTION_PHOTO)' }),
+  })
+  .meta({ id: 'StaffCompletionRequest' });
+
 export const flagDamageSchema = z
   .object({
     damagePins: z.array(damagePinInputSchema).min(1, { error: 'Mark where the damage is' }).max(10),

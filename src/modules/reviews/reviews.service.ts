@@ -3,6 +3,7 @@ import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
+import { nextNzHour, nzDate } from '../../lib/nz-time.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
@@ -26,6 +27,8 @@ type BookingRecord = Booking & { _id: Id };
 type ReviewRecord = Review & { _id: Id };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The daily safety net for `reviews.reveal` runs at 4 am NZ time, when the site is quiet. */
+export const REVEAL_SWEEP_HOUR = 4;
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
 
 /** Words that hold a review for a moderator (plan §9: abusive language). Matched as whole words. */
@@ -73,6 +76,16 @@ export function reviewWindowCloses(
   return new Date(completedAt(booking).getTime() + windowDays * DAY_MS);
 }
 
+/**
+ * When a waiting review is published at the latest, under the window in settings now rather than the one
+ * when it was written: when the window closes, or at the next daily sweep if a shorter window has already
+ * closed.
+ */
+function publishedBy(booking: Pick<Booking, 'statusHistory' | 'endAt'>, windowDays: number, now: Date) {
+  const closes = reviewWindowCloses(booking, windowDays);
+  return closes > now ? closes : nextNzHour(now, REVEAL_SWEEP_HOUR);
+}
+
 const directionFor = (
   booking: Pick<Booking, 'guestId' | 'hostId'>,
   userId: Id | string,
@@ -80,7 +93,12 @@ const directionFor = (
   booking.guestId.equals(userId) ? 'GUEST_TO_HOST' : booking.hostId.equals(userId) ? 'HOST_TO_GUEST' : null;
 
 /** The moderation state is shown to the review's author and to staff only. */
-async function toViews(reviews: ReviewRecord[], viewerId?: string, staff = false): Promise<ReviewView[]> {
+async function toViews(
+  reviews: ReviewRecord[],
+  viewerId?: string,
+  staff = false,
+  { publicView = false, now = new Date() }: { publicView?: boolean; now?: Date } = {},
+): Promise<ReviewView[]> {
   if (reviews.length === 0) return [];
   const people = await UserModel.find({
     _id: mongoose.trusted({
@@ -92,8 +110,10 @@ async function toViews(reviews: ReviewRecord[], viewerId?: string, staff = false
   const bookings = await BookingModel.find({
     _id: mongoose.trusted({ $in: reviews.map((review) => review.bookingId) }),
   })
-    .select('ref vehicleSnapshot.title')
+    .select('ref vehicleSnapshot.title statusHistory endAt')
     .lean();
+  const waiting = reviews.some((review) => review.status === 'AWAITING_REVEAL');
+  const windowDays = waiting ? (await getPlatformSettings()).reviews.windowDays : 0;
   const name = (id: Id) => people.find((person) => person._id.equals(id));
   return reviews.map((review) => {
     const author = name(review.authorId);
@@ -101,7 +121,8 @@ async function toViews(reviews: ReviewRecord[], viewerId?: string, staff = false
     const own = viewerId !== undefined && review.authorId.equals(viewerId);
     return {
       id: review._id.toString(),
-      bookingRef: booking?.ref ?? '',
+      // Other members don't learn which booking a review came from (plan §6.2).
+      bookingRef: publicView ? '' : (booking?.ref ?? ''),
       direction: review.direction,
       author: {
         id: review.authorId.toString(),
@@ -121,8 +142,8 @@ async function toViews(reviews: ReviewRecord[], viewerId?: string, staff = false
       ...(review.body && { body: review.body }),
       status: review.status,
       ...((own || staff) && { moderation: review.moderation.state }),
-      ...(review.revealAt &&
-        review.status === 'AWAITING_REVEAL' && { revealAt: review.revealAt.toISOString() }),
+      ...(review.status === 'AWAITING_REVEAL' &&
+        booking && { revealAt: publishedBy(booking, windowDays, now).toISOString() }),
       createdAt: review.createdAt.toISOString(),
     };
   });
@@ -151,8 +172,12 @@ async function recountRatings(hostId: Id, vehicleId: Id | undefined, session?: C
   forget('vehicles:featured');
 }
 
-/** Publishes reviews, tells each subject, and recounts the Host's and the car's ratings. */
-async function publish(reviews: ReviewRecord[], now: Date) {
+/**
+ * Publishes reviews, tells each subject, and recounts the Host's and the car's ratings. Returns how many
+ * were published: a review held by moderation isn't.
+ */
+async function publish(reviews: ReviewRecord[], now: Date): Promise<number> {
+  let count = 0;
   for (const review of reviews) {
     const published = await ReviewModel.findOneAndUpdate(
       { _id: review._id, status: 'AWAITING_REVEAL', 'moderation.state': 'CLEAR' },
@@ -160,6 +185,7 @@ async function publish(reviews: ReviewRecord[], now: Date) {
       { new: true },
     ).lean<ReviewRecord>();
     if (!published) continue;
+    count += 1;
     if (published.direction === 'GUEST_TO_HOST')
       await recountRatings(published.subjectId, published.vehicleId);
     const author = await UserModel.findById(published.authorId).select('firstName').lean();
@@ -172,6 +198,7 @@ async function publish(reviews: ReviewRecord[], now: Date) {
       dedupeKey: `REVIEW_PUBLISHED:${published._id.toString()}`,
     });
   }
+  return count;
 }
 
 /**
@@ -188,8 +215,61 @@ export async function revealReviews(bookingId: Id | string, now = new Date()): P
   const all = await ReviewModel.countDocuments({ bookingId: booking._id });
   const closed = reviewWindowCloses(booking, settings.reviews.windowDays) <= now;
   if (!closed && settings.reviews.revealTogether && all < 2) return 0;
-  await publish(reviews, now);
-  return reviews.length;
+  return publish(reviews, now);
+}
+
+/**
+ * `reviews.reveal`: publishes the booking's waiting reviews when the window closes. If staff lengthened the
+ * window after the trip, it's still open: the job is queued again for the new close, so a one-sided review
+ * can't wait for ever (plan §4.3). A shortened window is caught by the daily sweep below.
+ */
+export async function runReviewReveal(bookingId: string, now = new Date()): Promise<number> {
+  const published = await revealReviews(bookingId, now);
+  const booking = await BookingModel.findById(bookingId).select('statusHistory endAt').lean<BookingRecord>();
+  if (!booking) return published;
+  const settings = await getPlatformSettings();
+  const closes = reviewWindowCloses(booking, settings.reviews.windowDays);
+  // Both reviews published (or hidden) leaves nothing to wait for.
+  const settled = await ReviewModel.countDocuments({
+    bookingId: booking._id,
+    status: mongoose.trusted({ $ne: 'AWAITING_REVEAL' }),
+  });
+  if (closes > now && settled < 2) {
+    await enqueue(
+      'reviews.reveal',
+      { bookingId },
+      { runAt: closes, uniqueKey: `reviews.reveal:${bookingId}:${closes.getTime()}`, refId: bookingId },
+    );
+  }
+  return published;
+}
+
+export async function scheduleReviewRevealSweep(now = new Date()) {
+  const runAt = nextNzHour(now, REVEAL_SWEEP_HOUR);
+  await enqueue('daily.reviewReveal', {}, { runAt, uniqueKey: `daily.reviewReveal:${nzDate(runAt)}` });
+}
+
+/**
+ * `daily.reviewReveal`: the safety net for `reviews.reveal`. Publishes reviews still waiting after their
+ * trip's window has closed, such as when staff shortened the window and the trip's own job is days away, or
+ * that job failed. A review held by moderation stays held. Returns how many were published.
+ */
+export async function sweepReviewReveals(now = new Date()): Promise<number> {
+  await scheduleReviewRevealSweep(now);
+  const settings = await getPlatformSettings();
+  const bookingIds = await ReviewModel.distinct('bookingId', {
+    status: 'AWAITING_REVEAL',
+    'moderation.state': 'CLEAR',
+  });
+  const bookings = await BookingModel.find({ _id: mongoose.trusted({ $in: bookingIds }) })
+    .select('statusHistory endAt')
+    .lean<BookingRecord[]>();
+  let published = 0;
+  for (const booking of bookings) {
+    if (reviewWindowCloses(booking, settings.reviews.windowDays) > now) continue;
+    published += await revealReviews(booking._id, now);
+  }
+  return published;
 }
 
 /** POST /reviews: the Guest's or the Host's review of a completed trip, once each, within the window. */
@@ -368,14 +448,19 @@ export async function myReviews(userId: string, now = new Date()) {
   return { toWrite, written: await toViews(mine, userId), received: await toViews(received, userId) };
 }
 
-/** GET /users/{id}/reviews: a member's public profile and the published reviews about them (plan §6.2). */
+/**
+ * GET /users/{id}/reviews: a member's public profile and the published reviews about them, as Guest and as
+ * Host (plan §6.2: first name, photo, verified or not, rating, trips, a Host's response rate and the year
+ * they joined). A closed or suspended account isn't shown.
+ */
 export async function memberReviews(memberId: string) {
   if (!mongoose.isValidObjectId(memberId))
     throw new HttpError(404, 'NOT_FOUND', "We couldn't find that member.");
   const member = await UserModel.findById(memberId)
-    .select('firstName avatarUrl createdAt identityVerification hostProfile closedAt')
+    .select('firstName avatarUrl createdAt identityVerification hostProfile closedAt status')
     .lean();
-  if (!member || member.closedAt) throw new HttpError(404, 'NOT_FOUND', "We couldn't find that member.");
+  if (!member || member.closedAt || member.status === 'SUSPENDED')
+    throw new HttpError(404, 'NOT_FOUND', "We couldn't find that member.");
   const [guestRating] = await ReviewModel.aggregate<{ avg: number; count: number }>([
     { $match: { subjectId: member._id, direction: 'HOST_TO_GUEST', status: 'PUBLISHED' } },
     { $group: { _id: null, avg: { $avg: '$overall' }, count: { $sum: 1 } } },
@@ -399,14 +484,14 @@ export async function memberReviews(memberId: string) {
       },
       ...(host && {
         asHost: {
-          rating: host.rating,
-          tripCount: host.tripCount,
+          rating: host.rating ?? { avg: 0, count: 0 },
+          tripCount: host.tripCount ?? 0,
           ...(host.responseRate !== undefined && { responseRate: host.responseRate }),
           ...(host.bio && { bio: host.bio }),
         },
       }),
     },
-    reviews: await toViews(reviews),
+    reviews: await toViews(reviews, undefined, false, { publicView: true }),
   };
 }
 

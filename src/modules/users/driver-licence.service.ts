@@ -13,8 +13,9 @@ import { UserModel, type User } from './user.model.js';
 /*
  * Driver licence details and the eligibility rules in settings (plan §3, Validation rules: booking):
  * age, accepted licence classes, years licensed, a licence valid until the trip ends, and English
- * proof for an overseas licence that isn't in English. Support staff check licences by hand until the
- * identity check arrives (plan §16, item 15).
+ * proof for an overseas licence that isn't in English. A driver licence used as the ID in the identity check
+ * confirms the licence; otherwise support staff check it by hand, and a booking made meanwhile becomes a
+ * request (plan §8.2). No NZ licence-check service is connected (plan §16, item 15).
  */
 
 const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
@@ -38,12 +39,27 @@ type EligibilityUser = Pick<User, 'phoneVerifiedAt' | 'dob' | 'driverLicence' | 
 export const identityProcessing = (user: Pick<User, 'identityVerification'>) =>
   user.identityVerification?.status === 'NONE' && user.identityVerification.sessionStatus === 'processing';
 
+type ReviewUser = Pick<User, 'identityVerification' | 'driverLicence'>;
+
 /**
- * Whether this person's identity check is waiting for support staff (plan §8.2). They can still book:
- * the card is authorised, and the booking is confirmed once the check is approved.
+ * A licence only support staff can confirm now (plan §8.2): its details are new or changed, and no identity
+ * check is still to come that would read them from a driver licence. With the identity check required and
+ * not done yet, the person can't book anyway, and the check may confirm the licence itself, so a person
+ * isn't asked to look. A rejected identity stops booking whatever the licence says.
  */
-export const verificationInReview = (user: Pick<User, 'identityVerification'>) =>
-  user.identityVerification?.status === 'PENDING';
+export function licenceAwaitingReview(user: ReviewUser, settings: Pick<PlatformSettings, 'verification'>) {
+  if (user.driverLicence?.status !== 'PENDING') return false;
+  const identity = user.identityVerification?.status ?? 'NONE';
+  if (identity === 'NONE') return !settings.verification.identityBeforeFirstBooking;
+  return identity !== 'REJECTED';
+}
+
+/**
+ * Whether this person's identity check or licence is waiting for support staff (plan §8.2). They can still
+ * book: the card is authorised, and the booking is confirmed once both are approved.
+ */
+export const verificationInReview = (user: ReviewUser, settings: Pick<PlatformSettings, 'verification'>) =>
+  user.identityVerification?.status === 'PENDING' || licenceAwaitingReview(user, settings);
 
 /** What stops this person driving a trip that ends at `tripEnd` (without one, today). */
 export function eligibilityProblems(
@@ -144,6 +160,7 @@ export async function checkoutReadiness(userId: string, tripEnd?: Date): Promise
         }
       : null,
     hasDateOfBirth: Boolean(user.dob),
+    licenceInReview: licenceAwaitingReview(user, settings),
     identityStatus: user.identityVerification?.status ?? 'NONE',
     identityProcessing: identityProcessing(user),
     ...(user.identityVerification?.lastError && { identityError: user.identityVerification.lastError }),
@@ -182,6 +199,10 @@ export async function saveDriverLicence(
 
   const numberHash = licenceNumberHash(input.number);
   const unchanged = user.driverLicence?.numberHash === numberHash;
+  // A new date of birth wasn't the one compared with the ID.
+  if (user.dob?.getTime() !== dob.getTime() && user.identityVerification?.documentDobMatched !== undefined) {
+    user.identityVerification.documentDobMatched = undefined;
+  }
   user.dob = dob;
   user.driverLicence = {
     number: encrypt(input.number),

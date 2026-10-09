@@ -1,4 +1,4 @@
-import { DestinationModel } from '../modules/cms/destination.model.js';
+import { DestinationModel, publishedDestination } from '../modules/cms/destination.model.js';
 import { VehicleModel } from '../modules/vehicles/vehicle.model.js';
 import type { SeoManifest } from './frontend-shell.js';
 
@@ -16,8 +16,8 @@ const escapeXml = (value: string) =>
 const day = (date: Date) => date.toISOString().slice(0, 10);
 
 /**
- * sitemap.xml (plan §1.4, item 4): the website's indexable static pages, live vehicles and destinations,
- * each only once the website has built that kind of page.
+ * sitemap.xml (plan §1.4, item 4): the website's indexable static pages, live vehicles and published
+ * destinations, each only once the website has built that kind of page.
  */
 export async function buildSitemap(siteUrl: string, manifest: SeoManifest): Promise<string> {
   const urls: { loc: string; lastmod?: Date }[] = manifest.indexablePaths.map((path) => ({
@@ -25,7 +25,10 @@ export async function buildSitemap(siteUrl: string, manifest: SeoManifest): Prom
   }));
 
   if (manifest.destinationPages) {
-    const destinations = await DestinationModel.find().select('slug updatedAt').sort({ order: 1 }).lean();
+    const destinations = await DestinationModel.find(publishedDestination())
+      .select('slug updatedAt')
+      .sort({ order: 1 })
+      .lean();
     urls.push(
       ...destinations.map((destination) => ({
         loc: `${siteUrl}/rental/${destination.slug}`,

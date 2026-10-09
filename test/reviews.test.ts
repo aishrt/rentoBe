@@ -1,10 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { JobContext } from '../src/jobs/handlers/index.js';
 import { reviewRequestJob, revealReviewsJob } from '../src/jobs/handlers/trip-jobs.js';
+import { JobModel } from '../src/jobs/job.model.js';
+import { toNzWallClock } from '../src/lib/nz-time.js';
+import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { ReviewModel } from '../src/modules/reviews/review.model.js';
-import { moderationReason } from '../src/modules/reviews/reviews.service.js';
+import {
+  REVEAL_SWEEP_HOUR,
+  moderationReason,
+  runReviewReveal,
+  sweepReviewReveals,
+} from '../src/modules/reviews/reviews.service.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
 import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
@@ -42,6 +50,15 @@ async function completedTrip(daysAgo = 1) {
     guestAgent: await signIn('kiri@example.co.nz'),
     hostAgent: await signIn('hana@example.co.nz'),
   };
+}
+
+/** Staff change the review window in Platform settings. */
+async function setReviewWindow(windowDays: number) {
+  await PlatformSettingsModel.updateOne(
+    { _id: PLATFORM_SETTINGS_ID },
+    { $set: { 'settings.reviews.windowDays': windowDays } },
+    { upsert: true },
+  );
 }
 
 const guestReview = (ref: string, body = 'Spotless car and a friendly host.') => ({
@@ -123,6 +140,50 @@ describe('two-way reviews', () => {
     expect(profile.body.reviews).toHaveLength(2);
   });
 
+  it('show a member’s public profile with their reviews as Guest and as Host, and nothing private', async () => {
+    const { booking, guestAgent, hostAgent, host, guest } = await completedTrip();
+    await guestAgent.post('/api/v1/reviews').send(guestReview(booking.ref));
+    await hostAgent
+      .post('/api/v1/reviews')
+      .send({ bookingRef: booking.ref, overall: 4, communication: 5, pickupReturn: 4, care: 4 });
+
+    const guestProfile = await hostAgent.get(`/api/v1/users/${guest.id}/reviews`);
+    expect(guestProfile.status).toBe(200);
+    expect(guestProfile.body.profile).toEqual({
+      id: guest.id,
+      firstName: 'Kiri',
+      joinedYear: expect.any(Number),
+      verified: false,
+      asGuest: { rating: { avg: 4, count: 1 }, tripCount: 1 },
+    });
+    expect(guestProfile.body.reviews).toEqual([
+      expect.objectContaining({
+        direction: 'HOST_TO_GUEST',
+        author: expect.objectContaining({ id: host.id }),
+      }),
+    ]);
+    // Which booking a review came from stays between the two of them, as does the moderation state.
+    expect(guestProfile.body.reviews[0].bookingRef).toBe('');
+    expect(guestProfile.body.reviews[0].moderation).toBeUndefined();
+    expect(JSON.stringify(guestProfile.body)).not.toContain(booking.ref);
+    expect(JSON.stringify(guestProfile.body)).not.toContain('example.co.nz');
+
+    const hostProfile = await guestAgent.get(`/api/v1/users/${host.id}/reviews`);
+    expect(hostProfile.body.profile.asHost).toMatchObject({ rating: { avg: 5, count: 1 } });
+    expect(hostProfile.body.reviews).toEqual([expect.objectContaining({ direction: 'GUEST_TO_HOST' })]);
+
+    // Signed in only; a suspended or closed account isn't shown.
+    expect((await browserAgent().get(`/api/v1/users/${host.id}/reviews`)).status).toBe(401);
+    await createUser({ email: 'tama@example.co.nz', firstName: 'Tama' });
+    const member = await signIn('tama@example.co.nz');
+    expect((await member.get(`/api/v1/users/${host.id}/reviews`)).status).toBe(200);
+    await UserModel.updateOne({ _id: host._id }, { $set: { status: 'SUSPENDED' } });
+    expect((await member.get(`/api/v1/users/${host.id}/reviews`)).status).toBe(404);
+    await UserModel.updateOne({ _id: guest._id }, { $set: { closedAt: new Date() } });
+    expect((await member.get(`/api/v1/users/${guest.id}/reviews`)).status).toBe(404);
+    expect((await member.get('/api/v1/users/not-an-id/reviews')).status).toBe(404);
+  });
+
   it('are published by the reveal job when the window closes with one side in', async () => {
     const { booking, guestAgent } = await completedTrip(13);
     await guestAgent.post('/api/v1/reviews').send(guestReview(booking.ref));
@@ -137,6 +198,66 @@ describe('two-way reviews', () => {
     );
     await revealReviewsJob({ bookingId: booking.id }, context);
     expect((await ReviewModel.findOne({ bookingId: booking._id }))!.status).toBe('PUBLISHED');
+  });
+
+  it('wait for a lengthened window: the reveal job is queued again for when it now closes', async () => {
+    const { booking, guestAgent } = await completedTrip(13);
+    await guestAgent.post('/api/v1/reviews').send(guestReview(booking.ref));
+    // Staff lengthen the window from 14 to 30 days after the trip's reveal job was queued.
+    await setReviewWindow(30);
+    await revealReviewsJob({ bookingId: booking.id }, context);
+    expect((await ReviewModel.findOne({ bookingId: booking._id }))!.status).toBe('AWAITING_REVEAL');
+
+    const closes = new Date(booking.endAt.getTime() + 30 * DAY_MS);
+    const again = await JobModel.find({ type: 'reviews.reveal' });
+    expect(again).toHaveLength(1);
+    expect(again[0]).toMatchObject({
+      runAt: closes,
+      uniqueKey: `reviews.reveal:${booking.id}:${closes.getTime()}`,
+      refId: booking.id,
+    });
+    // The author is told the new date, not the one the old window gave.
+    expect((await guestAgent.get('/api/v1/me/reviews')).body.written[0].revealAt).toBe(closes.toISOString());
+
+    // When that job runs, the window has closed: it's published, and nothing more is queued.
+    expect(await runReviewReveal(booking.id, new Date(closes.getTime() + 60_000))).toBe(1);
+    expect((await ReviewModel.findOne({ bookingId: booking._id }))!.status).toBe('PUBLISHED');
+    expect(await JobModel.countDocuments({ type: 'reviews.reveal' })).toBe(1);
+  });
+
+  it('are published by the daily sweep once a shortened window has closed, unless held', async () => {
+    const { booking, guestAgent, hostAgent, guest } = await completedTrip(5);
+    await guestAgent.post('/api/v1/reviews').send(guestReview(booking.ref));
+
+    // Still inside the 14-day window: the sweep leaves it waiting, and queues tomorrow's run once.
+    expect(await sweepReviewReveals()).toBe(0);
+    await sweepReviewReveals();
+    const sweeps = await JobModel.find({ type: 'daily.reviewReveal' });
+    expect(sweeps).toHaveLength(1);
+    expect(toNzWallClock(sweeps[0]!.runAt).hour).toBe(REVEAL_SWEEP_HOUR);
+    expect((await ReviewModel.findOne({ authorId: guest._id }))!.status).toBe('AWAITING_REVEAL');
+
+    // Staff shorten the window to 3 days: it has closed, so the author is told it's out by the next sweep.
+    await setReviewWindow(3);
+    const revealAt = new Date((await guestAgent.get('/api/v1/me/reviews')).body.written[0].revealAt);
+    expect(revealAt.getTime()).toBeGreaterThan(Date.now());
+    expect(revealAt.getTime()).toBeLessThanOrEqual(Date.now() + DAY_MS);
+    expect(await sweepReviewReveals()).toBe(1);
+    expect((await ReviewModel.findOne({ authorId: guest._id }))!.status).toBe('PUBLISHED');
+
+    // A review held for a moderator stays held.
+    await setReviewWindow(14);
+    await hostAgent.post('/api/v1/reviews').send({
+      bookingRef: booking.ref,
+      overall: 2,
+      communication: 2,
+      pickupReturn: 2,
+      care: 2,
+      body: 'Call me on 021 555 1234',
+    });
+    await setReviewWindow(3);
+    expect(await sweepReviewReveals()).toBe(0);
+    expect((await ReviewModel.findOne({ direction: 'HOST_TO_GUEST' }))!.status).toBe('AWAITING_REVEAL');
   });
 
   it('can’t be written after the window, for a trip that isn’t done, or by someone else', async () => {

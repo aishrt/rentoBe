@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import type { JobContext } from '../src/jobs/handlers/index.js';
+import { tripExtraChargesJob } from '../src/jobs/handlers/payout-jobs.js';
 import { JobModel } from '../src/jobs/job.model.js';
+import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import {
   ConditionReportModel,
@@ -330,5 +333,89 @@ describe('check-out', () => {
       completedBySupport: true,
     });
     expect((await BookingModel.findById(booking._id))!.status).toBe('COMPLETED');
+  });
+
+  it('shows staff both reports, and lets support complete a trip with the Host’s readings alone', async () => {
+    const { booking } = await checkedIn();
+    await createStaff('sam@example.co.nz', 'SUPPORT');
+    const staff = await staffAgent('sam@example.co.nz');
+
+    // Staff read the handover like the parties do, with nothing for them to confirm.
+    const before = await staff.get(`/api/v1/bookings/${booking.ref}/inspections`);
+    expect(before.status).toBe(200);
+    expect(before.body.handover).toMatchObject({
+      role: 'STAFF',
+      bookingStatus: 'ACTIVE',
+      checkIn: { submittedBy: 'HOST', odometer: 45000, confirmedByHostAt: expect.any(String) },
+      checkOut: null,
+      actions: { checkIn: false, checkOut: false, confirmCheckIn: false, confirmCheckOut: false },
+    });
+    expect(before.body.handover.checkIn.photos[0]).toMatchObject({
+      takenBy: 'HOST',
+      takenAt: expect.any(String),
+    });
+
+    const lower = await staff
+      .post(`/api/v1/admin/bookings/${booking.ref}/complete`)
+      .send({ odometer: 44000, fuelOrBatteryPct: 70 });
+    expect(lower.body.error.fields.odometer).toMatch(/45,000/);
+    const missing = await staff
+      .post(`/api/v1/admin/bookings/${booking.ref}/complete`)
+      .send({ odometer: 46000 });
+    expect(missing.body.error.fields.fuelOrBatteryPct).toBeDefined();
+
+    // 800 km driven, 750 included: the same extra-kilometre charge as a check-out in the app.
+    const completed = await staff
+      .post(`/api/v1/admin/bookings/${booking.ref}/complete`)
+      .send({ odometer: 45800, fuelOrBatteryPct: 60, notes: 'From the Host’s photo of the dashboard' });
+    expect(completed.status).toBe(200);
+    expect(completed.body.handover).toMatchObject({
+      bookingStatus: 'COMPLETED',
+      checkOut: {
+        submittedBy: 'STAFF',
+        completedBySupport: true,
+        odometer: 45800,
+        fuelOrBatteryPct: 60,
+        notes: 'From the Host’s photo of the dashboard',
+        photos: [],
+      },
+      kilometres: { driven: 800, allowance: 750, extra: 50, extraChargeCents: 1750 },
+    });
+    const stored = await BookingModel.findById(booking._id).lean();
+    expect(stored!.statusHistory.at(-1)).toMatchObject({
+      status: 'COMPLETED',
+      reason: 'Completed by support: check-out was missing',
+    });
+    expect(await JobModel.countDocuments({ type: 'trip.extraCharges', refId: booking.id })).toBe(1);
+    await tripExtraChargesJob({ bookingId: booking.id }, {
+      log: { info: () => undefined, warn: () => undefined },
+    } as unknown as JobContext);
+    expect((await BookingModel.findById(booking._id).lean())!.extraCharges).toEqual([
+      expect.objectContaining({ type: 'EXTRA_KM', amountCents: 1750, status: 'PENDING' }),
+    ]);
+    expect(await AuditLogModel.findOne({ action: 'booking.completed-by-support' }).lean()).toMatchObject({
+      after: { status: 'COMPLETED', odometer: 45800, fuelOrBatteryPct: 60, photos: 0 },
+    });
+    const again = await staff
+      .post(`/api/v1/admin/bookings/${booking.ref}/complete`)
+      .send({ odometer: 45900, fuelOrBatteryPct: 60 });
+    expect(again.body.error.code).toBe('NOT_CHECK_OUT');
+  });
+
+  it('lets support complete a trip started without a check-in, with no extra kilometres to work out', async () => {
+    const { booking } = await trip();
+    await BookingModel.updateOne({ _id: booking._id }, { $set: { status: 'ACTIVE' } });
+    await createStaff();
+    const staff = await staffAgent();
+    const completed = await staff
+      .post(`/api/v1/admin/bookings/${booking.ref}/complete`)
+      .send({ odometer: 46000, fuelOrBatteryPct: 50 });
+    expect(completed.status).toBe(200);
+    expect(completed.body.handover).toMatchObject({
+      bookingStatus: 'COMPLETED',
+      checkIn: null,
+      checkOut: { odometer: 46000, completedBySupport: true },
+    });
+    expect(completed.body.handover.kilometres).toBeUndefined();
   });
 });

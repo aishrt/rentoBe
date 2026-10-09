@@ -314,6 +314,59 @@ describe('booking messages', () => {
       after: { context: 'TICKET:ST-ABOUT2' },
     });
   });
+
+  it('keeps the conversation a member was reported from, and support opens only that one', async () => {
+    const { booking, host, guest, guestAgent } = await trip();
+    const other = await createBookingRecord({
+      guestId: guest._id,
+      hostId: host._id,
+      vehicleId: booking.vehicleId,
+    });
+
+    // Reported from elsewhere (no booking): support can't open their conversations from it.
+    const elsewhere = await guestAgent
+      .post('/api/v1/reports')
+      .send({ targetType: 'USER', targetId: host.id, reason: 'SCAM' });
+    expect(elsewhere.status).toBe(201);
+    await createStaff('aroha@example.co.nz', 'SUPPORT');
+    const staff = await staffAgent();
+    const refused = await staff.get(
+      `/api/v1/admin/bookings/${booking.ref}/thread?context=REPORT:${elsewhere.body.id}`,
+    );
+    expect(refused.body.error.code).toBe('NO_CONTEXT');
+
+    // Only a booking between the two of them can be given.
+    await createUser({ email: 'tama@example.co.nz', firstName: 'Tama' });
+    const tama = await signIn('tama@example.co.nz');
+    const notTheirs = await tama
+      .post('/api/v1/reports')
+      .send({ targetType: 'USER', targetId: host.id, reason: 'SCAM', bookingRef: booking.ref });
+    expect(notTheirs.status).toBe(404);
+
+    // Reported again from the conversation: the open report gains that booking.
+    const fromThread = await guestAgent
+      .post('/api/v1/reports')
+      .send({ targetType: 'USER', targetId: host.id, reason: 'SCAM', bookingRef: booking.ref });
+    expect(fromThread.body.id).toBe(elsewhere.body.id);
+    expect((await ReportModel.findById(fromThread.body.id))!.bookingId).toEqual(booking._id);
+
+    const queue = await staff.get('/api/v1/admin/moderation/reports');
+    expect(queue.body.reports).toEqual([
+      expect.objectContaining({ targetType: 'USER', targetId: host.id, bookingRef: booking.ref }),
+    ]);
+    const opened = await staff.get(
+      `/api/v1/admin/bookings/${booking.ref}/thread?context=REPORT:${fromThread.body.id}`,
+    );
+    expect(opened.status).toBe(200);
+    expect(
+      await AuditLogModel.findOne({ action: 'thread.opened', entityId: booking.id }).lean(),
+    ).toMatchObject({ after: { context: `REPORT:${fromThread.body.id.toUpperCase()}` } });
+    // The same report doesn't open their other booking's conversation.
+    const otherThread = await staff.get(
+      `/api/v1/admin/bookings/${other.ref}/thread?context=REPORT:${fromThread.body.id}`,
+    );
+    expect(otherThread.body.error.code).toBe('NO_CONTEXT');
+  });
 });
 
 describe('automated booking messages and reminders', () => {

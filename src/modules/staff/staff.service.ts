@@ -12,7 +12,7 @@ import {
 import { createRefreshToken, hashToken } from '../auth/auth.tokens.js';
 import { passwordContainsEmailName } from '../auth/password-policy.js';
 import { SessionModel } from '../auth/session.model.js';
-import { UserModel } from '../users/user.model.js';
+import { PERMISSIONS, UserModel } from '../users/user.model.js';
 import { effectiveRoles } from '../users/user.service.js';
 import { StaffInviteModel, type StaffInvite } from './staff-invite.model.js';
 import type {
@@ -61,21 +61,28 @@ const staffFilter = () => ({ $or: [{ roles: 'SUPPORT' }, { roles: 'ADMIN', email
 /** The admin, then the support team by name, and the invitations not yet accepted, newest first. */
 export async function listStaff(): Promise<StaffList> {
   const [users, invites] = await Promise.all([
-    UserModel.find(staffFilter()).select('email firstName lastName roles status mfa.enabledAt lastLoginAt'),
+    UserModel.find(staffFilter()).select(
+      'email firstName lastName roles permissions status mfa.enabledAt lastLoginAt',
+    ),
     StaffInviteModel.find({ expiresAt: mongoose.trusted({ $gt: new Date() }) }).sort({ createdAt: -1 }),
   ]);
 
   const staff = users
-    .map((user): StaffMember => ({
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      role: effectiveRoles(user).includes('ADMIN') ? 'ADMIN' : 'SUPPORT',
-      status: user.status,
-      mfaEnabled: Boolean(user.mfa?.enabledAt),
-      ...(user.lastLoginAt && { lastLoginAt: user.lastLoginAt.toISOString() }),
-    }))
+    .map((user): StaffMember => {
+      const admin = effectiveRoles(user).includes('ADMIN');
+      return {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: admin ? 'ADMIN' : 'SUPPORT',
+        status: user.status,
+        mfaEnabled: Boolean(user.mfa?.enabledAt),
+        ...(user.lastLoginAt && { lastLoginAt: user.lastLoginAt.toISOString() }),
+        // The admin passes every permission check (requirePermission), whatever is stored.
+        permissions: admin ? [...PERMISSIONS] : [...(user.permissions ?? [])],
+      };
+    })
     .sort(
       (a, b) =>
         Number(b.role === 'ADMIN') - Number(a.role === 'ADMIN') ||

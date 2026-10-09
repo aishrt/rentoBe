@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { emailField } from '../auth/auth.schemas.js';
+import { emailField, nameField } from '../auth/auth.schemas.js';
 import { newPasswordSchema } from '../auth/password-policy.js';
 import { AGREEMENT_TYPES } from './user.model.js';
 
@@ -17,6 +17,21 @@ export const changeEmailSchema = z.object({
   newEmail: emailField,
   currentPassword,
 });
+
+/**
+ * PATCH /me: the person's name, as on their ID (plan §11). Send either or both; a name that's only spaces is
+ * refused.
+ */
+export const updateMeSchema = z
+  .object({
+    firstName: nameField('first name').optional(),
+    lastName: nameField('last name').optional(),
+  })
+  .refine((input) => input.firstName !== undefined || input.lastName !== undefined, {
+    error: 'Send a first or last name to change',
+  })
+  .meta({ id: 'UpdateMeRequest' });
+export type UpdateMeInput = z.infer<typeof updateMeSchema>;
 
 export const acceptAgreementsSchema = z
   .object({

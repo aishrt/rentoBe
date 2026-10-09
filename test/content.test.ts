@@ -43,6 +43,26 @@ describe('Public content', () => {
     expect((await request(app).get('/api/v1/destinations/atlantis')).status).toBe(404);
   });
 
+  it('leaves unpublished destinations off the list and their pages, and says which are homepage tiles', async () => {
+    await DestinationModel.create([
+      ...DESTINATIONS.filter((destination) => destination.slug !== 'rotorua'),
+      { ...DESTINATIONS.find((destination) => destination.slug === 'rotorua')!, published: false },
+    ]);
+    // Saved before `published` existed: still published.
+    await DestinationModel.collection.updateOne({ slug: 'auckland' }, { $unset: { published: '' } });
+
+    const list = await request(app).get('/api/v1/destinations');
+    expect(list.body.destinations.map((destination: { slug: string }) => destination.slug)).toEqual([
+      'queenstown',
+      'auckland',
+      'christchurch',
+      'wellington',
+    ]);
+    expect(list.body.destinations[0]).toMatchObject({ slug: 'queenstown', featured: true });
+    expect((await request(app).get('/api/v1/destinations/rotorua')).status).toBe(404);
+    expect((await request(app).get('/api/v1/destinations/auckland')).status).toBe(200);
+  });
+
   it('serves the legal pages and nothing else from the CMS', async () => {
     await CmsBlockModel.create([
       ...LEGAL_PAGES,
@@ -52,6 +72,41 @@ describe('Public content', () => {
     expect(terms.body.page).toMatchObject({ key: 'legal.terms', title: 'Terms & Conditions' });
     expect(terms.body.page.markdown).toContain('placeholder');
     expect((await request(app).get('/api/v1/cms/home.featured-vehicles')).status).toBe(404);
+    expect((await request(app).get('/api/v1/cms/home.featured-reviews')).status).toBe(404);
+  });
+
+  it('serves the homepage text and footer links, the original ones until an admin saves their own', async () => {
+    const hero = await request(app).get('/api/v1/cms/home.hero');
+    expect(hero.body.hero.headline).toBe('Rent a car from local owners across New Zealand.');
+    expect(hero.headers['cache-control']).toBe('public, max-age=60');
+    const footer = await request(app).get('/api/v1/cms/site.footer');
+    expect(footer.body.footer.socialLinks).toEqual([]);
+    expect(footer.body.footer.groups.map((group: { title: string }) => group.title)).toEqual([
+      'Rent',
+      'Host',
+      'Support',
+      'Legal',
+    ]);
+    expect(footer.body.footer.groups[2].links[0]).toEqual({ label: 'Help centre', href: '/help' });
+
+    await CmsBlockModel.create([
+      {
+        key: 'home.hero',
+        version: '1',
+        content: {
+          headline: 'Drive Aotearoa with a local’s car.',
+          subheading: 'Booked in minutes from locals.',
+        },
+      },
+      // A broken block never breaks the page: the original links stay.
+      { key: 'site.footer', version: '1', content: { groups: 'nope' } },
+    ]);
+    forget();
+    expect((await request(app).get('/api/v1/cms/home.hero')).body.hero).toEqual({
+      headline: 'Drive Aotearoa with a local’s car.',
+      subheading: 'Booked in minutes from locals.',
+    });
+    expect((await request(app).get('/api/v1/cms/site.footer')).body.footer.groups).toHaveLength(4);
   });
 
   it('lists FAQs by audience and for the homepage', async () => {
@@ -110,6 +165,66 @@ describe('Public content', () => {
         city: 'Auckland',
       }),
     ]);
+  });
+
+  it('shows the reviews an admin picked, in their order, leaving out any hidden since', async () => {
+    const host = await createHost();
+    const guest = await createUser({ firstName: 'Kiri' });
+    const vehicle = await createVehicle(host._id);
+    const review = (body: string, overall = 5) => ({
+      bookingId: new mongoose.Types.ObjectId(),
+      vehicleId: vehicle._id,
+      authorId: guest._id,
+      subjectId: host._id,
+      direction: 'GUEST_TO_HOST',
+      overall,
+      body,
+      status: 'PUBLISHED',
+    });
+    const [great, fine] = await ReviewModel.create([
+      review('Great car.'),
+      review('Fine, a little late.', 3),
+      review('Lovely Host.'),
+    ]);
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { reviews: { homepageThreshold: 2 } },
+    });
+    await CmsBlockModel.create({
+      key: 'home.featured-reviews',
+      version: '1',
+      content: { reviewIds: [fine!.id, great!.id] },
+    });
+    const bodies = async () => {
+      forget();
+      const response = await request(app).get('/api/v1/reviews/featured');
+      return response.body.show
+        ? response.body.reviews.map((shown: { body: string }) => shown.body)
+        : 'hidden';
+    };
+    // Picked by an admin, a 3-star review shows too.
+    expect(await bodies()).toEqual(['Fine, a little late.', 'Great car.']);
+
+    await ReviewModel.updateOne(
+      { _id: fine!._id },
+      { $set: { 'moderation.state': 'HIDDEN', status: 'HIDDEN' } },
+    );
+    expect(await bodies()).toEqual(['Great car.']);
+
+    // None of the picks can show: the homepage chooses again, from the published reviews.
+    await ReviewModel.updateOne(
+      { _id: great!._id },
+      { $set: { 'moderation.state': 'HIDDEN', status: 'HIDDEN' } },
+    );
+    await ReviewModel.create(review('Spotless.'));
+    expect(await bodies()).toEqual(['Spotless.', 'Lovely Host.']);
+
+    // Below the threshold, the section stays hidden whatever was picked.
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      { $set: { 'settings.reviews.homepageThreshold': 10 } },
+    );
+    expect(await bodies()).toBe('hidden');
   });
 });
 

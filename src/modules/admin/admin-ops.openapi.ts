@@ -1,7 +1,7 @@
 import type { OpenAPIRegistry, RouteConfig } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
-import { legalPageSchema } from '../cms/content.schemas.js';
+import { homeHeroSchema, legalPageSchema, siteFooterSchema } from '../cms/content.schemas.js';
 import {
   adminBookingDetailSchema,
   adminBookingsResponseSchema,
@@ -11,7 +11,9 @@ import {
   adminFaqSchema,
   adminFaqsResponseSchema,
   adminFeaturedResponseSchema,
+  adminFeaturedReviewsSchema,
   adminHelpArticleSchema,
+  adminHomeHeroSchema,
   adminHelpArticlesResponseSchema,
   adminJobsResponseSchema,
   adminPaymentsResponseSchema,
@@ -20,6 +22,7 @@ import {
   adminRefundSchema,
   adminReportSchema,
   adminReportsResponseSchema,
+  adminSiteFooterSchema,
   adminStatusEditSchema,
   adminUserResponseSchema,
   adminUsersResponseSchema,
@@ -27,9 +30,11 @@ import {
   auditQuerySchema,
   auditResponseSchema,
   bookingListQuerySchema,
+  destinationCreateSchema,
   destinationEditSchema,
   exportQuerySchema,
   faqInputSchema,
+  featuredReviewsSchema,
   featuredVehiclesSchema,
   helpArticleInputSchema,
   holdPayoutSchema,
@@ -43,6 +48,7 @@ import {
   platformReportSchema,
   reportRangeSchema,
   resolveReportSchema,
+  reviewChoicesResponseSchema,
   riskQueueSchema,
   staffTicketReplySchema,
   staffTicketResponseSchema,
@@ -230,7 +236,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     path: '/admin/bookings/{id}/refunds',
     summary: 'Staff with the refunds permission: refund the Guest',
     description:
-      'A Host-funded refund comes off the trip’s payout, or the Host’s next one once it’s paid (plan §8.1, item 15).',
+      'A Host-funded refund comes off the trip’s payout, or once that’s sent, off the Host’s next payout or back from the Stripe transfer as staff choose (recoverFrom). The answer’s hostRefund says which (plan §8.1, item 15).',
     params: id,
     body: adminRefundSchema,
     response: adminBookingDetailSchema,
@@ -382,6 +388,67 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
   });
   add({
     method: 'get',
+    path: '/admin/content/hero',
+    summary: 'Admin: the homepage’s headline and supporting line',
+    description: 'The original text until an admin saves their own (`saved: false`).',
+    response: adminHomeHeroSchema,
+    errors: [401, 403],
+  });
+  add({
+    method: 'put',
+    path: '/admin/content/hero',
+    summary: 'Admin: change the homepage’s headline and supporting line',
+    body: homeHeroSchema,
+    response: adminHomeHeroSchema,
+    errors: [400, 401, 403],
+  });
+  add({
+    method: 'get',
+    path: '/admin/content/featured-reviews',
+    summary: 'Admin: the customer reviews picked for the homepage',
+    description:
+      'In order, each saying whether it can show now, with the threshold in settings and how many reviews are published: the section stays hidden until there are enough.',
+    response: adminFeaturedReviewsSchema,
+    errors: [401, 403],
+  });
+  add({
+    method: 'put',
+    path: '/admin/content/featured-reviews',
+    summary: 'Admin: pick the homepage’s customer reviews',
+    description:
+      'Up to six published Guest reviews with words to quote, in order. None: the newest well-rated reviews are shown. One hidden later is left off the homepage.',
+    body: featuredReviewsSchema,
+    response: adminFeaturedReviewsSchema,
+    errors: [400, 401, 403],
+  });
+  add({
+    method: 'get',
+    path: '/admin/content/reviews',
+    summary: 'Admin: published Guest reviews to pick for the homepage, by their words',
+    query: z.object({ q: z.string().optional() }),
+    response: reviewChoicesResponseSchema,
+    errors: [401, 403],
+  });
+  add({
+    method: 'get',
+    path: '/admin/content/footer',
+    summary: 'Admin: the footer’s links and social accounts',
+    description: 'The original links until an admin saves their own (`saved: false`).',
+    response: adminSiteFooterSchema,
+    errors: [401, 403],
+  });
+  add({
+    method: 'put',
+    path: '/admin/content/footer',
+    summary: 'Admin: change the footer’s links and social accounts',
+    description:
+      'Links are full https:// addresses or paths on the website, like /help; social accounts are https:// addresses.',
+    body: siteFooterSchema,
+    response: adminSiteFooterSchema,
+    errors: [400, 401, 403],
+  });
+  add({
+    method: 'get',
     path: '/admin/content/legal',
     summary: 'Admin: the legal pages',
     response: legalPagesResponseSchema,
@@ -398,20 +465,36 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     response: z.object({ page: legalPageSchema }).meta({ id: 'AdminLegalPageResponse' }),
     errors: [400, 401, 403, 404],
   });
+  const destinationResponse = z
+    .object({ destination: adminDestinationSchema })
+    .meta({ id: 'AdminDestinationResponse' });
   add({
     method: 'get',
     path: '/admin/content/destinations',
-    summary: 'Admin: destination landing pages',
+    summary: 'Admin: destination landing pages, published or not',
     response: adminDestinationsResponseSchema,
     errors: [401, 403],
   });
   add({
+    method: 'post',
+    path: '/admin/content/destinations',
+    summary: 'Admin: add a destination landing page',
+    description:
+      'At /rental/{slug}, which can’t change later. Airports must be in the place list. 409 SLUG_TAKEN when another page has the address.',
+    body: destinationCreateSchema,
+    response: destinationResponse,
+    created: true,
+    errors: [400, 401, 403, 409],
+  });
+  add({
     method: 'patch',
     path: '/admin/content/destinations/{slug}',
-    summary: 'Admin: edit a destination landing page',
+    summary: 'Admin: edit a destination landing page, or publish or unpublish it',
+    description:
+      'Only the fields sent change; empty text removes an optional one. Unpublished, it’s off the homepage, its page answers 404 and the sitemap leaves it out.',
     params: z.object({ slug: z.string() }),
     body: destinationEditSchema,
-    response: z.object({ destination: adminDestinationSchema }).meta({ id: 'AdminDestinationResponse' }),
+    response: destinationResponse,
     errors: [400, 401, 403, 404],
   });
   const faqResponse = z.object({ faq: adminFaqSchema }).meta({ id: 'AdminFaqResponse' });
@@ -491,7 +574,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Admin: a report as a CSV file',
     description:
-      'Bookings, payments, refunds, payouts, cancellations or the monthly GST summary for a range of NZ days.',
+      'Bookings, payments, refunds, payouts, cancellations, the monthly GST summary, or revenue and fees by day, for a range of NZ days. Every total matches the summary for the same days.',
     security: signedIn,
     request: { query: exportQuerySchema },
     responses: {

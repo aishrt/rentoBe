@@ -310,7 +310,9 @@ export async function submitInspection(
       }
     }
   } else {
-    if (booking.status !== 'ACTIVE' || !checkIn || checkOut) {
+    // Staff may complete a trip that was marked started without a check-in in the app (plan §8.2); its
+    // extra kilometres can't then be worked out.
+    if (booking.status !== 'ACTIVE' || (!checkIn && viewer !== 'STAFF') || checkOut) {
       throw problem(
         'NOT_CHECK_OUT',
         checkOut
@@ -318,7 +320,7 @@ export async function submitInspection(
           : 'Check-out comes after check-in, while the trip is under way.',
       );
     }
-    if (input.odometer < checkIn.odometer) {
+    if (checkIn && input.odometer < checkIn.odometer) {
       throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
         odometer: `The reading can’t be lower than at check-in (${checkIn.odometer.toLocaleString('en-NZ')} km)`,
       });
@@ -383,7 +385,7 @@ export async function submitInspection(
     if (stage === 'CHECK_OUT')
       await afterTripCompleted(
         record,
-        { checkIn: checkIn!, checkOut: report!.toObject() as ReportRecord },
+        checkIn ? { checkIn, checkOut: report!.toObject() as ReportRecord } : null,
         session,
         now,
       );
@@ -404,6 +406,14 @@ export async function submitInspection(
       action: 'booking.completed-by-support',
       entity: 'booking',
       entityId: booking.id,
+      before: { status: booking.status },
+      after: {
+        status: 'COMPLETED',
+        odometer: input.odometer,
+        fuelOrBatteryPct: input.fuelOrBatteryPct,
+        photos: photos.length,
+        ...(input.notes && { notes: input.notes }),
+      },
     });
   }
 }

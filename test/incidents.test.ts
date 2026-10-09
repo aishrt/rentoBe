@@ -225,6 +225,145 @@ describe('incidents', () => {
     expect(seen.assignedToId).toBeUndefined();
   });
 
+  it('moves a case only along its workflow, and holds payouts again when it’s reopened', async () => {
+    const { booking, guestAgent, guest, host } = await trip({ status: 'COMPLETED' });
+    await PayoutModel.create({
+      hostId: host._id,
+      bookingId: booking._id,
+      type: 'TRIP',
+      amountCents: 21360,
+      scheduledFor: new Date(),
+    });
+    const opened = await guestAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: booking.ref, type: 'CLEANING', description: 'Sand all through the back seat.' });
+    const caseRef = opened.body.incident.caseRef as string;
+    expect(opened.body.incident.nextStatuses).toBeUndefined();
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    const update = (body: object) => staff.post(`/api/v1/admin/incidents/${caseRef}/events`).send(body);
+    const payout = async () => PayoutModel.findOne({ bookingId: booking._id }).lean();
+
+    expect((await staff.get(`/api/v1/admin/incidents/${caseRef}`)).body.incident.nextStatuses).toEqual([
+      'INVESTIGATING',
+      'AWAITING_RESPONSE',
+      'RESOLVED',
+      'CLOSED',
+    ]);
+    const resolved = await update({ status: 'RESOLVED', note: 'Cleaning needed.' });
+    expect(resolved.body.incident.nextStatuses).toEqual(['INVESTIGATING', 'AWAITING_RESPONSE', 'CLOSED']);
+    expect(await payout()).toMatchObject({ status: 'SCHEDULED' });
+
+    // Nothing goes back to OPEN.
+    const back = await update({ status: 'OPEN' });
+    expect(back.status).toBe(409);
+    expect(back.body.error.code).toBe('INVALID_STATUS_CHANGE');
+
+    // Reopened when the guest disputes it: the payout waits for the case again, and both parties hear.
+    const reopened = await update({ status: 'INVESTIGATING', note: 'The guest disputes the cleaning.' });
+    expect(reopened.status).toBe(200);
+    expect(await payout()).toMatchObject({ status: 'HELD', holdReason: 'INCIDENT' });
+    expect(
+      await NotificationModel.countDocuments({
+        userId: guest._id,
+        type: 'INCIDENT_UPDATE',
+        channel: 'IN_APP',
+        'payload.title': `Case reopened: case ${caseRef}`,
+      }),
+    ).toBe(1);
+
+    // Closed is final: a note is fine, a new status isn't.
+    await update({ status: 'CLOSED' });
+    expect(await payout()).toMatchObject({ status: 'SCHEDULED' });
+    const again = await update({ status: 'INVESTIGATING' });
+    expect(again.body.error.code).toBe('INVALID_STATUS_CHANGE');
+    expect((await update({ note: 'Filed with the cleaning receipts.', visibility: 'INTERNAL' })).status).toBe(
+      200,
+    );
+    expect(await IncidentModel.findOne({ caseRef }).lean()).toMatchObject({ status: 'CLOSED' });
+  });
+
+  it('lets staff open a case outside the damage window, for one party or the team', async () => {
+    const { booking, guest, host, guestAgent, hostAgent } = await trip({ status: 'COMPLETED' });
+    await ConditionReportModel.create({
+      bookingId: booking._id,
+      stage: 'CHECK_OUT',
+      submittedBy: guest._id,
+      odometer: 1000,
+      fuelOrBatteryPct: 50,
+      photos: [],
+    });
+    await ConditionReportModel.collection.updateOne(
+      { bookingId: booking._id },
+      { $set: { createdAt: new Date(Date.now() - 10 * 24 * HOUR_MS) } },
+    );
+    await PayoutModel.create({
+      hostId: host._id,
+      bookingId: booking._id,
+      type: 'TRIP',
+      amountCents: 21360,
+      scheduledFor: new Date(),
+    });
+    const report = {
+      bookingRef: booking.ref,
+      type: 'DAMAGE',
+      description: 'Scratch on the rear bumper, found by the next guest.',
+    };
+    // The window is closed for the parties.
+    expect((await hostAgent.post('/api/v1/incidents').send(report)).body.error.code).toBe(
+      'DAMAGE_WINDOW_CLOSED',
+    );
+    // Only staff open cases here.
+    expect((await guestAgent.post('/api/v1/admin/incidents').send(report)).status).toBe(403);
+
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    const opened = await staff.post('/api/v1/admin/incidents').send({ ...report, visibility: 'HOST' });
+    expect(opened.status).toBe(201);
+    const caseRef = opened.body.incident.caseRef as string;
+    expect(caseRef).toMatch(/^IN-[A-Z0-9]{6}$/);
+    expect(opened.body.incident).toMatchObject({
+      status: 'OPEN',
+      reportedBy: 'SUPPORT',
+      role: 'STAFF',
+      assignedTo: 'Aroha',
+      events: [expect.objectContaining({ action: 'OPENED', by: 'YOU', visibility: 'HOST' })],
+    });
+    expect(await PayoutModel.findOne({ bookingId: booking._id }).lean()).toMatchObject({
+      status: 'HELD',
+      holdReason: 'INCIDENT',
+    });
+    expect(await AuditLogModel.findOne({ action: 'incident.opened' }).lean()).toMatchObject({
+      after: { caseRef, bookingRef: booking.ref, type: 'DAMAGE', visibility: 'HOST' },
+    });
+
+    // Only the Host is told, and only the Host sees it.
+    expect(
+      await NotificationModel.countDocuments({ type: 'INCIDENT_UPDATE', userId: host._id, channel: 'EMAIL' }),
+    ).toBe(1);
+    expect(await NotificationModel.countDocuments({ type: 'INCIDENT_UPDATE', userId: guest._id })).toBe(0);
+    expect((await hostAgent.get('/api/v1/incidents')).body.incidents).toEqual([
+      expect.objectContaining({ caseRef, reportedBy: 'SUPPORT', role: 'HOST' }),
+    ]);
+    expect((await guestAgent.get('/api/v1/incidents')).body.incidents).toEqual([]);
+    expect((await guestAgent.get(`/api/v1/incidents/${caseRef}`)).status).toBe(404);
+
+    // Shared with both later: the Guest sees the case, but not the note written for the Host.
+    await staff
+      .post(`/api/v1/admin/incidents/${caseRef}/events`)
+      .send({ note: 'We’ve asked the guest about the bumper.', visibility: 'BOTH' });
+    const seen = await guestAgent.get(`/api/v1/incidents/${caseRef}`);
+    expect(seen.status).toBe(200);
+    expect(seen.body.incident.description).toBe('Opened by Rento Vroom support.');
+    expect(seen.body.incident.events.map((event: { note?: string }) => event.note)).toEqual([
+      'We’ve asked the guest about the bumper.',
+    ]);
+
+    // A booking that doesn't exist.
+    const missing = await staff.post('/api/v1/admin/incidents').send({ ...report, bookingRef: 'RV-ZZZZZZ' });
+    expect(missing.status).toBe(404);
+  });
+
   it('adds a charge to the guest from a resolved case', async () => {
     const { booking, guestAgent } = await trip({ status: 'COMPLETED' });
     const opened = await guestAgent

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { stripe } from '../src/integrations/stripe.js';
 import { JobModel } from '../src/jobs/job.model.js';
 import { forget } from '../src/lib/memo.js';
-import { parseNzDateTime } from '../src/lib/nz-time.js';
+import { fromNzWallClock, parseNzDateTime } from '../src/lib/nz-time.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
@@ -434,6 +434,94 @@ describe('Receipts', () => {
     await createUser({ email: 'mere@example.co.nz' });
     const stranger = await signIn('mere@example.co.nz');
     expect((await stranger.get(`/api/v1/bookings/${booking.ref}/receipt`)).status).toBe(404);
+  });
+});
+
+describe('Personal details', () => {
+  it('shows the date of birth from the licence details, and corrects the name, in the audit log', async () => {
+    const guest = await createUser();
+    await UserModel.updateOne({ _id: guest._id }, { $set: { dob: fromNzWallClock(1990, 4, 21) } });
+    const agent = await signIn(guest.email);
+    expect((await agent.get('/api/v1/me')).body.user).toMatchObject({
+      firstName: 'Kiri',
+      lastName: 'Tester',
+      dateOfBirth: '1990-04-21',
+      nameLocked: false,
+    });
+
+    const changed = await agent.patch('/api/v1/me').send({ firstName: '  Kiri Aroha ', lastName: 'Ngātahi' });
+    expect(changed.status).toBe(200);
+    expect(changed.body.user).toMatchObject({ firstName: 'Kiri Aroha', lastName: 'Ngātahi' });
+    expect(await UserModel.findById(guest._id).lean()).toMatchObject({
+      firstName: 'Kiri Aroha',
+      lastName: 'Ngātahi',
+    });
+    const audit = await AuditLogModel.findOne({ action: 'name.changed' }).lean();
+    expect(audit).toMatchObject({
+      entity: 'user',
+      entityId: guest.id,
+      before: { firstName: 'Kiri', lastName: 'Tester' },
+      after: { firstName: 'Kiri Aroha', lastName: 'Ngātahi' },
+    });
+    expect(String(audit?.actorId)).toBe(guest.id);
+
+    // The same name again changes nothing, so nothing more is logged.
+    expect((await agent.patch('/api/v1/me').send({ firstName: 'Kiri Aroha' })).status).toBe(200);
+    expect(await AuditLogModel.countDocuments({ action: 'name.changed' })).toBe(1);
+  });
+
+  it('changes one part of the name, and refuses one that is empty or too long', async () => {
+    const guest = await createUser();
+    const agent = await signIn(guest.email);
+    expect((await agent.get('/api/v1/me')).body.user).not.toHaveProperty('dateOfBirth');
+
+    const last = await agent.patch('/api/v1/me').send({ lastName: 'Parata' });
+    expect(last.body.user).toMatchObject({ firstName: 'Kiri', lastName: 'Parata' });
+
+    const blank = await agent.patch('/api/v1/me').send({ firstName: '   ' });
+    expect(blank.status).toBe(400);
+    expect(blank.body.error.fields).toHaveProperty('firstName');
+    const long = await agent.patch('/api/v1/me').send({ lastName: 'x'.repeat(51) });
+    expect(long.status).toBe(400);
+    expect(long.body.error.fields).toHaveProperty('lastName');
+    expect((await agent.patch('/api/v1/me').send({})).status).toBe(400);
+    expect(await UserModel.findById(guest._id).lean()).toMatchObject({
+      firstName: 'Kiri',
+      lastName: 'Parata',
+    });
+  });
+
+  it('fixes the name to the ID once the identity check has passed or is being checked', async () => {
+    const locked = [
+      { status: 'APPROVED' },
+      { status: 'PENDING' },
+      { status: 'NONE', sessionStatus: 'processing' },
+    ] as const;
+    for (const [index, identity] of locked.entries()) {
+      const guest = await createUser({ email: `kiri${index}@example.co.nz` });
+      await UserModel.updateOne({ _id: guest._id }, { $set: { identityVerification: identity } });
+      const agent = await signIn(guest.email);
+      expect((await agent.get('/api/v1/me')).body.user.nameLocked).toBe(true);
+
+      const refused = await agent.patch('/api/v1/me').send({ firstName: 'Mere' });
+      expect(refused.status).toBe(409);
+      expect(refused.body.error.code).toBe('NAME_LOCKED');
+      expect((await UserModel.findById(guest._id).lean())?.firstName).toBe('Kiri');
+    }
+
+    // A check that didn't pass leaves the name to correct before trying again.
+    const rejected = await createUser({ email: 'mere@example.co.nz' });
+    await UserModel.updateOne(
+      { _id: rejected._id },
+      { $set: { identityVerification: { status: 'REJECTED' } } },
+    );
+    const agent = await signIn(rejected.email);
+    expect((await agent.patch('/api/v1/me').send({ firstName: 'Mere' })).body.user.firstName).toBe('Mere');
+    expect(await AuditLogModel.countDocuments({ action: 'name.changed' })).toBe(1);
+  });
+
+  it('needs an account', async () => {
+    expect((await browserAgent().patch('/api/v1/me').send({ firstName: 'Mere' })).status).toBe(401);
   });
 });
 

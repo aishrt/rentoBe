@@ -14,7 +14,12 @@ import { parseNzDateTime } from '../src/lib/nz-time.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
-import { expirePaymentHold, expireRequest } from '../src/modules/bookings/booking.service.js';
+import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
+import {
+  expirePaymentHold,
+  expireRequest,
+  updateResponseRate,
+} from '../src/modules/bookings/booking.service.js';
 import { guestCancellation, refundPctFor } from '../src/modules/bookings/policies.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { smsSendTime } from '../src/modules/notifications/notify.js';
@@ -144,6 +149,8 @@ async function readyGuest(email = 'kiri@example.co.nz', phone = '+64221112222') 
   });
   expect(licence.status).toBe(200);
   expect(licence.body.problems).toEqual([]);
+  // Their ID was this licence, so the identity check confirmed it (plan §8.2).
+  await UserModel.updateOne({ _id: guest._id }, { $set: { 'driverLicence.status': 'APPROVED' } });
   return { guest, agent };
 }
 
@@ -611,6 +618,79 @@ describe('Request to book', () => {
     expect(rendered.text).toContain("You haven't been charged");
     expect(rendered.text.toLowerCase()).not.toContain('booking cancelled');
   });
+
+  it('lets staff cancel a request as a platform cancellation, releasing the card, after a preview', async () => {
+    const spies = mockStripe();
+    const { id, ref, host } = await requested();
+    await createStaff();
+    const admin = await staffAgent();
+    const preview = (reason: string) =>
+      admin.get(`/api/v1/admin/bookings/${ref}/cancellation-preview`).query({ reason });
+
+    // A no-show needs a confirmed trip.
+    const noShow = await preview('GUEST_NO_SHOW');
+    expect(noShow.body).toMatchObject({ allowed: false, kind: null, refundCents: 0 });
+    expect(noShow.body.message).toMatch(/only to a confirmed booking/);
+    const platform = await preview('PLATFORM');
+    expect(platform.body).toMatchObject({
+      allowed: true,
+      kind: 'PLATFORM_CANCELLATION',
+      refundCents: 0,
+      feeCents: 0,
+      hostFeeCents: 0,
+      releasedCents: 33_870,
+    });
+    expect(platform.body.message).toContain('$338.70 held on the Guest’s card is released');
+    expect((await preview('LATE')).status).toBe(400);
+
+    const refused = await admin
+      .post(`/api/v1/admin/bookings/${ref}/cancel`)
+      .send({ reason: 'HOST_NO_SHOW', note: 'Host never answered' });
+    expect(refused.body.error.code).toBe('NOT_CONFIRMED');
+
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${ref}/cancel`)
+      .send({ reason: 'PLATFORM', note: 'The car failed its WOF' });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.booking).toMatchObject({
+      status: 'CANCELLED',
+      cancellation: { by: 'SUPPORT', reason: 'PLATFORM', refundCents: 0 },
+    });
+    // The authorisation is released, not refunded, and the held dates are free.
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+    expect(spies.refund).not.toHaveBeenCalled();
+    expect((await PaymentModel.findOne({ bookingId: id }).lean())!.status).toBe('CANCELLED');
+    expect(await AvailabilityBlockModel.countDocuments({ bookingId: id })).toBe(0);
+    expect(await JobModel.countDocuments({ type: 'booking.expireRequest', status: 'QUEUED' })).toBe(0);
+    const stored = await BookingModel.findById(id).lean();
+    expect(stored!.statusHistory.at(-1)).toMatchObject({
+      status: 'CANCELLED',
+      reason: 'The car failed its WOF',
+    });
+
+    // Both are told; the Guest that nothing was charged.
+    const emails = await NotificationModel.find({ type: 'BOOKING_CANCELLED', channel: 'EMAIL' }).lean();
+    expect(emails.map((email) => email.userId.toString()).sort()).toEqual(
+      [stored!.guestId.toString(), host.id].sort(),
+    );
+    const guestEmail = emails.find((email) => email.userId.equals(stored!.guestId))!;
+    const props = (guestEmail.payload as { props: BookingCancelledProps }).props;
+    expect(props).toMatchObject({ audience: 'GUEST', cancelledBy: 'SUPPORT', released: true });
+    const rendered = await renderEmail('bookingCancelled', props);
+    expect(rendered.text).toContain('our support team cancelled');
+    expect(rendered.text).toContain("You haven't been charged");
+    expect(await NotificationModel.countDocuments({ type: 'REFUND_ISSUED' })).toBe(0);
+
+    const audit = await AuditLogModel.findOne({ action: 'booking.platform-cancellation' }).lean();
+    expect(audit).toMatchObject({
+      before: { status: 'PENDING' },
+      after: { reason: 'PLATFORM', note: 'The car failed its WOF', authorisationReleased: true },
+    });
+    // A request support cancelled before the Host answered isn't counted in their response rate at all.
+    await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.responseRate': 50 } });
+    await updateResponseRate(host._id);
+    expect((await UserModel.findById(host._id).lean())!.hostProfile!.responseRate).toBe(50);
+  });
 });
 
 describe('Verification in review', () => {
@@ -843,6 +923,181 @@ describe('Verification in review', () => {
       .send({ decision: 'APPROVE' });
     expect(refused.status).toBe(403);
   });
+
+  it('lets staff cancel a booking waiting for the check, without telling a Host who never heard of it', async () => {
+    const spies = mockStripe();
+    const { guest, ref, id } = await bookedInReview(true);
+    await createStaff();
+    const admin = await staffAgent();
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${ref}/cancel`)
+      .send({ reason: 'PLATFORM', note: 'The Guest asked us to cancel' });
+    expect(cancelled.body.booking).toMatchObject({ status: 'CANCELLED', cancellation: { by: 'SUPPORT' } });
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+    expect(await AvailabilityBlockModel.countDocuments({ bookingId: id })).toBe(0);
+    const emails = await NotificationModel.find({ type: 'BOOKING_CANCELLED', channel: 'EMAIL' }).lean();
+    expect(emails.map((email) => email.userId.toString())).toEqual([guest.id]);
+  });
+});
+
+describe('Licence in review', () => {
+  const authorised = (piId: string) => ({
+    id: piId,
+    object: 'payment_intent',
+    status: 'requires_capture',
+    amount: 33_870,
+  });
+  const codes = (body: { problems: { code: string }[] }) => body.problems.map((problem) => problem.code);
+
+  /**
+   * A Guest whose ID was a passport, so their licence waits for support (plan §8.2), books an Instant Book
+   * car and pays: the card is authorised only.
+   */
+  async function bookedWithLicenceInReview(identity: 'APPROVED' | 'PENDING' = 'APPROVED') {
+    const setup = await hostWithCar(true);
+    const { guest, agent } = await readyGuest();
+    await UserModel.updateOne(
+      { _id: guest._id },
+      {
+        $set: {
+          'driverLicence.status': 'PENDING',
+          identityVerification: { status: identity, documentType: 'passport' },
+        },
+      },
+    );
+    await createStaff('mere@example.co.nz', 'SUPPORT');
+    const readiness = await agent.get('/api/v1/me/checkout');
+    expect(readiness.body).toMatchObject({ licenceInReview: true, problems: [] });
+    const created = await agent.post('/api/v1/bookings').send(trip(setup.vehicle.id));
+    expect(created.status).toBe(201);
+    const ref = created.body.booking.ref as string;
+    const id = created.body.booking.id as string;
+    const payment = await agent.post(`/api/v1/bookings/${ref}/payment`).send({ acceptGuestAgreement: true });
+    expect(payment.body).toMatchObject({ captureMethod: 'manual', verificationInReview: true });
+    const piId = (await PaymentModel.findOne({ bookingId: id }).lean())!.stripePaymentIntentId;
+    expect((await webhook('payment_intent.amount_capturable_updated', authorised(piId))).status).toBe(200);
+    const support = await staffAgent('mere@example.co.nz');
+    const review = (kind: 'licence' | 'identity', decision: 'APPROVE' | 'REJECT', note?: string) =>
+      support.post(`/api/v1/admin/users/${guest.id}/${kind}-review`).send({ decision, note });
+    return { ...setup, guest, agent, ref, id, piId, support, review };
+  }
+
+  it('turns an Instant Book into a request that support confirms by approving the licence', async () => {
+    const spies = mockStripe();
+    const { ref, id, piId, guest, support, review } = await bookedWithLicenceInReview();
+    expect(await BookingModel.findById(id).lean()).toMatchObject({
+      status: 'PENDING',
+      verificationReview: { status: 'PENDING' },
+    });
+    // Support is told a booking waits on them, and finds the licence in the queue with the booking.
+    expect(
+      await NotificationModel.countDocuments({ type: 'VERIFICATION_BOOKING_WAITING', channel: 'IN_APP' }),
+    ).toBe(1);
+    const queue = await support.get('/api/v1/admin/verifications');
+    expect(queue.body.items).toEqual([
+      expect.objectContaining({
+        userId: guest.id,
+        kind: 'LICENCE',
+        reason: expect.stringMatching(/passport/),
+        waitingBookings: [expect.objectContaining({ ref })],
+      }),
+    ]);
+
+    const approved = await review('licence', 'APPROVE');
+    expect(approved.body).toEqual({
+      licenceStatus: 'APPROVED',
+      confirmed: [ref],
+      waitingForHost: [],
+      released: [],
+    });
+    expect(spies.capture).toHaveBeenCalledWith(piId, {}, { idempotencyKey: `capture-${piId}` });
+    expect(await BookingModel.findById(id).lean()).toMatchObject({
+      status: 'CONFIRMED',
+      verificationReview: { status: 'APPROVED' },
+    });
+    expect(
+      await NotificationModel.countDocuments({
+        userId: guest._id,
+        type: 'LICENCE_APPROVED',
+        channel: 'EMAIL',
+      }),
+    ).toBe(1);
+    // Decided once.
+    expect((await review('licence', 'REJECT')).body.error.code).toBe('NOT_IN_REVIEW');
+  });
+
+  it('releases the card when support rejects the licence', async () => {
+    const spies = mockStripe();
+    const { agent, ref, id, review } = await bookedWithLicenceInReview();
+    const rejected = await review('licence', 'REJECT', 'The licence has expired.');
+    expect(rejected.body).toEqual({
+      licenceStatus: 'REJECTED',
+      confirmed: [],
+      waitingForHost: [],
+      released: [ref],
+    });
+    expect((await BookingModel.findById(id).lean())!.status).toBe('EXPIRED');
+    expect(spies.cancel).toHaveBeenCalledTimes(1);
+    expect(spies.capture).not.toHaveBeenCalled();
+    expect(codes((await agent.get('/api/v1/me/checkout')).body)).toContain('LICENCE_REJECTED');
+  });
+
+  it('waits for both when the identity check and the licence are with support', async () => {
+    const spies = mockStripe();
+    const { ref, id, review } = await bookedWithLicenceInReview('PENDING');
+
+    // The identity check passes, but the licence still waits: so does the booking.
+    const identity = await review('identity', 'APPROVE');
+    expect(identity.body).toEqual({
+      identityStatus: 'APPROVED',
+      confirmed: [],
+      waitingForHost: [],
+      released: [],
+      stillInReview: [ref],
+    });
+    expect(spies.capture).not.toHaveBeenCalled();
+    expect(await BookingModel.findById(id).lean()).toMatchObject({
+      status: 'PENDING',
+      verificationReview: { status: 'PENDING' },
+    });
+
+    const licence = await review('licence', 'APPROVE');
+    expect(licence.body.confirmed).toEqual([ref]);
+    expect((await BookingModel.findById(id).lean())!.status).toBe('CONFIRMED');
+  });
+
+  it('asks support to check every new licence when no identity check is needed before booking', async () => {
+    mockStripe();
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { verification: { identityBeforeFirstBooking: false } },
+    });
+    const { vehicle } = await hostWithCar(true);
+    const { guest, agent } = await readyGuest();
+    await UserModel.updateOne(
+      { _id: guest._id },
+      { $set: { 'driverLicence.status': 'PENDING' }, $unset: { identityVerification: 1 } },
+    );
+    expect((await agent.get('/api/v1/me/checkout')).body).toMatchObject({
+      licenceInReview: true,
+      problems: [],
+    });
+    const created = await agent.post('/api/v1/bookings').send(trip(vehicle.id));
+    const payment = await agent
+      .post(`/api/v1/bookings/${created.body.booking.ref}/payment`)
+      .send({ acceptGuestAgreement: true });
+    expect(payment.body).toMatchObject({ captureMethod: 'manual', verificationInReview: true });
+
+    await createStaff();
+    const queue = await (await staffAgent()).get('/api/v1/admin/verifications');
+    expect(queue.body.items).toEqual([
+      expect.objectContaining({
+        userId: guest.id,
+        kind: 'LICENCE',
+        reason: expect.stringMatching(/No identity check/),
+      }),
+    ]);
+  });
 });
 
 describe('Cancellations', () => {
@@ -929,6 +1184,69 @@ describe('Cancellations', () => {
       role: 'STAFF',
       cancellation: { by: 'SUPPORT', reason: 'GUEST_NO_SHOW', feeCents: 33_870 - 4_500 },
     });
+  });
+
+  it('previews what a staff cancellation would refund for each reason, less earlier refunds', async () => {
+    mockStripe();
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { cancellation: { hostCancellationFeeCents: 5_000 } },
+    });
+    const { ref, id, piId } = await paidBooking(true, 20);
+    await webhook('payment_intent.succeeded', { id: piId, object: 'payment_intent', status: 'succeeded' });
+    await createStaff('mere@example.co.nz', 'SUPPORT');
+    const support = await staffAgent('mere@example.co.nz');
+    const preview = (reason: string) =>
+      support.get(`/api/v1/admin/bookings/${ref}/cancellation-preview`).query({ reason });
+
+    // Support staff see the preview, though cancelling needs the refunds permission.
+    const guestNoShow = await preview('GUEST_NO_SHOW');
+    expect(guestNoShow.status).toBe(200);
+    expect(guestNoShow.body).toMatchObject({
+      allowed: true,
+      kind: 'GUEST_CANCELLATION',
+      refundCents: 4_500,
+      feeCents: 33_870 - 4_500,
+      hostFeeCents: 0,
+      releasedCents: 0,
+    });
+    expect(guestNoShow.body.hostShareCents).toBeGreaterThan(0);
+    expect(guestNoShow.body.message).toContain('the Guest gets $45.00 back');
+    const hostNoShow = await preview('HOST_NO_SHOW');
+    expect(hostNoShow.body).toMatchObject({
+      kind: 'HOST_CANCELLATION',
+      refundCents: 33_870,
+      hostFeeCents: 5_000,
+    });
+    expect(hostNoShow.body.message).toContain('A Host cancellation fee of $50.00');
+
+    // $25 already refunded by staff: a full refund is what's left.
+    await PaymentModel.updateOne(
+      { stripePaymentIntentId: piId },
+      {
+        $set: { status: 'PARTIALLY_REFUNDED' },
+        $push: {
+          refunds: { amountCents: 2_500, reason: 'Dirty car', fundedBy: 'PLATFORM', status: 'SUCCEEDED' },
+        },
+      },
+    );
+    const platform = await preview('PLATFORM');
+    expect(platform.body).toMatchObject({
+      kind: 'PLATFORM_CANCELLATION',
+      refundCents: 31_370,
+      hostFeeCents: 0,
+    });
+    expect(platform.body.message).toContain('less what was already refunded');
+
+    await createStaff();
+    const admin = await staffAgent();
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${ref}/cancel`)
+      .send({ reason: 'PLATFORM', note: 'The car was written off' });
+    expect(cancelled.body.booking.cancellation).toMatchObject({ reason: 'PLATFORM', refundCents: 31_370 });
+    expect((await PaymentModel.findOne({ bookingId: id }).lean())!.status).toBe('REFUNDED');
+    // Once it's cancelled there's nothing more to cancel.
+    expect((await preview('PLATFORM')).body).toMatchObject({ allowed: false, kind: null });
   });
 
   it('applies the tier rules by time before pick-up', () => {

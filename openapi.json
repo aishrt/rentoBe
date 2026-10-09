@@ -58,6 +58,14 @@
           "lastName": {
             "type": "string"
           },
+          "dateOfBirth": {
+            "type": "string",
+            "description": "YYYY-MM-DD (NZ), from the driver licence details; absent until they are entered"
+          },
+          "nameLocked": {
+            "type": "boolean",
+            "description": "The name must match the ID once the identity check has passed or is being checked: it is then corrected through a privacy request (POST /me/privacy-requests), not PATCH /me"
+          },
           "roles": {
             "type": "array",
             "items": {
@@ -117,6 +125,7 @@
           "email",
           "firstName",
           "lastName",
+          "nameLocked",
           "roles",
           "emailVerified",
           "phoneVerified",
@@ -244,6 +253,21 @@
           "phone",
           "sent"
         ]
+      },
+      "UpdateMeRequest": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50
+          },
+          "lastName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 50
+          }
+        }
       },
       "AcceptAgreementsRequest": {
         "type": "object",
@@ -928,6 +952,14 @@
               },
               "documentType": {
                 "type": "string"
+              },
+              "licenceNumberMatched": {
+                "type": "boolean",
+                "description": "A driver licence used as the ID: whether its number is the licence’s on the account now. Left out for another document"
+              },
+              "dobMatched": {
+                "type": "boolean",
+                "description": "Whether the date of birth on the ID matched the account’s when it was checked"
               }
             },
             "required": [
@@ -957,6 +989,10 @@
               },
               "issuedAt": {
                 "type": "string"
+              },
+              "inEnglish": {
+                "type": "boolean",
+                "description": "Overseas licences: false when it isn’t in English, which then needs English proof"
               },
               "englishProof": {
                 "type": "string"
@@ -1028,10 +1064,41 @@
               "APPROVED",
               "REJECTED"
             ]
+          },
+          "confirmed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "References of the bookings this confirmed"
+          },
+          "waitingForHost": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requests the Host still has to answer"
+          },
+          "released": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Bookings ended, with the card authorisation released"
+          },
+          "stillInReview": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Set when the other part (the identity check or the licence) still waits for support: the bookings that keep waiting for it"
           }
         },
         "required": [
-          "licenceStatus"
+          "licenceStatus",
+          "confirmed",
+          "waitingForHost",
+          "released"
         ]
       },
       "LicenceReviewRequest": {
@@ -1051,6 +1118,18 @@
         },
         "required": [
           "decision"
+        ]
+      },
+      "LicenceNumber": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "string",
+            "description": "The full licence number, as the person entered it"
+          }
+        },
+        "required": [
+          "number"
         ]
       },
       "AdminOverview": {
@@ -3008,6 +3087,16 @@
           "lastLoginAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "REFUNDS"
+              ]
+            },
+            "description": "What they can do beyond the support role (plan §6.2): REFUNDS for refunds, payments and payouts. The admin has every permission."
           }
         },
         "required": [
@@ -3017,7 +3106,8 @@
           "lastName",
           "role",
           "status",
-          "mfaEnabled"
+          "mfaEnabled",
+          "permissions"
         ]
       },
       "StaffInvite": {
@@ -4759,6 +4849,10 @@
               "type": "string"
             },
             "description": "IATA codes of the airports that serve it"
+          },
+          "featured": {
+            "type": "boolean",
+            "description": "A homepage tile"
           }
         },
         "required": [
@@ -4767,7 +4861,8 @@
           "region",
           "lat",
           "lng",
-          "airports"
+          "airports",
+          "featured"
         ]
       },
       "DestinationResponse": {
@@ -4815,6 +4910,10 @@
             },
             "description": "IATA codes of the airports that serve it"
           },
+          "featured": {
+            "type": "boolean",
+            "description": "A homepage tile"
+          },
           "intro": {
             "type": "string"
           }
@@ -4826,6 +4925,7 @@
           "lat",
           "lng",
           "airports",
+          "featured",
           "intro"
         ]
       },
@@ -4876,6 +4976,131 @@
           "markdown",
           "updatedAt"
         ]
+      },
+      "HomeHeroResponse": {
+        "type": "object",
+        "properties": {
+          "hero": {
+            "$ref": "#/components/schemas/HomeHero"
+          }
+        },
+        "required": [
+          "hero"
+        ]
+      },
+      "HomeHero": {
+        "type": "object",
+        "properties": {
+          "headline": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 100
+          },
+          "subheading": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 300,
+            "description": "The supporting line under the headline"
+          }
+        },
+        "required": [
+          "headline",
+          "subheading"
+        ]
+      },
+      "SiteFooterResponse": {
+        "type": "object",
+        "properties": {
+          "footer": {
+            "$ref": "#/components/schemas/SiteFooter"
+          }
+        },
+        "required": [
+          "footer"
+        ]
+      },
+      "SiteFooter": {
+        "type": "object",
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FooterGroup"
+            },
+            "minItems": 1,
+            "maxItems": 4,
+            "description": "The footer’s columns of links; a group with no links is left out"
+          },
+          "socialLinks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SocialLink"
+            },
+            "maxItems": 6
+          }
+        },
+        "required": [
+          "groups",
+          "socialLinks"
+        ]
+      },
+      "FooterGroup": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FooterLink"
+            },
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "title",
+          "links"
+        ]
+      },
+      "FooterLink": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "href": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "label",
+          "href"
+        ]
+      },
+      "SocialLink": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "href": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "label",
+          "href"
+        ],
+        "description": "A social media account, e.g. Instagram"
       },
       "Faqs": {
         "type": "object",
@@ -7897,6 +8122,117 @@
           "updatedAt"
         ]
       },
+      "AdminVehicles": {
+        "type": "object",
+        "properties": {
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminVehicleRow"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "description": "The Host named by hostId, to label the filter"
+          }
+        },
+        "required": [
+          "vehicles",
+          "total",
+          "page"
+        ]
+      },
+      "AdminVehicleRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "UNDER_REVIEW",
+              "CHANGES_REQUESTED",
+              "REJECTED",
+              "ACTIVE",
+              "INACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "regoPlate": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "email"
+            ]
+          },
+          "waitingForPayouts": {
+            "type": "boolean",
+            "description": "Approved, but hidden until the Host finishes payout setup (plan §8.2)"
+          },
+          "hostSuspended": {
+            "type": "boolean",
+            "description": "Hidden while its Host’s account is suspended (plan §8.2)"
+          },
+          "tripCount": {
+            "type": "integer"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "host",
+          "waitingForPayouts",
+          "hostSuspended",
+          "tripCount",
+          "updatedAt"
+        ]
+      },
       "AdminVehicle": {
         "type": "object",
         "properties": {
@@ -8055,6 +8391,10 @@
           "hasDateOfBirth": {
             "type": "boolean"
           },
+          "licenceInReview": {
+            "type": "boolean",
+            "description": "Support staff are checking the licence by hand: a booking made meanwhile becomes a request, confirmed once they approve it (plan §8.2)"
+          },
           "identityStatus": {
             "type": "string",
             "enum": [
@@ -8110,6 +8450,7 @@
           "phoneVerified",
           "licence",
           "hasDateOfBirth",
+          "licenceInReview",
           "identityStatus",
           "identityProcessing",
           "problems"
@@ -8555,7 +8896,36 @@
               },
               "paidCents": {
                 "type": "integer",
-                "description": "Everything paid out for the booking so far"
+                "description": "Everything paid out for the booking so far, less any taken back for refunds"
+              },
+              "refunds": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "amountCents": {
+                      "type": "integer"
+                    },
+                    "at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "fundedBy": {
+                      "type": "string",
+                      "enum": [
+                        "PLATFORM",
+                        "HOST"
+                      ],
+                      "description": "HOST: it comes off the Host’s payout (plan §8.1, item 15)"
+                    }
+                  },
+                  "required": [
+                    "amountCents",
+                    "at",
+                    "fundedBy"
+                  ]
+                },
+                "description": "Refunds made to the Guest on the booking, oldest first"
               }
             },
             "required": [
@@ -8590,6 +8960,10 @@
           "guest": {
             "type": "object",
             "properties": {
+              "id": {
+                "type": "string",
+                "description": "For their public profile; missing once an account is gone"
+              },
               "firstName": {
                 "type": "string"
               },
@@ -8621,6 +8995,10 @@
           "host": {
             "type": "object",
             "properties": {
+              "id": {
+                "type": "string",
+                "description": "For their public profile; missing once an account is gone"
+              },
               "firstName": {
                 "type": "string"
               },
@@ -9409,6 +9787,78 @@
           "note"
         ]
       },
+      "AdminCancellationPreview": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "GUEST_NO_SHOW",
+              "HOST_NO_SHOW",
+              "PLATFORM"
+            ]
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "GUEST_CANCELLATION",
+              "HOST_CANCELLATION",
+              "PLATFORM_CANCELLATION",
+              null
+            ],
+            "description": "How the policy engine treats it: a no-show is a Guest or Host cancellation"
+          },
+          "refundCents": {
+            "type": "integer",
+            "description": "Back to the Guest’s card"
+          },
+          "feeCents": {
+            "type": "integer",
+            "description": "What the Guest paid and doesn’t get back"
+          },
+          "hostShareCents": {
+            "type": "integer",
+            "description": "The Host’s share of the kept fee"
+          },
+          "hostFeeCents": {
+            "type": "integer",
+            "description": "A Host cancellation fee, off their next payout"
+          },
+          "releasedCents": {
+            "type": "integer",
+            "description": "A request or a booking waiting for verification: the card authorisation released, as nothing was charged"
+          },
+          "refundPct": {
+            "type": "number"
+          },
+          "hoursBeforeStart": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string",
+            "description": "A sentence to show before staff confirm"
+          }
+        },
+        "required": [
+          "reason",
+          "allowed",
+          "kind",
+          "refundCents",
+          "feeCents",
+          "hostShareCents",
+          "hostFeeCents",
+          "releasedCents",
+          "refundPct",
+          "hoursBeforeStart",
+          "message"
+        ]
+      },
       "IdentityReviewResponse": {
         "type": "object",
         "properties": {
@@ -9439,6 +9889,13 @@
               "type": "string"
             },
             "description": "Bookings ended, with the card authorisation released"
+          },
+          "stillInReview": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Set when the other part (the identity check or the licence) still waits for support: the bookings that keep waiting for it"
           }
         },
         "required": [
@@ -9954,6 +10411,11 @@
           "note": {
             "type": "string",
             "maxLength": 2000
+          },
+          "bookingRef": {
+            "type": "string",
+            "pattern": "^RV-[A-Za-z0-9]{6}$",
+            "description": "A member reported from a booking’s conversation: that booking, which must be between the two of them, so support can read the conversation (plan §6.2)"
           }
         },
         "required": [
@@ -10491,6 +10953,49 @@
           "damagePins"
         ]
       },
+      "StaffCompletionRequest": {
+        "type": "object",
+        "properties": {
+          "odometer": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000000
+          },
+          "fuelOrBatteryPct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Fuel, or battery charge for an EV, 0–100 %"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Where the readings came from, e.g. \"From the Host’s photo, 9 Oct\""
+          },
+          "damagePins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DamagePinInput"
+            },
+            "maxItems": 30,
+            "default": [],
+            "description": "Check-in: damage already on the car. Check-out: new damage."
+          },
+          "photos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InspectionPhotoInput"
+            },
+            "maxItems": 40,
+            "default": [],
+            "description": "The Host’s photos, if they sent any (uploaded with purpose INSPECTION_PHOTO)"
+          }
+        },
+        "required": [
+          "odometer",
+          "fuelOrBatteryPct"
+        ]
+      },
       "HostPayouts": {
         "type": "object",
         "properties": {
@@ -10534,13 +11039,18 @@
           "feesOwedCents": {
             "type": "integer",
             "description": "Host cancellation fees still to come off a payout"
+          },
+          "refundsOwedCents": {
+            "type": "integer",
+            "description": "Host-funded refunds made after a booking’s payout, still to come off a payout"
           }
         },
         "required": [
           "connected",
           "payoutsEnabled",
           "requirements",
-          "feesOwedCents"
+          "feesOwedCents",
+          "refundsOwedCents"
         ]
       },
       "HostPayout": {
@@ -10606,13 +11116,22 @@
                 },
                 "amountCents": {
                   "type": "integer"
+                },
+                "bookingRef": {
+                  "type": "string",
+                  "description": "HOST_FUNDED_REFUND: the booking the refund was made on"
                 }
               },
               "required": [
                 "type",
                 "amountCents"
               ]
-            }
+            },
+            "description": "Each line taken off the payout"
+          },
+          "reversedCents": {
+            "type": "integer",
+            "description": "Taken back from the transfer for Host-funded refunds after it was paid"
           },
           "scheduledFor": {
             "type": "string",
@@ -11532,6 +12051,20 @@
           "canReply": {
             "type": "boolean"
           },
+          "nextStatuses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "OPEN",
+                "INVESTIGATING",
+                "AWAITING_RESPONSE",
+                "RESOLVED",
+                "CLOSED"
+              ]
+            },
+            "description": "Staff only: the statuses the case can move to now. A resolved case can be reopened; a closed one is final"
+          },
           "extraCharges": {
             "type": "array",
             "items": {
@@ -11826,6 +12359,62 @@
             "default": []
           }
         }
+      },
+      "StaffNewIncidentRequest": {
+        "type": "object",
+        "properties": {
+          "bookingRef": {
+            "type": "string",
+            "pattern": "^RV-[A-Za-z0-9]{6}$"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "DAMAGE",
+              "ACCIDENT",
+              "THEFT",
+              "BREAKDOWN",
+              "CLEANING",
+              "FUEL",
+              "LATE_RETURN",
+              "NO_SHOW",
+              "TOLL",
+              "FINE",
+              "DISPUTE",
+              "OTHER"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 5000
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttachmentInput"
+            },
+            "maxItems": 10,
+            "default": [],
+            "description": "Photos and documents, uploaded first with purpose INCIDENT_FILE"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "BOTH",
+              "GUEST",
+              "HOST",
+              "INTERNAL"
+            ],
+            "default": "BOTH",
+            "description": "Who sees the case: BOTH parties, only the GUEST or the HOST it’s about, or INTERNAL to support staff until an update is shared with a party"
+          }
+        },
+        "required": [
+          "bookingRef",
+          "type",
+          "description"
+        ]
       },
       "IncidentAssignees": {
         "type": "object",
@@ -12276,6 +12865,30 @@
           "emailVerified": {
             "type": "boolean"
           },
+          "emailProblem": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "BOUNCED",
+                  "SUPPRESSED"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "kind",
+              "at"
+            ],
+            "description": "Emails to the address bounced, or Resend won't send to it (plan §7). Cleared by the next delivery."
+          },
           "phoneVerified": {
             "type": "boolean"
           },
@@ -12309,6 +12922,19 @@
               },
               "status": {
                 "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "issuedAt": {
+                "type": "string"
+              },
+              "inEnglish": {
+                "type": "boolean",
+                "description": "Overseas: false when it isn’t in English"
+              },
+              "englishProof": {
+                "type": "string"
               }
             },
             "required": [
@@ -12318,6 +12944,26 @@
               "expiry",
               "status"
             ]
+          },
+          "dob": {
+            "type": "string",
+            "description": "Their date of birth, to compare with the licence"
+          },
+          "identityDocument": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "driving_license, passport or id_card"
+              },
+              "licenceNumberMatched": {
+                "type": "boolean"
+              },
+              "dobMatched": {
+                "type": "boolean"
+              }
+            },
+            "description": "The ID used in the identity check: a driver licence’s number compared with the licence on the account now, and the date of birth compared when it was checked"
           },
           "host": {
             "type": [
@@ -12910,6 +13556,38 @@
           "refundableCents": {
             "type": "integer",
             "description": "What can still be refunded on the booking’s payment"
+          },
+          "tripPayoutSent": {
+            "type": "boolean",
+            "description": "The trip’s payout was sent (or is being sent, or the booking ended without one), so a Host-funded refund comes off the Host’s next payout or is taken back from the transfer"
+          },
+          "hostRefund": {
+            "type": "object",
+            "properties": {
+              "recoveredFrom": {
+                "type": "string",
+                "enum": [
+                  "THIS_PAYOUT",
+                  "NEXT_PAYOUT",
+                  "REVERSE_TRANSFER"
+                ]
+              },
+              "reversedCents": {
+                "type": "integer"
+              },
+              "owedCents": {
+                "type": "integer",
+                "description": "What comes off the Host’s next payout"
+              },
+              "note": {
+                "type": "string",
+                "description": "Why the transfer wasn’t reversed as asked"
+              }
+            },
+            "required": [
+              "recoveredFrom"
+            ],
+            "description": "After a Host-funded refund: how it’s recovered from the Host (plan §8.1, item 15)"
           }
         },
         "required": [
@@ -13169,6 +13847,14 @@
               "HOST"
             ],
             "description": "PLATFORM: a goodwill refund. HOST: rental the Host would otherwise get (plan §8.1, item 15)."
+          },
+          "recoverFrom": {
+            "type": "string",
+            "enum": [
+              "NEXT_PAYOUT",
+              "REVERSE_TRANSFER"
+            ],
+            "description": "A Host-funded refund once the trip’s payout was sent: take it off the Host’s next payout (the default), or reverse the Stripe transfer. If Stripe refuses the reversal, it comes off the next payout."
           }
         },
         "required": [
@@ -13638,7 +14324,7 @@
           },
           "bookingRef": {
             "type": "string",
-            "description": "A reported message’s booking, to open its thread"
+            "description": "A reported message’s booking, or the booking a member was reported from, to open its thread"
           },
           "review": {
             "$ref": "#/components/schemas/ModerationReview"
@@ -13781,6 +14467,139 @@
           "vehicles"
         ]
       },
+      "AdminHomeHero": {
+        "type": "object",
+        "properties": {
+          "hero": {
+            "$ref": "#/components/schemas/HomeHero"
+          },
+          "saved": {
+            "type": "boolean",
+            "description": "False while the homepage shows its original text"
+          }
+        },
+        "required": [
+          "hero",
+          "saved"
+        ]
+      },
+      "AdminFeaturedReviews": {
+        "type": "object",
+        "properties": {
+          "reviewIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reviews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminReviewChoice"
+            }
+          },
+          "homepageThreshold": {
+            "type": "integer",
+            "description": "Published reviews needed before the homepage shows any (settings)"
+          },
+          "publishedCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reviewIds",
+          "reviews",
+          "homepageThreshold",
+          "publishedCount"
+        ]
+      },
+      "AdminReviewChoice": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "authorName": {
+            "type": "string",
+            "description": "The Guest’s first name, as the homepage shows it"
+          },
+          "overall": {
+            "type": "integer"
+          },
+          "body": {
+            "type": "string"
+          },
+          "vehicleTitle": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "shown": {
+            "type": "boolean",
+            "description": "Published and not hidden: a picked review that isn’t is left off the homepage"
+          }
+        },
+        "required": [
+          "id",
+          "authorName",
+          "overall",
+          "body",
+          "vehicleTitle",
+          "createdAt",
+          "shown"
+        ]
+      },
+      "FeaturedReviewsInput": {
+        "type": "object",
+        "properties": {
+          "reviewIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$"
+            },
+            "maxItems": 6
+          }
+        },
+        "required": [
+          "reviewIds"
+        ]
+      },
+      "AdminReviewChoices": {
+        "type": "object",
+        "properties": {
+          "reviews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminReviewChoice"
+            }
+          }
+        },
+        "required": [
+          "reviews"
+        ]
+      },
+      "AdminSiteFooter": {
+        "type": "object",
+        "properties": {
+          "footer": {
+            "$ref": "#/components/schemas/SiteFooter"
+          },
+          "saved": {
+            "type": "boolean",
+            "description": "False while the footer shows its original links"
+          }
+        },
+        "required": [
+          "footer",
+          "saved"
+        ]
+      },
       "AdminLegalPages": {
         "type": "object",
         "properties": {
@@ -13863,11 +14682,27 @@
           "heroImage": {
             "type": "string"
           },
+          "lat": {
+            "type": "number"
+          },
+          "lng": {
+            "type": "number"
+          },
+          "airports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "featured": {
             "type": "boolean"
           },
           "order": {
             "type": "integer"
+          },
+          "published": {
+            "type": "boolean",
+            "description": "False: off the homepage, a 404 page and out of the sitemap"
           }
         },
         "required": [
@@ -13875,8 +14710,12 @@
           "city",
           "region",
           "intro",
+          "lat",
+          "lng",
+          "airports",
           "featured",
-          "order"
+          "order",
+          "published"
         ]
       },
       "AdminDestinationResponse": {
@@ -13890,12 +14729,50 @@
           "destination"
         ]
       },
-      "DestinationEdit": {
+      "DestinationCreate": {
         "type": "object",
         "properties": {
+          "slug": {
+            "type": "string",
+            "maxLength": 60,
+            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            "description": "The page’s address, /rental/{slug}. It can’t change later."
+          },
+          "city": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 60
+          },
+          "maoriName": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "The te reo Māori name; empty removes it"
+          },
+          "region": {
+            "type": "string",
+            "enum": [
+              "Northland",
+              "Auckland",
+              "Waikato",
+              "Bay of Plenty",
+              "Gisborne",
+              "Hawke's Bay",
+              "Taranaki",
+              "Manawatū-Whanganui",
+              "Wellington",
+              "Tasman",
+              "Nelson",
+              "Marlborough",
+              "West Coast",
+              "Canterbury",
+              "Otago",
+              "Southland"
+            ]
+          },
           "tagline": {
             "type": "string",
-            "maxLength": 160
+            "maxLength": 160,
+            "description": "Empty removes it"
           },
           "intro": {
             "type": "string",
@@ -13904,7 +14781,120 @@
           },
           "heroImage": {
             "type": "string",
-            "format": "uri"
+            "maxLength": 500,
+            "description": "The picture’s address; empty removes it"
+          },
+          "lat": {
+            "type": "number",
+            "minimum": -48,
+            "maximum": -34
+          },
+          "lng": {
+            "type": "number",
+            "minimum": 166,
+            "maximum": 179
+          },
+          "airports": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            },
+            "maxItems": 5,
+            "default": [],
+            "description": "IATA codes of airports in the place list"
+          },
+          "featured": {
+            "type": "boolean",
+            "default": false
+          },
+          "order": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "default": 0
+          },
+          "published": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "slug",
+          "city",
+          "region",
+          "intro",
+          "lat",
+          "lng"
+        ]
+      },
+      "DestinationEdit": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 60
+          },
+          "maoriName": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "The te reo Māori name; empty removes it"
+          },
+          "region": {
+            "type": "string",
+            "enum": [
+              "Northland",
+              "Auckland",
+              "Waikato",
+              "Bay of Plenty",
+              "Gisborne",
+              "Hawke's Bay",
+              "Taranaki",
+              "Manawatū-Whanganui",
+              "Wellington",
+              "Tasman",
+              "Nelson",
+              "Marlborough",
+              "West Coast",
+              "Canterbury",
+              "Otago",
+              "Southland"
+            ]
+          },
+          "tagline": {
+            "type": "string",
+            "maxLength": 160,
+            "description": "Empty removes it"
+          },
+          "intro": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 5000
+          },
+          "heroImage": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "The picture’s address; empty removes it"
+          },
+          "lat": {
+            "type": "number",
+            "minimum": -48,
+            "maximum": -34
+          },
+          "lng": {
+            "type": "number",
+            "minimum": 166,
+            "maximum": 179
+          },
+          "airports": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            },
+            "maxItems": 5,
+            "description": "IATA codes of airports in the place list"
           },
           "featured": {
             "type": "boolean"
@@ -13913,6 +14903,10 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 1000
+          },
+          "published": {
+            "type": "boolean",
+            "description": "False: off the homepage, a 404 page and out of the sitemap"
           }
         }
       },
@@ -14206,23 +15200,26 @@
                 "description": "Paid for trips starting in the range, GST included"
               },
               "refundsCents": {
-                "type": "integer"
+                "type": "integer",
+                "description": "Sent to Guests in the range"
               },
               "platformFeesCents": {
                 "type": "integer",
-                "description": "Service fees and commission"
+                "description": "Service fees and commission, the platform’s share of cancellation fees kept and the commission on extra charges (fees.totalCents)"
               },
               "hostPayoutsPaidCents": {
                 "type": "integer"
               },
               "extraChargesCents": {
-                "type": "integer"
+                "type": "integer",
+                "description": "Paid in the range, GST included"
               },
               "cancellationFeesKeptCents": {
                 "type": "integer"
               },
               "gstCollectedCents": {
-                "type": "integer"
+                "type": "integer",
+                "description": "Net of refunds (gst.collectedCents)"
               },
               "gstOnPlatformFeesCents": {
                 "type": "integer"
@@ -14238,13 +15235,85 @@
               "gstCollectedCents",
               "gstOnPlatformFeesCents"
             ]
+          },
+          "fees": {
+            "type": "object",
+            "properties": {
+              "serviceFeesCents": {
+                "type": "integer",
+                "description": "On trips starting in the range"
+              },
+              "hostCommissionCents": {
+                "type": "integer",
+                "description": "On trips starting in the range"
+              },
+              "cancellationFeesShareCents": {
+                "type": "integer",
+                "description": "The platform’s share of the fees kept from bookings cancelled in the range"
+              },
+              "extraChargeCommissionCents": {
+                "type": "integer",
+                "description": "On extra charges paid in the range"
+              },
+              "totalCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "serviceFeesCents",
+              "hostCommissionCents",
+              "cancellationFeesShareCents",
+              "extraChargeCommissionCents",
+              "totalCents"
+            ]
+          },
+          "gst": {
+            "type": "object",
+            "properties": {
+              "ratePct": {
+                "type": "number",
+                "description": "From settings (plan §5: 15 %, provisional)"
+              },
+              "inTripsCents": {
+                "type": "integer"
+              },
+              "inExtraChargesCents": {
+                "type": "integer"
+              },
+              "inCancellationFeesCents": {
+                "type": "integer",
+                "description": "In the fees kept from bookings cancelled in the range"
+              },
+              "givenBackCents": {
+                "type": "integer",
+                "description": "In refunds sent in the range of money counted here. A cancellation’s own refund is already left out of the fee kept."
+              },
+              "collectedCents": {
+                "type": "integer",
+                "description": "Trips, extra charges and fees kept, less refunds"
+              },
+              "onPlatformFeesCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "ratePct",
+              "inTripsCents",
+              "inExtraChargesCents",
+              "inCancellationFeesCents",
+              "givenBackCents",
+              "collectedCents",
+              "onPlatformFeesCents"
+            ]
           }
         },
         "required": [
           "from",
           "to",
           "bookings",
-          "money"
+          "money",
+          "fees",
+          "gst"
         ]
       },
       "AuditLog": {
@@ -15253,6 +16322,83 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Change the name",
+        "description": "Personal details (plan §11): the first and last name, trimmed, 1 to 50 characters each. Allowed until the identity check has passed or is being checked (`nameLocked`); after that the name must match the ID, so it is refused with 409 NAME_LOCKED and corrected through a privacy request (POST /me/privacy-requests, CORRECTION). Written to the audit log.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The signed-in user, with the new name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
             "content": {
               "application/json": {
                 "schema": {
@@ -16534,6 +17680,7 @@
           "Admin"
         ],
         "summary": "Staff: approve or reject a driver licence checked by hand",
+        "description": "Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`). Rejecting releases them with their card authorisations. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check.",
         "security": [
           {
             "cookieAuth": []
@@ -16579,6 +17726,85 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/licence-number": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: show the full driver licence number",
+        "description": "Decrypted to check the licence by hand. Each time it’s shown is written to the audit log (plan §14). Not cached.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The number",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LicenceNumber"
                 }
               }
             }
@@ -18212,7 +19438,7 @@
           "Content"
         ],
         "summary": "City and destination landing pages",
-        "description": "Public. Featured ones first: they are the homepage tiles.",
+        "description": "Public. Published ones only, featured first: they are the homepage tiles.",
         "responses": {
           "200": {
             "description": "Destinations",
@@ -18315,6 +19541,48 @@
         }
       }
     },
+    "/cms/home.hero": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "The homepage’s headline and supporting line",
+        "description": "Public. The original text until an admin saves their own.",
+        "responses": {
+          "200": {
+            "description": "The text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeHeroResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cms/site.footer": {
+      "get": {
+        "tags": [
+          "Content"
+        ],
+        "summary": "The footer’s links and social accounts",
+        "description": "Public. The original links until an admin saves their own.",
+        "responses": {
+          "200": {
+            "description": "The links",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteFooterResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/faqs": {
       "get": {
         "tags": [
@@ -18388,7 +19656,7 @@
           "Content"
         ],
         "summary": "Customer reviews for the homepage",
-        "description": "Public. Real published reviews only, and `show: false` until there are enough (settings).",
+        "description": "Public. Real published reviews only, and `show: false` until there are enough (settings). The ones admins picked, in order, or else the newest well-rated ones.",
         "responses": {
           "200": {
             "description": "Reviews",
@@ -21226,6 +22494,117 @@
         }
       }
     },
+    "/admin/vehicles/search": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Every car, to search",
+        "description": "Whatever its status (live, switched off, suspended, draft, under review…), 25 a page, most recently changed first. Each word of `q` must match the year, make, model or variant, the plate, or the Host’s name or email.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "description": "Words to match: the year, make or model, the plate, or the Host’s name or email"
+            },
+            "required": false,
+            "description": "Words to match: the year, make or model, the plate, or the Host’s name or email",
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "DRAFT",
+                "UNDER_REVIEW",
+                "CHANGES_REQUESTED",
+                "REJECTED",
+                "ACTIVE",
+                "INACTIVE",
+                "SUSPENDED"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$/i",
+              "description": "Only this Host’s cars"
+            },
+            "required": false,
+            "description": "Only this Host’s cars",
+            "name": "hostId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cars",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminVehicles"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/vehicles/{id}": {
       "get": {
         "tags": [
@@ -23215,7 +24594,7 @@
           "Admin"
         ],
         "summary": "Staff: cancel for a no-show, or as a platform cancellation",
-        "description": "Admins, and support staff with the REFUNDS permission. A Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund.",
+        "description": "Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. Both parties are told, except the Host of an Instant Book that never reached them.",
         "security": [
           {
             "cookieAuth": []
@@ -23299,6 +24678,100 @@
           },
           "409": {
             "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/bookings/{id}/cancellation-preview": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: what a cancellation would refund and cost",
+        "description": "For the reason chosen, from the same policy engine as the cancellation (plan §8.2): the Guest’s refund (less any earlier refunds), what’s kept and the Host’s share, any Host cancellation fee, or the authorisation released for a pending booking. `allowed` is false, with the reason in `message`, when that cancellation isn’t possible.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "GUEST_NO_SHOW",
+                "HOST_NO_SHOW",
+                "PLATFORM"
+              ]
+            },
+            "required": true,
+            "name": "reason",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminCancellationPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -24109,6 +25582,7 @@
           "Handover"
         ],
         "summary": "The check-in and check-out reports, and what you can do next",
+        "description": "For the Guest, the Host and staff (role STAFF, with no actions: staff complete a trip with POST /admin/bookings/{id}/complete).",
         "security": [
           {
             "cookieAuth": []
@@ -24441,7 +25915,7 @@
           "Admin"
         ],
         "summary": "Staff: complete a trip whose check-out is missing",
-        "description": "With the Host’s odometer and fuel reading and photos (plan §8.2). The booking becomes COMPLETED, and extra kilometres, reviews and the payout follow as normal.",
+        "description": "With the Host’s odometer and fuel or battery reading, and any photos they sent (plan §8.2), which become the check-out record. The booking becomes COMPLETED, and extra kilometres (worked out against the check-in reading, when there is one), reviews and the payout follow as normal. 409 NOT_CHECK_OUT unless the trip is under way without a check-out; 400 when the odometer is below the check-in reading.",
         "security": [
           {
             "cookieAuth": []
@@ -24467,46 +25941,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "odometer": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 2000000
-                  },
-                  "fuelOrBatteryPct": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 100,
-                    "description": "Fuel, or battery charge for an EV, 0–100 %"
-                  },
-                  "notes": {
-                    "type": "string",
-                    "maxLength": 2000
-                  },
-                  "photos": {
-                    "type": "array",
-                    "items": {
-                      "$ref": "#/components/schemas/InspectionPhotoInput"
-                    },
-                    "minItems": 1,
-                    "maxItems": 40
-                  },
-                  "damagePins": {
-                    "type": "array",
-                    "items": {
-                      "$ref": "#/components/schemas/DamagePinInput"
-                    },
-                    "maxItems": 30,
-                    "default": [],
-                    "description": "Check-in: damage already on the car. Check-out: new damage."
-                  }
-                },
-                "required": [
-                  "odometer",
-                  "fuelOrBatteryPct",
-                  "photos"
-                ]
+                "$ref": "#/components/schemas/StaffCompletionRequest"
               }
             }
           }
@@ -25271,7 +26706,7 @@
           "Reviews"
         ],
         "summary": "A member’s public profile and the published reviews about them",
-        "description": "Only what each party may see of the other (plan §6.2).",
+        "description": "Only what each party may see of the other (plan §6.2), and the reviews about them as Guest and as Host, without the booking each came from. This is the public profile plan §11 lists as GET /users/{id}/profile. A closed or suspended account is not found.",
         "security": [
           {
             "cookieAuth": []
@@ -25815,6 +27250,83 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: open a case on a booking",
+        "description": "Outside the damage-report window, on any booking past checkout (404 otherwise). For both parties, only the Guest or the Host it’s about, or the team only (INTERNAL) until an update is shared; a party never sees a case with nothing for them. The staff member who opens it has it. Holds the booking’s payouts until the case is settled, tells the parties who can see it, and is written to the audit log.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffNewIncidentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Opened",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/admin/incidents/assignees": {
@@ -25942,7 +27454,7 @@
           "Admin"
         ],
         "summary": "Staff: post an update, change the status or take the case",
-        "description": "Updates go to both parties, one of them, or the team only (INTERNAL). Resolving or closing the last open case on a booking releases its payouts.",
+        "description": "Updates go to both parties, one of them, or the team only (INTERNAL). The status moves only to one of the case’s `nextStatuses`: nothing goes back to OPEN, a resolved case can be reopened (INVESTIGATING or AWAITING_RESPONSE), and a closed one is final (409 INVALID_STATUS_CHANGE; 409 CASE_CHANGED when someone else changed the status meanwhile). Resolving or closing the last open case on a booking releases its payouts; reopening a case holds the unpaid ones again.",
         "security": [
           {
             "cookieAuth": []
@@ -26016,6 +27528,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {
@@ -27361,7 +28883,7 @@
           "Admin"
         ],
         "summary": "Staff with the refunds permission: refund the Guest",
-        "description": "A Host-funded refund comes off the trip’s payout, or the Host’s next one once it’s paid (plan §8.1, item 15).",
+        "description": "A Host-funded refund comes off the trip’s payout, or once that’s sent, off the Host’s next payout or back from the Stripe transfer as staff choose (recoverFrom). The answer’s hostRefund says which (plan §8.1, item 15).",
         "security": [
           {
             "cookieAuth": []
@@ -28784,6 +30306,411 @@
         }
       }
     },
+    "/admin/content/hero": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: the homepage’s headline and supporting line",
+        "description": "The original text until an admin saves their own (`saved: false`).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminHomeHero"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: change the homepage’s headline and supporting line",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HomeHero"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminHomeHero"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/content/featured-reviews": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: the customer reviews picked for the homepage",
+        "description": "In order, each saying whether it can show now, with the threshold in settings and how many reviews are published: the section stays hidden until there are enough.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminFeaturedReviews"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: pick the homepage’s customer reviews",
+        "description": "Up to six published Guest reviews with words to quote, in order. None: the newest well-rated reviews are shown. One hidden later is left off the homepage.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeaturedReviewsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminFeaturedReviews"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/content/reviews": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: published Guest reviews to pick for the homepage, by their words",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "q",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReviewChoices"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/content/footer": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: the footer’s links and social accounts",
+        "description": "The original links until an admin saves their own (`saved: false`).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSiteFooter"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: change the footer’s links and social accounts",
+        "description": "Links are full https:// addresses or paths on the website, like /help; social accounts are https:// addresses.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SiteFooter"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSiteFooter"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/content/legal": {
       "get": {
         "tags": [
@@ -28926,7 +30853,7 @@
         "tags": [
           "Admin"
         ],
-        "summary": "Admin: destination landing pages",
+        "summary": "Admin: destination landing pages, published or not",
         "security": [
           {
             "cookieAuth": []
@@ -28967,6 +30894,83 @@
             }
           }
         }
+      },
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Admin: add a destination landing page",
+        "description": "At /rental/{slug}, which can’t change later. Airports must be in the place list. 409 SLUG_TAKEN when another page has the address.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminDestinationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/admin/content/destinations/{slug}": {
@@ -28974,7 +30978,8 @@
         "tags": [
           "Admin"
         ],
-        "summary": "Admin: edit a destination landing page",
+        "summary": "Admin: edit a destination landing page, or publish or unpublish it",
+        "description": "Only the fields sent change; empty text removes an optional one. Unpublished, it’s off the homepage, its page answers 404 and the sitemap leaves it out.",
         "security": [
           {
             "cookieAuth": []
@@ -29687,7 +31692,7 @@
           "Admin"
         ],
         "summary": "Admin: a report as a CSV file",
-        "description": "Bookings, payments, refunds, payouts, cancellations or the monthly GST summary for a range of NZ days.",
+        "description": "Bookings, payments, refunds, payouts, cancellations, the monthly GST summary, or revenue and fees by day, for a range of NZ days. Every total matches the summary for the same days.",
         "security": [
           {
             "cookieAuth": []
@@ -29728,7 +31733,8 @@
                 "refunds",
                 "payouts",
                 "cancellations",
-                "gst"
+                "gst",
+                "revenue"
               ]
             },
             "required": true,

@@ -1,7 +1,8 @@
 import type { Destination } from '../../src/modules/cms/destination.model.js';
 import { point } from '../../src/lib/model-fields.js';
 
-type SeedDestination = Omit<Destination, 'createdAt' | 'updatedAt'>;
+// Published by default; admins unpublish a page from the staff portal.
+type SeedDestination = Omit<Destination, 'createdAt' | 'updatedAt' | 'published'>;
 
 /**
  * The five launch destinations (MILESTONES.md, Phase 4), in the homepage order. Taglines match the

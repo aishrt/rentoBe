@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { emailField } from '../auth/auth.schemas.js';
 import { newPasswordSchema } from '../auth/password-policy.js';
-import { USER_STATUSES } from '../users/user.model.js';
+import { PERMISSIONS, USER_STATUSES } from '../users/user.model.js';
 
 const nameField = (label: string) =>
   z
@@ -50,6 +50,10 @@ export const staffMemberSchema = z
     status: z.enum(USER_STATUSES),
     mfaEnabled: z.boolean(),
     lastLoginAt: z.iso.datetime().optional(),
+    permissions: z.array(z.enum(PERMISSIONS)).meta({
+      description:
+        'What they can do beyond the support role (plan §6.2): REFUNDS for refunds, payments and payouts. The admin has every permission.',
+    }),
   })
   .meta({ id: 'StaffMember' });
 

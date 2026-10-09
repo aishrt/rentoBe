@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import type { z } from 'zod';
 import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
@@ -9,11 +10,13 @@ import { toHostVehicleView } from '../vehicles/host-vehicles.service.js';
 import { listingChecklist, PHOTO_ANGLE_NAMES } from '../vehicles/listing-checklist.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import { VehicleModel, type VehicleDocument } from '../vehicles/vehicle.model.js';
+import type { vehicleListQuerySchema } from './admin-listings.schemas.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 
 /*
  * Basic approval queues for staff (plan §9, Days 8–11), so a test listing can go live: Host
- * applications, and listings with their photos and documents. Every decision is in the audit log.
+ * applications, and listings with their photos and documents. Every decision is in the audit log. Staff
+ * also search every car (plan §12.6), to reach one that isn't waiting for review.
  */
 
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
@@ -170,6 +173,89 @@ export async function listReviewQueue() {
       updatedAt: vehicle.updatedAt.toISOString(),
     };
   });
+}
+
+const VEHICLES_PAGE_SIZE = 25;
+const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * What one search word can match on a car: its year, make, model or variant, its plate (typed with or
+ * without spaces), or its Host's name or email.
+ */
+async function vehicleWordFilter(word: string) {
+  const pattern = new RegExp(escape(word), 'i');
+  const plate = word.replace(/\s+/g, '').toUpperCase();
+  const hosts = await UserModel.find({
+    $or: [{ firstName: pattern }, { lastName: pattern }, { email: pattern }],
+  })
+    .select('_id')
+    .limit(200)
+    .lean();
+  return {
+    $or: [
+      { make: pattern },
+      { model: pattern },
+      { variant: pattern },
+      ...(/^\d{4}$/.test(word) ? [{ year: Number(word) }] : []),
+      ...(/^[A-Z0-9]{1,6}$/.test(plate) ? [{ regoPlate: new RegExp(escape(plate)) }] : []),
+      { hostId: mongoose.trusted({ $in: hosts.map((host) => host._id) }) },
+    ],
+  };
+}
+
+/**
+ * GET /admin/vehicles/search (plan §12.6): every car, whatever its status, so staff can find a live car to
+ * suspend, a suspended one to put back, or its calendar. Each word must match; most recently changed first.
+ */
+export async function listVehicles(query: z.infer<typeof vehicleListQuerySchema>) {
+  const filter: Record<string, unknown> = {};
+  if (query.status) filter.status = query.status;
+  if (query.hostId) filter.hostId = new mongoose.Types.ObjectId(query.hostId);
+  const words = (query.q ?? '').split(/\s+/).filter(Boolean).slice(0, 5);
+  if (words.length > 0) filter.$and = await Promise.all(words.map(vehicleWordFilter));
+
+  const [vehicles, total, filterHost] = await Promise.all([
+    VehicleModel.find(filter)
+      .sort({ updatedAt: -1 })
+      .skip((query.page - 1) * VEHICLES_PAGE_SIZE)
+      .limit(VEHICLES_PAGE_SIZE)
+      .select('hostId make model year status regoPlate city payoutsReady hostSuspended tripCount updatedAt')
+      .lean(),
+    VehicleModel.countDocuments(filter),
+    query.hostId ? UserModel.findById(query.hostId).select('firstName lastName').lean() : null,
+  ]);
+  const hosts = await UserModel.find({
+    _id: mongoose.trusted({ $in: vehicles.map((vehicle) => vehicle.hostId) }),
+  })
+    .select('firstName lastName email')
+    .lean();
+
+  return {
+    vehicles: vehicles.map((vehicle) => {
+      const host = hosts.find((candidate) => candidate._id.equals(vehicle.hostId));
+      return {
+        id: vehicle._id.toString(),
+        title: vehicleTitle(vehicle),
+        status: vehicle.status,
+        ...(vehicle.regoPlate && { regoPlate: vehicle.regoPlate }),
+        ...(vehicle.city && { city: vehicle.city }),
+        host: {
+          id: vehicle.hostId.toString(),
+          name: host ? `${host.firstName} ${host.lastName}` : 'Former member',
+          email: host?.email ?? '',
+        },
+        waitingForPayouts: vehicle.payoutsReady === false,
+        hostSuspended: Boolean(vehicle.hostSuspended),
+        tripCount: vehicle.tripCount ?? 0,
+        updatedAt: vehicle.updatedAt.toISOString(),
+      };
+    }),
+    total,
+    page: query.page,
+    ...(filterHost && {
+      host: { id: filterHost._id.toString(), name: `${filterHost.firstName} ${filterHost.lastName}` },
+    }),
+  };
 }
 
 async function findVehicle(id: string): Promise<VehicleDocument> {

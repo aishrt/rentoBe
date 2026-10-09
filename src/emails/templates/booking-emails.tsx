@@ -96,17 +96,17 @@ export interface BookingVerificationReviewProps extends TripBasics {
   hostFirstName?: string;
 }
 
-/** To a Guest who paid while their identity check was with support (plan §8.2). */
+/** To a Guest who paid while their identity check or driver licence was with support (plan §8.2). */
 export function BookingVerificationReviewEmail(props: BookingVerificationReviewProps) {
   return (
     <EmailLayout
-      preview={`We're finishing your identity check. Your ${props.vehicleTitle} is held for you in the meantime.`}
+      preview={`We're finishing the check of your ID and licence. Your ${props.vehicleTitle} is held for you in the meantime.`}
     >
       <EmailHeading>We're checking your details</EmailHeading>
       <EmailText>
-        Kia ora {props.firstName}, your identity check needs a closer look from our team, so your booking of
-        the {props.vehicleTitle} isn't confirmed yet. The dates are held for you, and your card is authorised
-        for {props.total} but won't be charged until the check is approved
+        Kia ora {props.firstName}, your ID or driver licence needs a closer look from our team, so your
+        booking of the {props.vehicleTitle} isn't confirmed yet. The dates are held for you, and your card is
+        authorised for {props.total} but won't be charged until the check is approved
         {props.hostFirstName ? ` and ${props.hostFirstName} accepts` : ''}.
       </EmailText>
       <EmailDetails rows={tripRows(props)} />
@@ -234,8 +234,8 @@ export function BookingDeclinedEmail({
           : outcome === 'EXPIRED'
             ? `the host didn't answer your request for the ${vehicleTitle} from ${start} in time.`
             : outcome === 'VERIFICATION_REJECTED'
-              ? `we weren't able to verify your identity, so your booking of the ${vehicleTitle} from ${start} can't go ahead. Reply to this email if you think we've got it wrong.`
-              : `we couldn't finish your identity check within 24 hours, so your booking of the ${vehicleTitle} from ${start} has expired. You're welcome to book again once the check is done.`}{' '}
+              ? `we weren't able to verify your identity or driver licence, so your booking of the ${vehicleTitle} from ${start} can't go ahead. Reply to this email if you think we've got it wrong.`
+              : `we couldn't finish checking your ID and licence within 24 hours, so your booking of the ${vehicleTitle} from ${start} has expired. You're welcome to book again once the check is done.`}{' '}
         Your card hasn't been charged, and the authorisation has been released (your bank may take a few days
         to show it).
       </EmailText>
@@ -287,6 +287,8 @@ export interface BookingCancelledProps extends TripBasics {
   hostFee?: string;
   /** A request withdrawn before the Host answered: nothing was booked or charged. */
   withdrawn?: boolean;
+  /** Guest: support cancelled a request, or a booking waiting for verification: the card's hold is released. */
+  released?: boolean;
 }
 
 export function BookingCancelledEmail(props: BookingCancelledProps) {
@@ -337,6 +339,12 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
       {props.audience === 'GUEST' && props.refund && (
         <EmailText>
           Refunds go back to the card you paid with and usually show within 5–10 working days.
+        </EmailText>
+      )}
+      {props.audience === 'GUEST' && props.released && (
+        <EmailText>
+          You haven't been charged. The amount held on your card is released, and your bank usually shows it
+          within a few days.
         </EmailText>
       )}
       {props.audience === 'HOST' && <EmailText>The dates are free again on your calendar.</EmailText>}

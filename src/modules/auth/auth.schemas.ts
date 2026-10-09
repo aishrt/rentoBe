@@ -22,7 +22,8 @@ export const loginSchema = z.object({
 
 export type LoginInput = z.infer<typeof loginSchema>;
 
-const nameField = (label: string) =>
+/** A first or last name: trimmed, 1 to 50 characters. Shared by sign-up and PATCH /me. */
+export const nameField = (label: string) =>
   z
     .string({ error: `Enter your ${label}` })
     .trim()

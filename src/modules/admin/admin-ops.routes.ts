@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { requirePermission, requireRole } from '../../middleware/auth.js';
 import { validate } from '../../lib/validate.js';
+import { homeHeroSchema, siteFooterSchema } from '../cms/content.schemas.js';
 import { REPORT_STATUSES, type ReportStatus } from '../moderation/report.model.js';
 import {
   adminBookingDetail,
@@ -11,6 +12,7 @@ import {
   unsuspendVehicle,
 } from './admin-bookings.service.js';
 import {
+  createDestination,
   createFaq,
   createHelpArticle,
   deleteFaq,
@@ -18,11 +20,18 @@ import {
   editDestination,
   editLegalPage,
   featuredChoice,
+  featuredReviewsChoice,
+  footerLinks,
+  heroText,
   legalPages,
   listDestinations,
   listFaqs,
   listHelpArticles,
+  reviewChoicesFor,
   setFeatured,
+  setFeaturedReviews,
+  setFooterLinks,
+  setHeroText,
   updateFaq,
   updateHelpArticle,
   vehicleChoices,
@@ -34,9 +43,11 @@ import {
   adminStatusEditSchema,
   auditQuerySchema,
   bookingListQuerySchema,
+  destinationCreateSchema,
   destinationEditSchema,
   exportQuerySchema,
   faqInputSchema,
+  featuredReviewsSchema,
   featuredVehiclesSchema,
   helpArticleInputSchema,
   holdPayoutSchema,
@@ -225,6 +236,36 @@ export function adminOpsRouter() {
     res.json(await vehicleChoices(typeof req.query.q === 'string' ? req.query.q.slice(0, 100) : undefined));
   });
 
+  // The homepage's headline, its customer reviews and the footer's links (plan §12.6).
+  router.get('/content/hero', adminOnly, async (_req, res) => {
+    res.json(await heroText());
+  });
+
+  router.put('/content/hero', adminOnly, async (req, res) => {
+    res.json(await setHeroText(req.auth!.userId, validate(homeHeroSchema, req.body), req.ip));
+  });
+
+  router.get('/content/featured-reviews', adminOnly, async (_req, res) => {
+    res.json(await featuredReviewsChoice());
+  });
+
+  router.put('/content/featured-reviews', adminOnly, async (req, res) => {
+    const { reviewIds } = validate(featuredReviewsSchema, req.body);
+    res.json(await setFeaturedReviews(req.auth!.userId, reviewIds, req.ip));
+  });
+
+  router.get('/content/reviews', adminOnly, async (req, res) => {
+    res.json(await reviewChoicesFor(typeof req.query.q === 'string' ? req.query.q.slice(0, 100) : undefined));
+  });
+
+  router.get('/content/footer', adminOnly, async (_req, res) => {
+    res.json(await footerLinks());
+  });
+
+  router.put('/content/footer', adminOnly, async (req, res) => {
+    res.json(await setFooterLinks(req.auth!.userId, validate(siteFooterSchema, req.body), req.ip));
+  });
+
   router.get('/content/legal', adminOnly, async (_req, res) => {
     res.json(await legalPages());
   });
@@ -236,6 +277,11 @@ export function adminOpsRouter() {
 
   router.get('/content/destinations', adminOnly, async (_req, res) => {
     res.json(await listDestinations());
+  });
+
+  router.post('/content/destinations', adminOnly, async (req, res) => {
+    const input = validate(destinationCreateSchema, req.body);
+    res.status(201).json({ destination: await createDestination(req.auth!.userId, input, req.ip) });
   });
 
   router.patch('/content/destinations/:slug', adminOnly, async (req, res) => {

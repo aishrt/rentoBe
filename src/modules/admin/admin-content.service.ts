@@ -2,33 +2,53 @@ import mongoose, { type Types } from 'mongoose';
 import type { z } from 'zod';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
+import { point } from '../../lib/model-fields.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { CmsBlockModel, type LegalContent } from '../cms/cms-block.model.js';
-import { LEGAL_PAGE_KEYS } from '../cms/content.schemas.js';
+import { LEGAL_PAGE_KEYS, type HomeHero, type SiteFooter } from '../cms/content.schemas.js';
 import { DestinationModel, type Destination } from '../cms/destination.model.js';
+import {
+  FEATURED_REVIEWS_BLOCK_KEY,
+  FOOTER_BLOCK_KEY,
+  HERO_BLOCK_KEY,
+  PUBLISHED_REVIEW,
+  homeHero,
+  pickedReviewIds,
+  quotableReview,
+  reviewCards,
+  siteFooter,
+} from '../cms/site-content.js';
 import { FaqModel, type Faq } from '../help/faq.model.js';
 import { HelpArticleModel, type HelpArticle } from '../help/help-article.model.js';
+import { ReviewModel, type Review } from '../reviews/review.model.js';
+import { PlaceModel } from '../search/place.model.js';
 import { FEATURED_BLOCK_KEY } from '../vehicles/vehicles.service.js';
 import { liveVehicleFilter, VehicleModel, type Vehicle } from '../vehicles/vehicle.model.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import type {
+  destinationCreateSchema,
   destinationEditSchema,
   faqInputSchema,
   helpArticleInputSchema,
   legalPageEditSchema,
 } from './admin-ops.schemas.js';
+import { getPlatformSettings } from './platform-settings.service.js';
 
 /*
- * Content in the staff portal (spec §18; plan §9 Days 19–23), admin only: the homepage's featured cars,
- * the legal pages, destination landing pages, FAQs (and which show on the homepage) and help articles.
- * Public pages cache content for a minute; a change clears that cache at once on this task.
+ * Content in the staff portal (spec §18; plan §9 Days 19–23, §12.6), admin only: the homepage's headline,
+ * featured cars and customer reviews, the footer's links, the legal pages, destination landing pages, FAQs
+ * (and which show on the homepage) and help articles. Public pages cache content for a minute; a change
+ * clears that cache at once on this task.
  */
 
 type Id = Types.ObjectId;
 type VehicleRecord = Vehicle & { _id: Id };
+type ReviewRecord = Review & { _id: Id };
 type LegalKey = (typeof LEGAL_PAGE_KEYS)[number];
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const isDuplicate = (error: unknown) =>
+  error instanceof mongoose.mongo.MongoServerError && error.code === 11000;
 
 async function audit(
   staffId: string,
@@ -170,40 +190,246 @@ export async function editLegalPage(
 
 // Destinations ------------------------------------------------------------------------------------------------
 
-const destinationView = (destination: Destination) => ({
-  slug: destination.slug,
-  city: destination.city,
-  ...(destination.maoriName && { maoriName: destination.maoriName }),
-  region: destination.region,
-  ...(destination.tagline && { tagline: destination.tagline }),
-  intro: destination.intro,
-  ...(destination.heroImage && { heroImage: destination.heroImage }),
-  featured: destination.featured,
-  order: destination.order,
-});
+const destinationView = (destination: Destination) => {
+  const [lng, lat] = destination.location.coordinates;
+  return {
+    slug: destination.slug,
+    city: destination.city,
+    ...(destination.maoriName && { maoriName: destination.maoriName }),
+    region: destination.region,
+    ...(destination.tagline && { tagline: destination.tagline }),
+    intro: destination.intro,
+    ...(destination.heroImage && { heroImage: destination.heroImage }),
+    lat,
+    lng,
+    airports: destination.airports ?? [],
+    featured: destination.featured === true,
+    order: destination.order ?? 0,
+    // Pages saved before `published` existed are published.
+    published: destination.published !== false,
+  };
+};
 
-/** GET /admin/content/destinations: every landing page, homepage tiles first. */
+const destinationSlugTaken = () =>
+  new HttpError(409, 'SLUG_TAKEN', 'Another destination already uses that web address.');
+
+/** Airport codes must be airports in our place list, which the page's airport search uses (plan §3). */
+async function checkAirports(codes: string[] | undefined) {
+  if (!codes?.length) return;
+  const known = await PlaceModel.find({ type: 'AIRPORT', code: mongoose.trusted({ $in: codes }) })
+    .select('code')
+    .lean();
+  const unknown = codes.filter((code) => !known.some((place) => place.code === code));
+  if (unknown.length > 0) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
+      airports: `We don’t have ${unknown.length === 1 ? 'an airport' : 'airports'} with the code ${unknown.join(', ')}.`,
+    });
+  }
+}
+
+/** Every page lists an airport once, in the order typed. */
+const uniqueCodes = (codes: string[] | undefined) => (codes ? [...new Set(codes)] : undefined);
+
+/** GET /admin/content/destinations: every landing page, homepage tiles first, published or not. */
 export async function listDestinations() {
   const destinations = await DestinationModel.find().sort({ featured: -1, order: 1, city: 1 }).lean();
   return { destinations: destinations.map(destinationView) };
 }
 
-/** PATCH /admin/content/destinations/{slug}: a landing page's words, picture, and place on the homepage. */
+/**
+ * POST /admin/content/destinations: a new landing page, /rental/{slug} (plan §1.4: admins add destinations
+ * without code changes). The web address can't change later, so links to it keep working.
+ */
+export async function createDestination(
+  staffId: string,
+  input: z.infer<typeof destinationCreateSchema>,
+  ip?: string,
+) {
+  const airports = uniqueCodes(input.airports) ?? [];
+  await checkAirports(airports);
+  const { lat, lng, maoriName, tagline, heroImage, airports: _typed, ...fields } = input;
+  try {
+    const destination = await DestinationModel.create({
+      ...fields,
+      ...(maoriName && { maoriName }),
+      ...(tagline && { tagline }),
+      ...(heroImage && { heroImage }),
+      airports,
+      location: point(lng, lat),
+    });
+    forget('destinations');
+    await audit(
+      staffId,
+      'content.destination-created',
+      'destination',
+      destination.slug,
+      { city: destination.city, published: destination.published },
+      ip,
+    );
+    return destinationView(destination.toObject());
+  } catch (error) {
+    if (isDuplicate(error)) throw destinationSlugTaken();
+    throw error;
+  }
+}
+
+/**
+ * PATCH /admin/content/destinations/{slug}: a landing page's name, place, words, picture, airports, place on
+ * the homepage, and whether it's published. Empty text removes an optional field. Unpublished, it's off the
+ * homepage, its page answers 404 and the sitemap leaves it out.
+ */
 export async function editDestination(
   staffId: string,
   slug: string,
   input: z.infer<typeof destinationEditSchema>,
   ip?: string,
 ) {
+  const airports = uniqueCodes(input.airports);
+  await checkAirports(airports);
+  const { lat, lng, maoriName, tagline, heroImage, airports: _typed, ...fields } = input;
+  const set: Record<string, unknown> = { ...fields, ...(airports && { airports }) };
+  const unset: Record<string, 1> = {};
+  for (const [field, value] of Object.entries({ maoriName, tagline, heroImage })) {
+    if (value === '') unset[field] = 1;
+    else if (value !== undefined) set[field] = value;
+  }
+  if (lat !== undefined && lng !== undefined) set.location = point(lng, lat);
   const destination = await DestinationModel.findOneAndUpdate(
     { slug: slug.toLowerCase() },
-    { $set: input },
+    { $set: set, ...(Object.keys(unset).length > 0 && { $unset: unset }) },
     { new: true, runValidators: true },
   ).lean();
   if (!destination) throw new HttpError(404, 'NOT_FOUND', 'No such destination.');
   forget('destinations');
   await audit(staffId, 'content.destination-edited', 'destination', destination.slug, input, ip);
   return destinationView(destination);
+}
+
+// Homepage text and footer links (plan §12.6) -----------------------------------------------------------------
+
+async function saveBlock(key: string, content: unknown) {
+  await CmsBlockModel.updateOne(
+    { key },
+    { $set: { content }, $setOnInsert: { version: '1' } },
+    { upsert: true },
+  );
+  forget(`cms:${key}`);
+}
+
+/** GET /admin/content/hero: the homepage's headline and supporting line, the original ones until saved. */
+export async function heroText() {
+  const { content, saved } = await homeHero();
+  return { hero: content, saved };
+}
+
+/** PUT /admin/content/hero */
+export async function setHeroText(staffId: string, hero: HomeHero, ip?: string) {
+  await saveBlock(HERO_BLOCK_KEY, hero);
+  await audit(staffId, 'content.hero-edited', 'cmsBlock', HERO_BLOCK_KEY, hero, ip);
+  return heroText();
+}
+
+/** GET /admin/content/footer: the footer's groups of links and social accounts, the original ones until saved. */
+export async function footerLinks() {
+  const { content, saved } = await siteFooter();
+  return { footer: content, saved };
+}
+
+/** PUT /admin/content/footer */
+export async function setFooterLinks(staffId: string, footer: SiteFooter, ip?: string) {
+  await saveBlock(FOOTER_BLOCK_KEY, footer);
+  await audit(staffId, 'content.footer-edited', 'cmsBlock', FOOTER_BLOCK_KEY, footer, ip);
+  return footerLinks();
+}
+
+// Customer reviews on the homepage (plan §12.6) ---------------------------------------------------------------
+
+/** Reviews to pick from, as the homepage shows them, and whether each can show there now. */
+async function reviewChoices(reviews: ReviewRecord[]) {
+  const cards = await reviewCards(reviews);
+  return reviews.map((review, index) => {
+    const card = cards[index]!;
+    return {
+      id: card.id,
+      authorName: card.author.firstName,
+      overall: card.overall,
+      body: card.body,
+      vehicleTitle: card.vehicleTitle,
+      ...(card.city && { city: card.city }),
+      createdAt: card.createdAt,
+      shown:
+        review.direction === PUBLISHED_REVIEW.direction &&
+        review.status === PUBLISHED_REVIEW.status &&
+        review.moderation?.state === PUBLISHED_REVIEW['moderation.state'] &&
+        Boolean(review.body?.trim()),
+    };
+  });
+}
+
+/**
+ * GET /admin/content/featured-reviews: the reviews picked for the homepage, in order, with the threshold in
+ * settings and how many reviews are published, since the section stays hidden until there are enough.
+ */
+export async function featuredReviewsChoice() {
+  const [reviewIds, settings, publishedCount] = await Promise.all([
+    pickedReviewIds(),
+    getPlatformSettings(),
+    ReviewModel.countDocuments(PUBLISHED_REVIEW),
+  ]);
+  const found = await ReviewModel.find({ _id: mongoose.trusted({ $in: reviewIds }) }).lean<ReviewRecord[]>();
+  const reviews = reviewIds.flatMap((id) => found.filter((review) => review._id.equals(id)));
+  return {
+    reviewIds,
+    reviews: await reviewChoices(reviews),
+    homepageThreshold: settings.reviews.homepageThreshold,
+    publishedCount,
+  };
+}
+
+/**
+ * PUT /admin/content/featured-reviews: up to six published reviews, in order. None: the homepage shows the
+ * newest well-rated ones. One hidden later is left off the homepage.
+ */
+export async function setFeaturedReviews(staffId: string, reviewIds: string[], ip?: string) {
+  const unique = [...new Set(reviewIds)];
+  const found = await ReviewModel.countDocuments({
+    _id: mongoose.trusted({ $in: unique }),
+    ...quotableReview(),
+  });
+  if (found !== unique.length) {
+    throw new HttpError(
+      400,
+      'UNKNOWN_REVIEW',
+      'Only published Guest reviews with words to quote can show on the homepage.',
+    );
+  }
+  await CmsBlockModel.updateOne(
+    { key: FEATURED_REVIEWS_BLOCK_KEY },
+    { $set: { content: { reviewIds: unique } }, $setOnInsert: { version: '1' } },
+    { upsert: true },
+  );
+  forget('reviews:featured');
+  await audit(
+    staffId,
+    'content.featured-reviews',
+    'cmsBlock',
+    FEATURED_REVIEWS_BLOCK_KEY,
+    { reviewIds: unique },
+    ip,
+  );
+  return featuredReviewsChoice();
+}
+
+/** GET /admin/content/reviews?q=: published Guest reviews with words to quote, newest first, by their text. */
+export async function reviewChoicesFor(q?: string) {
+  const reviews = await ReviewModel.find({
+    ...quotableReview(),
+    ...(q && { body: new RegExp(escape(q), 'i') }),
+  })
+    .sort({ createdAt: -1 })
+    .limit(30)
+    .lean<ReviewRecord[]>();
+  return { reviews: await reviewChoices(reviews) };
 }
 
 // FAQs --------------------------------------------------------------------------------------------------------
@@ -267,8 +493,6 @@ const articleView = (article: HelpArticle & { _id: Id }) => ({
 });
 
 const slugTaken = () => new HttpError(409, 'SLUG_TAKEN', 'Another article already uses that web address.');
-const isDuplicate = (error: unknown) =>
-  error instanceof mongoose.mongo.MongoServerError && error.code === 11000;
 
 export async function listHelpArticles() {
   const articles = await HelpArticleModel.find().sort({ category: 1, order: 1, title: 1 }).lean();

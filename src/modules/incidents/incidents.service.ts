@@ -17,6 +17,7 @@ import { attachmentView, confirmBookingFiles } from '../uploads/upload-folders.j
 import { UserModel } from '../users/user.model.js';
 import { isStaff } from '../users/user.service.js';
 import {
+  INCIDENT_TRANSITIONS,
   IncidentModel,
   OPEN_INCIDENT_STATUSES,
   type Incident,
@@ -31,14 +32,16 @@ import type {
   IncidentView,
   NewIncidentInput,
   StaffIncidentUpdateInput,
+  StaffNewIncidentInput,
 } from './incidents.schemas.js';
 
 /*
  * Damage and incident reporting (spec §15; plan §8.2, §9 Days 20–21). The booking's Guest or Host reports
- * what happened, with photos and documents, and gets a case number. Support staff take the case, post
- * updates for both parties, one of them or the team only, and move it through its statuses; every event is
- * kept, append-only. While a case is open the booking's payouts are held and its messages stay open.
- * Resolving one can add an extra charge to the Guest, linked to the case.
+ * what happened, with photos and documents, and gets a case number; support staff can open one too, for
+ * both parties, one of them or the team only. Staff take the case, post updates for both parties, one of
+ * them or the team only, and move it through its statuses (INCIDENT_TRANSITIONS); every event is kept,
+ * append-only. While a case is open the booking's payouts are held and its messages stay open. Resolving
+ * one can add an extra charge to the Guest, linked to the case.
  */
 
 type Id = Types.ObjectId;
@@ -78,6 +81,16 @@ const roleIn = (booking: Pick<Booking, 'guestId' | 'hostId'>, userId: Id | strin
 const visibleTo = (event: IncidentEvent, role: Role) =>
   role === 'STAFF' || event.visibility === 'BOTH' || event.visibility === role;
 
+/**
+ * Whether a party can see the case at all: something on it is for them. A case the Guest or Host reported
+ * always is; one staff opened for the other party or the team only isn't, until an update is shared.
+ */
+const caseVisibleTo = (incident: Pick<Incident, 'events'>, role: Role) =>
+  role === 'STAFF' || incident.events.some((event) => visibleTo(event, role));
+
+/** The description a party sees when support opened the case without sharing its first note with them. */
+const NOT_SHARED_DESCRIPTION = 'Opened by Rento Vroom support.';
+
 async function toView(
   incident: IncidentRecord,
   booking: BookingRecord,
@@ -110,7 +123,10 @@ async function toView(
     ...(role === 'STAFF' && incident.assignedTo && { assignedToId: incident.assignedTo.toString() }),
     createdAt: incident.createdAt.toISOString(),
     updatedAt: incident.updatedAt.toISOString(),
-    description: incident.description,
+    description:
+      !incident.events[0] || visibleTo(incident.events[0], role)
+        ? incident.description
+        : NOT_SHARED_DESCRIPTION,
     events: incident.events
       .map((event, index) => ({ event, index }))
       .filter(({ event }) => visibleTo(event, role))
@@ -142,6 +158,7 @@ async function toView(
         };
       }),
     canReply: role === 'STAFF' || (OPEN_INCIDENT_STATUSES as readonly string[]).includes(incident.status),
+    ...(role === 'STAFF' && { nextStatuses: [...INCIDENT_TRANSITIONS[incident.status]] }),
     extraCharges: booking.extraCharges
       .filter((charge) => charge.incidentId?.equals(incident._id))
       .map((charge) => ({
@@ -161,6 +178,7 @@ async function findCase(actor: Actor, caseRef: string) {
   if (!booking) throw notFound();
   const role = roleIn(booking, actor.userId);
   if (role === 'STAFF' && !isStaff(actor.roles)) throw notFound();
+  if (!caseVisibleTo(incident, role)) throw notFound();
   return { incident, booking, role };
 }
 
@@ -171,6 +189,8 @@ async function tellParties(
   event: IncidentEvent,
   index: number,
   heading: string,
+  /** The email's first sentence, when it isn't an update on the case. */
+  intro?: string,
 ) {
   for (const role of ['GUEST', 'HOST'] as const) {
     const userId = role === 'GUEST' ? booking.guestId : booking.hostId;
@@ -189,7 +209,8 @@ async function tellParties(
           firstName: person?.firstName ?? 'there',
           heading: `${heading}: case ${incident.caseRef}`,
           paragraphs: [
-            `There's an update on the ${TYPE_WORDS[incident.type].toLowerCase()} case for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}.`,
+            intro ??
+              `There's an update on the ${TYPE_WORDS[incident.type].toLowerCase()} case for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}.`,
             ...(event.note ? [event.note] : []),
           ],
           rows: [
@@ -260,6 +281,46 @@ async function unclaimedCheckOutDamage(booking: BookingRecord) {
   };
 }
 
+/** A new OPEN case with its case number, opened by its first event. */
+async function createCase(fields: {
+  bookingId: Id;
+  reporterId: Id;
+  type: Incident['type'];
+  description: string;
+  damagePinIds?: Id[];
+  attachments: FileAttachment[];
+  visibility: IncidentEvent['visibility'];
+  assignedTo?: Id;
+  now: Date;
+}): Promise<IncidentRecord> {
+  const { attachments, visibility, now, ...rest } = fields;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const created = await IncidentModel.create({
+        ...rest,
+        caseRef: randomRef('IN'),
+        status: 'OPEN',
+        events: [
+          {
+            actorId: fields.reporterId,
+            action: 'OPENED',
+            note: fields.description,
+            attachments,
+            visibility,
+            status: 'OPEN',
+            createdAt: now,
+          },
+        ],
+      });
+      return created.toObject() as IncidentRecord;
+    } catch (error) {
+      // Another case took the same number: try another.
+      if (!(error instanceof mongoose.mongo.MongoServerError && error.code === 11000) || attempt >= 3)
+        throw error;
+    }
+  }
+}
+
 /**
  * POST /incidents: the Guest or Host reports an incident on their booking. A damage report must arrive
  * within the damage-report window after check-out (plan §3, validation rules). With fromCheckOutDamage,
@@ -302,35 +363,16 @@ export async function reportIncident(
   ];
   const description = [input.description, flagged?.summary].filter(Boolean).join('\n\n').slice(0, 5000);
 
-  let incident: IncidentRecord | null = null;
-  for (let attempt = 0; !incident; attempt += 1) {
-    try {
-      const created = await IncidentModel.create({
-        caseRef: randomRef('IN'),
-        bookingId: booking._id,
-        reporterId: actor.userId,
-        type: input.type,
-        description,
-        status: 'OPEN',
-        ...(flagged && { damagePinIds: flagged.pinIds }),
-        events: [
-          {
-            actorId: actor.userId,
-            action: 'OPENED',
-            note: description,
-            attachments,
-            visibility: 'BOTH',
-            status: 'OPEN',
-            createdAt: now,
-          },
-        ],
-      });
-      incident = created.toObject() as IncidentRecord;
-    } catch (error) {
-      if (!(error instanceof mongoose.mongo.MongoServerError && error.code === 11000) || attempt >= 3)
-        throw error;
-    }
-  }
+  const incident = await createCase({
+    bookingId: booking._id,
+    reporterId: new mongoose.Types.ObjectId(actor.userId),
+    type: input.type,
+    description,
+    ...(flagged && { damagePinIds: flagged.pinIds }),
+    attachments,
+    visibility: 'BOTH',
+    now,
+  });
 
   // The booking's payouts wait until the case is settled (plan §8.1, item 9).
   await holdBookingPayouts(booking._id, 'INCIDENT');
@@ -371,6 +413,63 @@ export async function reportIncident(
   return toView(incident, booking, role, actor.userId);
 }
 
+/**
+ * POST /admin/incidents: support opens a case on a booking themselves (plan §3: staff can, outside the
+ * damage-report window), for both parties, the one it's about, or the team only. Whoever opens it has it.
+ * The booking's payouts are held as for any open case, and the parties who can see it are told.
+ */
+export async function openIncidentAsStaff(
+  staffId: string,
+  input: StaffNewIncidentInput,
+  ip?: string,
+  now = new Date(),
+): Promise<IncidentView> {
+  const booking = await BookingModel.findOne({ ref: input.bookingRef.toUpperCase() }).lean<BookingRecord>();
+  // A checkout that was never paid isn't a booking anyone can have a case about.
+  if (!booking || booking.status === 'PAYMENT_PENDING') {
+    throw new HttpError(404, 'NOT_FOUND', "We couldn't find that booking.", {
+      bookingRef: 'No booking has this reference',
+    });
+  }
+  const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
+  const staff = new mongoose.Types.ObjectId(staffId);
+  const incident = await createCase({
+    bookingId: booking._id,
+    reporterId: staff,
+    type: input.type,
+    description: input.description,
+    attachments,
+    visibility: input.visibility,
+    assignedTo: staff,
+    now,
+  });
+
+  // The booking's payouts wait until the case is settled (plan §8.1, item 9).
+  await holdBookingPayouts(booking._id, 'INCIDENT');
+  await recordAudit({
+    actorId: staffId,
+    action: 'incident.opened',
+    entity: 'incident',
+    entityId: incident._id.toString(),
+    after: {
+      caseRef: incident.caseRef,
+      bookingRef: booking.ref,
+      type: incident.type,
+      visibility: input.visibility,
+    },
+    ...(ip && { ip }),
+  });
+  await tellParties(
+    incident,
+    booking,
+    incident.events[0]!,
+    0,
+    `${TYPE_WORDS[incident.type]} case opened`,
+    `Rento Vroom support has opened a ${TYPE_WORDS[incident.type].toLowerCase()} case about booking ${booking.ref}, the ${booking.vehicleSnapshot.title}. Follow it, and add photos or documents, on the case page.`,
+  );
+  return toView(incident, booking, 'STAFF', staffId);
+}
+
 /** GET /incidents: cases on the user's bookings, as Guest or Host, newest first. */
 export async function listMyIncidents(userId: string) {
   const bookings = await BookingModel.find({ $or: [{ guestId: userId }, { hostId: userId }] })
@@ -382,13 +481,11 @@ export async function listMyIncidents(userId: string) {
     .sort({ updatedAt: -1 })
     .limit(100)
     .lean<IncidentRecord[]>();
-  return incidents.map((incident) =>
-    summary(
-      incident,
-      bookings.find((booking) => booking._id.equals(incident.bookingId))!,
-      userId,
-    ),
-  );
+  return incidents.flatMap((incident) => {
+    const booking = bookings.find((candidate) => candidate._id.equals(incident.bookingId))!;
+    // A case support opened for the other party, or the team only, isn't theirs to see.
+    return caseVisibleTo(incident, roleIn(booking, userId)) ? [summary(incident, booking, userId)] : [];
+  });
 }
 
 function summary(incident: IncidentRecord, booking: BookingRecord, viewerId: string) {
@@ -418,9 +515,11 @@ async function appendEvent(
   event: IncidentEvent,
   set: Record<string, unknown> = {},
   unset: string[] = [],
+  /** Only while the case still has this status: a status change someone else just made wins. */
+  whileStatus?: IncidentStatus,
 ) {
   const updated = await IncidentModel.findOneAndUpdate(
-    { _id: incidentId },
+    { _id: incidentId, ...(whileStatus && { status: whileStatus }) },
     {
       $push: { events: event },
       ...(Object.keys(set).length > 0 && { $set: set }),
@@ -428,7 +527,10 @@ async function appendEvent(
     },
     { new: true },
   ).lean<IncidentRecord>();
-  return updated!;
+  if (!updated) {
+    throw new HttpError(409, 'CASE_CHANGED', 'Someone else just changed this case. Refresh to see it.');
+  }
+  return updated;
 }
 
 /** POST /incidents/{ref}/events: the Guest or Host adds to an open case; both parties see it. */
@@ -441,7 +543,13 @@ export async function replyToIncident(
   const { incident, booking, role } = await findCase(actor, caseRef);
   if (role === 'STAFF') throw new HttpError(403, 'FORBIDDEN', 'Staff update cases from the staff portal.');
   if (!(OPEN_INCIDENT_STATUSES as readonly string[]).includes(incident.status)) {
-    throw new HttpError(409, 'CASE_CLOSED', 'This case is closed. Contact support to reopen it.');
+    throw new HttpError(
+      409,
+      'CASE_CLOSED',
+      incident.status === 'RESOLVED'
+        ? 'This case is resolved. Contact support to reopen it.'
+        : 'This case is closed. Contact support about anything new.',
+    );
   }
   const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
   const event: IncidentEvent = {
@@ -507,10 +615,14 @@ export async function listIncidentsForStaff(status?: IncidentStatus) {
   });
 }
 
+const isOpen = (status: IncidentStatus) => (OPEN_INCIDENT_STATUSES as readonly string[]).includes(status);
+const statusWords = (status: IncidentStatus) => status.replace('_', ' ').toLowerCase();
+
 /**
  * POST /admin/incidents/{ref}/events: support posts an update for both parties, one of them or the team
- * only, changes the status or takes the case. Resolving or closing the last open case on a booking
- * releases its payouts.
+ * only, changes the status or takes the case. The status moves only as INCIDENT_TRANSITIONS allows (409
+ * otherwise). Resolving or closing the last open case on a booking releases its payouts; reopening a
+ * resolved case holds the unpaid ones again.
  */
 export async function updateIncidentAsStaff(
   staffId: string,
@@ -521,8 +633,17 @@ export async function updateIncidentAsStaff(
   now = new Date(),
 ): Promise<IncidentView> {
   const { incident, booking } = await findCase({ userId: staffId, roles }, caseRef);
-  const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
   const statusChanged = input.status && input.status !== incident.status;
+  if (input.status && statusChanged && !INCIDENT_TRANSITIONS[incident.status].includes(input.status)) {
+    throw new HttpError(
+      409,
+      'INVALID_STATUS_CHANGE',
+      incident.status === 'CLOSED'
+        ? 'This case is closed. Open a new case for anything new.'
+        : `A ${statusWords(incident.status)} case can't be moved to ${statusWords(input.status)}.`,
+    );
+  }
+  const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
   const event: IncidentEvent = {
     actorId: new mongoose.Types.ObjectId(staffId),
     action: statusChanged ? 'STATUS' : input.assignToMe && !input.note ? 'ASSIGNED' : 'COMMENT',
@@ -532,10 +653,16 @@ export async function updateIncidentAsStaff(
     ...(statusChanged && { status: input.status }),
     createdAt: now,
   };
-  const updated = await appendEvent(incident._id, event, {
-    ...(statusChanged && { status: input.status }),
-    ...(input.assignToMe && { assignedTo: staffId }),
-  });
+  const updated = await appendEvent(
+    incident._id,
+    event,
+    {
+      ...(statusChanged && { status: input.status }),
+      ...(input.assignToMe && { assignedTo: staffId }),
+    },
+    [],
+    statusChanged ? incident.status : undefined,
+  );
   await recordAudit({
     actorId: staffId,
     action: 'incident.updated',
@@ -550,13 +677,15 @@ export async function updateIncidentAsStaff(
     ...(ip && { ip }),
   });
 
-  const nowClosed = !(OPEN_INCIDENT_STATUSES as readonly string[]).includes(updated.status);
-  if (nowClosed) {
+  if (!isOpen(updated.status)) {
     const stillOpen = await IncidentModel.exists({
       bookingId: booking._id,
       status: mongoose.trusted({ $in: OPEN_INCIDENT_STATUSES }),
     });
     if (!stillOpen) await releaseHeldPayouts({ bookingId: booking._id }, 'INCIDENT', { now });
+  } else if (!isOpen(incident.status)) {
+    // Reopened: payouts not yet sent wait for the case again (plan §8.1, item 9).
+    await holdBookingPayouts(booking._id, 'INCIDENT');
   }
   if (input.visibility !== 'INTERNAL') {
     await tellParties(
@@ -564,7 +693,11 @@ export async function updateIncidentAsStaff(
       booking,
       event,
       updated.events.length - 1,
-      statusChanged ? `Case ${updated.status.replace('_', ' ').toLowerCase()}` : 'New update',
+      !statusChanged
+        ? 'New update'
+        : isOpen(updated.status) && !isOpen(incident.status)
+          ? 'Case reopened'
+          : `Case ${statusWords(updated.status)}`,
     );
   }
   return toView(updated, booking, 'STAFF', staffId);

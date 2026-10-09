@@ -252,6 +252,26 @@ describe('GET /api/v1/admin/staff and DELETE /api/v1/admin/staff/:id', () => {
     expect(list.invites.map((open) => open.email)).toEqual(['mere@example.co.nz']);
   });
 
+  it('shows each member’s permissions: the admin has them all, support only what the admin gave', async () => {
+    await createStaff();
+    const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
+    const admin = await staffAgent();
+    const permissions = async () =>
+      staffListSchema
+        .parse((await admin.get('/api/v1/admin/staff')).body)
+        .staff.map((member) => [member.email, member.permissions]);
+
+    expect(await permissions()).toEqual([
+      ['aroha@example.co.nz', ['REFUNDS']],
+      ['sam@example.co.nz', []],
+    ]);
+    await admin.post(`/api/v1/admin/staff/${sam.id}/permissions`).send({ refunds: true });
+    expect(await permissions()).toEqual([
+      ['aroha@example.co.nz', ['REFUNDS']],
+      ['sam@example.co.nz', ['REFUNDS']],
+    ]);
+  });
+
   it('takes someone off the support team at once, and they can be invited again', async () => {
     await createStaff();
     const sam = await createStaff('sam@example.co.nz', 'SUPPORT');

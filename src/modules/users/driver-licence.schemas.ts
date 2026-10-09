@@ -86,6 +86,10 @@ export const checkoutReadinessSchema = z
       })
       .nullable(),
     hasDateOfBirth: z.boolean(),
+    licenceInReview: z.boolean().meta({
+      description:
+        'Support staff are checking the licence by hand: a booking made meanwhile becomes a request, confirmed once they approve it (plan §8.2)',
+    }),
     identityStatus: z.enum(VERIFICATION_STATUSES),
     identityProcessing: z
       .boolean()

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
 import { runHostReminders } from '../src/modules/hosts/host-reminders.service.js';
+import { ConditionReportModel } from '../src/modules/inspections/condition-report.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
 import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
@@ -118,5 +119,45 @@ describe('daily Host reminders', () => {
     const before = await NotificationModel.countDocuments({});
     await runHostReminders();
     expect(await NotificationModel.countDocuments({})).toBe(before);
+  });
+
+  it('count a Road User Charges licence that would run out on a booked trip’s kilometres', async () => {
+    const host = await createHost();
+    const guest = await createUser({ email: 'kiri@example.co.nz' });
+    // 600 km left on the licence; a 3-day trip allows 250 km a day.
+    const vehicle = await createVehicle(host._id, { fuelType: 'DIESEL', rucValidToKm: 45_600 });
+    const roomy = await createVehicle(host._id, { fuelType: 'DIESEL', rucValidToKm: 60_000 });
+    for (const car of [vehicle, roomy]) {
+      const earlier = await createBookingRecord(
+        { guestId: guest._id, hostId: host._id, vehicleId: car._id },
+        { status: 'COMPLETED', startAt: new Date(Date.now() - 20 * DAY_MS) },
+      );
+      await ConditionReportModel.create({
+        bookingId: earlier._id,
+        stage: 'CHECK_OUT',
+        submittedBy: guest._id,
+        odometer: 45_000,
+        fuelOrBatteryPct: 80,
+        photos: [],
+      });
+    }
+    const booked = await createBookingRecord(
+      { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
+      { startAt: new Date(Date.now() + 10 * DAY_MS) },
+    );
+    await createBookingRecord(
+      { guestId: guest._id, hostId: host._id, vehicleId: roomy._id },
+      { startAt: new Date(Date.now() + 10 * DAY_MS) },
+    );
+
+    await runHostReminders();
+    const before = await NotificationModel.find({
+      userId: host._id,
+      type: 'DOCUMENT_BEFORE_TRIP',
+      channel: 'IN_APP',
+    });
+    expect(before.map((notification) => (notification.payload as { title: string }).title)).toEqual([
+      `RUC licence runs out before ${booked.ref} ends`,
+    ]);
   });
 });

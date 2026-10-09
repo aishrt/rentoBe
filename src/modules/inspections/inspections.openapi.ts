@@ -2,7 +2,12 @@ import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { INSPECTION_STAGES } from './condition-report.model.js';
-import { flagDamageSchema, handoverResponseSchema, inspectionInputSchema } from './inspections.schemas.js';
+import {
+  flagDamageSchema,
+  handoverResponseSchema,
+  inspectionInputSchema,
+  staffCompletionSchema,
+} from './inspections.schemas.js';
 
 const bookingParams = z.object({ id: z.string().meta({ description: 'The booking id or reference' }) });
 
@@ -13,6 +18,8 @@ export function registerInspectionPaths(registry: OpenAPIRegistry) {
     path: '/bookings/{id}/inspections',
     tags: ['Handover'],
     summary: 'The check-in and check-out reports, and what you can do next',
+    description:
+      'For the Guest, the Host and staff (role STAFF, with no actions: staff complete a trip with POST /admin/bookings/{id}/complete).',
     security: signedIn,
     request: { params: bookingParams },
     responses: { 200: jsonResponse('The handover', handoverResponseSchema), ...errorResponses(401, 404) },
@@ -64,9 +71,9 @@ export function registerInspectionPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: complete a trip whose check-out is missing',
     description:
-      'With the Host’s odometer and fuel reading and photos (plan §8.2). The booking becomes COMPLETED, and extra kilometres, reviews and the payout follow as normal.',
+      'With the Host’s odometer and fuel or battery reading, and any photos they sent (plan §8.2), which become the check-out record. The booking becomes COMPLETED, and extra kilometres (worked out against the check-in reading, when there is one), reviews and the payout follow as normal. 409 NOT_CHECK_OUT unless the trip is under way without a check-out; 400 when the odometer is below the check-in reading.',
     security: signedIn,
-    request: { params: bookingParams, body: jsonBody(inspectionInputSchema.omit({ stage: true })) },
+    request: { params: bookingParams, body: jsonBody(staffCompletionSchema) },
     responses: {
       200: jsonResponse('Completed', handoverResponseSchema),
       ...errorResponses(400, 401, 403, 404, 409),

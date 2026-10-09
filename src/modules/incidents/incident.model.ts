@@ -29,6 +29,21 @@ export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 /** A case still being worked on: it holds payouts and keeps the booking's messages open (plan §3, §8). */
 export const OPEN_INCIDENT_STATUSES = ['OPEN', 'INVESTIGATING', 'AWAITING_RESPONSE'] as const;
 
+/**
+ * Where staff can move a case from each status (spec §15). Nothing goes back to OPEN, which means nobody has
+ * looked at it yet. A RESOLVED case can be reopened, to INVESTIGATING or to AWAITING_RESPONSE to ask a party
+ * something, when its outcome is disputed or new evidence arrives; that holds the booking's unpaid payouts
+ * again. CLOSED is final, so a charge or payout settled on a closed case stays settled: anything new about
+ * the booking is a new case, which staff can open themselves.
+ */
+export const INCIDENT_TRANSITIONS: Record<IncidentStatus, readonly IncidentStatus[]> = {
+  OPEN: ['INVESTIGATING', 'AWAITING_RESPONSE', 'RESOLVED', 'CLOSED'],
+  INVESTIGATING: ['AWAITING_RESPONSE', 'RESOLVED', 'CLOSED'],
+  AWAITING_RESPONSE: ['INVESTIGATING', 'RESOLVED', 'CLOSED'],
+  RESOLVED: ['INVESTIGATING', 'AWAITING_RESPONSE', 'CLOSED'],
+  CLOSED: [],
+};
+
 /** Who can see an event on the case: both parties, one of them, or support staff only. */
 export const EVENT_VISIBILITIES = ['BOTH', 'GUEST', 'HOST', 'INTERNAL'] as const;
 

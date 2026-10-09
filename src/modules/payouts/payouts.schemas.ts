@@ -14,6 +14,9 @@ export const payoutAccountSchema = z
       .number()
       .int()
       .meta({ description: 'Host cancellation fees still to come off a payout' }),
+    refundsOwedCents: z.number().int().meta({
+      description: 'Host-funded refunds made after a booking’s payout, still to come off a payout',
+    }),
   })
   .meta({ id: 'PayoutAccount' });
 
@@ -27,7 +30,23 @@ export const hostPayoutSchema = z
     grossCents: z.number().int().optional(),
     commissionCents: z.number().int().optional(),
     commissionGstCents: z.number().int().optional(),
-    deductions: z.array(z.object({ type: z.enum(DEDUCTION_TYPES), amountCents: z.number().int() })),
+    deductions: z
+      .array(
+        z.object({
+          type: z.enum(DEDUCTION_TYPES),
+          amountCents: z.number().int(),
+          bookingRef: z
+            .string()
+            .optional()
+            .meta({ description: 'HOST_FUNDED_REFUND: the booking the refund was made on' }),
+        }),
+      )
+      .meta({ description: 'Each line taken off the payout' }),
+    reversedCents: z
+      .number()
+      .int()
+      .optional()
+      .meta({ description: 'Taken back from the transfer for Host-funded refunds after it was paid' }),
     scheduledFor: z.iso.datetime(),
     paidAt: z.iso
       .datetime()

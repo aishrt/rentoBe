@@ -1,14 +1,21 @@
 import { z } from 'zod';
+import { NZ_REGIONS } from '../../lib/model-fields.js';
 import { BOOKING_STATUSES, EXTRA_CHARGE_STATUSES, EXTRA_CHARGE_TYPES } from '../bookings/booking.model.js';
 import { bookingViewSchema } from '../bookings/bookings.schemas.js';
-import { legalPageSchema } from '../cms/content.schemas.js';
+import { homeHeroSchema, isLinkAddress, legalPageSchema, siteFooterSchema } from '../cms/content.schemas.js';
 import { INCIDENT_STATUSES, INCIDENT_TYPES } from '../incidents/incident.model.js';
 import { PAYMENT_STATUSES, PAYMENT_TYPES } from '../payments/payment.model.js';
 import { PAYOUT_HOLD_REASONS, PAYOUT_STATUSES, PAYOUT_TYPES } from '../payouts/payout.model.js';
 import { REPORT_STATUSES, REPORT_TARGET_TYPES } from '../moderation/report.model.js';
 import { moderationReviewSchema } from '../reviews/reviews.schemas.js';
 import { TICKET_CATEGORIES, TICKET_STATUSES } from '../support/support-ticket.model.js';
-import { HOST_STATUSES, ROLES, USER_STATUSES, VERIFICATION_STATUSES } from '../users/user.model.js';
+import {
+  EMAIL_PROBLEMS,
+  HOST_STATUSES,
+  ROLES,
+  USER_STATUSES,
+  VERIFICATION_STATUSES,
+} from '../users/user.model.js';
 import { VEHICLE_STATUSES } from '../vehicles/vehicle.model.js';
 
 /* The staff portal's operations (spec §18; plan §9 Days 19–23). */
@@ -126,6 +133,13 @@ export const adminUserDetailSchema = adminUserRowSchema
   .extend({
     suspendedReason: z.string().optional(),
     emailVerified: z.boolean(),
+    emailProblem: z
+      .object({ kind: z.enum(EMAIL_PROBLEMS), detail: z.string().optional(), at: iso })
+      .optional()
+      .meta({
+        description:
+          "Emails to the address bounced, or Resend won't send to it (plan §7). Cleared by the next delivery.",
+      }),
     phoneVerified: z.boolean(),
     permissions: z.array(z.string()),
     lastLoginAt: iso.optional(),
@@ -136,8 +150,24 @@ export const adminUserDetailSchema = adminUserRowSchema
         numberEnding: z.string(),
         expiry: z.string(),
         status: z.string(),
+        version: z.string().optional(),
+        issuedAt: z.string().optional(),
+        inEnglish: z.boolean().optional().meta({ description: 'Overseas: false when it isn’t in English' }),
+        englishProof: z.string().optional(),
       })
       .nullable(),
+    dob: z.string().optional().meta({ description: 'Their date of birth, to compare with the licence' }),
+    identityDocument: z
+      .object({
+        type: z.string().optional().meta({ description: 'driving_license, passport or id_card' }),
+        licenceNumberMatched: z.boolean().optional(),
+        dobMatched: z.boolean().optional(),
+      })
+      .optional()
+      .meta({
+        description:
+          'The ID used in the identity check: a driver licence’s number compared with the licence on the account now, and the date of birth compared when it was checked',
+      }),
     host: z
       .object({
         status: z.enum(HOST_STATUSES),
@@ -209,6 +239,10 @@ export const adminRefundSchema = z
     fundedBy: z.enum(['PLATFORM', 'HOST']).meta({
       description:
         'PLATFORM: a goodwill refund. HOST: rental the Host would otherwise get (plan §8.1, item 15).',
+    }),
+    recoverFrom: z.enum(['NEXT_PAYOUT', 'REVERSE_TRANSFER']).optional().meta({
+      description:
+        'A Host-funded refund once the trip’s payout was sent: take it off the Host’s next payout (the default), or reverse the Stripe transfer. If Stripe refuses the reversal, it comes off the next payout.',
     }),
   })
   .meta({ id: 'AdminRefundRequest' });
@@ -314,6 +348,21 @@ export const adminBookingDetailSchema = z
     ),
     tickets: z.array(z.object({ ref: z.string(), subject: z.string(), status: z.enum(TICKET_STATUSES) })),
     refundableCents: cents.meta({ description: 'What can still be refunded on the booking’s payment' }),
+    tripPayoutSent: z.boolean().optional().meta({
+      description:
+        'The trip’s payout was sent (or is being sent, or the booking ended without one), so a Host-funded refund comes off the Host’s next payout or is taken back from the transfer',
+    }),
+    hostRefund: z
+      .object({
+        recoveredFrom: z.enum(['THIS_PAYOUT', 'NEXT_PAYOUT', 'REVERSE_TRANSFER']),
+        reversedCents: cents.optional(),
+        owedCents: cents.optional().meta({ description: 'What comes off the Host’s next payout' }),
+        note: z.string().optional().meta({ description: 'Why the transfer wasn’t reversed as asked' }),
+      })
+      .optional()
+      .meta({
+        description: 'After a Host-funded refund: how it’s recovered from the Host (plan §8.1, item 15)',
+      }),
   })
   .meta({ id: 'AdminBookingDetail' });
 
@@ -399,10 +448,10 @@ export const adminReportSchema = z
     reporter: z.object({ id: z.string(), name: z.string() }),
     subject: z.object({ id: z.string(), name: z.string() }).optional(),
     preview: z.string().meta({ description: 'What was reported: the message, review or listing' }),
-    bookingRef: z
-      .string()
-      .optional()
-      .meta({ description: 'A reported message’s booking, to open its thread' }),
+    bookingRef: z.string().optional().meta({
+      description:
+        'A reported message’s booking, or the booking a member was reported from, to open its thread',
+    }),
     // A reported review, whole, so staff can read it and hide it from the report.
     review: moderationReviewSchema.optional(),
     resolution: z.string().optional(),
@@ -465,8 +514,14 @@ export const adminDestinationSchema = z
     tagline: z.string().optional(),
     intro: z.string(),
     heroImage: z.string().optional(),
+    lat: z.number(),
+    lng: z.number(),
+    airports: z.array(z.string()),
     featured: z.boolean(),
     order: z.number().int(),
+    published: z
+      .boolean()
+      .meta({ description: 'False: off the homepage, a 404 page and out of the sitemap' }),
   })
   .meta({ id: 'AdminDestination' });
 
@@ -510,13 +565,104 @@ export const legalPageEditSchema = z
   .object({ title: z.string().trim().min(3).max(120), markdown: z.string().min(20).max(200_000) })
   .meta({ id: 'LegalPageEdit' });
 
+/** A destination landing page's fields (plan §3 `destinations`); empty text removes an optional one. */
+const destinationFields = {
+  city: z
+    .string()
+    .trim()
+    .min(2, { error: 'Enter the name' })
+    .max(60, { error: 'Use 60 characters or fewer' }),
+  maoriName: z
+    .string()
+    .trim()
+    .max(80, { error: 'Use 80 characters or fewer' })
+    .meta({ description: 'The te reo Māori name; empty removes it' }),
+  region: z.enum(NZ_REGIONS),
+  tagline: z
+    .string()
+    .trim()
+    .max(160, { error: 'Use 160 characters or fewer' })
+    .meta({ description: 'Empty removes it' }),
+  intro: z
+    .string()
+    .trim()
+    .min(20, { error: 'Write at least 20 characters' })
+    .max(5000, { error: 'Use 5,000 characters or fewer' }),
+  heroImage: z
+    .string()
+    .trim()
+    .max(500, { error: 'Use 500 characters or fewer' })
+    .refine((value) => value === '' || isLinkAddress(value), {
+      error: 'Use a full address starting with https://, or a path on this website starting with /',
+    })
+    .meta({ description: 'The picture’s address; empty removes it' }),
+  lat: z
+    .number()
+    .min(-48, { error: 'Enter a latitude in New Zealand, between -48 and -34' })
+    .max(-34, { error: 'Enter a latitude in New Zealand, between -48 and -34' }),
+  lng: z
+    .number()
+    .min(166, { error: 'Enter a longitude in New Zealand, between 166 and 179' })
+    .max(179, { error: 'Enter a longitude in New Zealand, between 166 and 179' }),
+  airports: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z]{3}$/, { error: 'Use 3-letter airport codes, like AKL' }),
+    )
+    .max(5, { error: 'Up to 5 airports' })
+    .meta({ description: 'IATA codes of airports in the place list' }),
+  featured: z.boolean(),
+  order: z.number().int().min(0).max(1000),
+  published: z.boolean(),
+};
+
+export const destinationCreateSchema = z
+  .object({
+    slug: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .max(60, { error: 'Use 60 characters or fewer' })
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, { error: 'Lowercase words joined by dashes, like bay-of-islands' })
+      .meta({ description: 'The page’s address, /rental/{slug}. It can’t change later.' }),
+    city: destinationFields.city,
+    maoriName: destinationFields.maoriName.optional(),
+    region: destinationFields.region,
+    tagline: destinationFields.tagline.optional(),
+    intro: destinationFields.intro,
+    heroImage: destinationFields.heroImage.optional(),
+    lat: destinationFields.lat,
+    lng: destinationFields.lng,
+    airports: destinationFields.airports.default([]),
+    featured: destinationFields.featured.default(false),
+    order: destinationFields.order.default(0),
+    published: destinationFields.published.default(true),
+  })
+  .meta({ id: 'DestinationCreate' });
+
 export const destinationEditSchema = z
   .object({
-    tagline: z.string().trim().max(160).optional(),
-    intro: z.string().trim().min(20).max(5000).optional(),
-    heroImage: z.url().optional(),
-    featured: z.boolean().optional(),
-    order: z.number().int().min(0).max(1000).optional(),
+    city: destinationFields.city.optional(),
+    maoriName: destinationFields.maoriName.optional(),
+    region: destinationFields.region.optional(),
+    tagline: destinationFields.tagline.optional(),
+    intro: destinationFields.intro.optional(),
+    heroImage: destinationFields.heroImage.optional(),
+    lat: destinationFields.lat.optional(),
+    lng: destinationFields.lng.optional(),
+    airports: destinationFields.airports.optional(),
+    featured: destinationFields.featured.optional(),
+    order: destinationFields.order.optional(),
+    published: destinationFields.published
+      .optional()
+      .meta({ description: 'False: off the homepage, a 404 page and out of the sitemap' }),
+  })
+  .refine((value) => (value.lat === undefined) === (value.lng === undefined), {
+    error: 'Give the latitude and longitude together',
+    path: ['lng'],
   })
   .meta({ id: 'DestinationEdit' });
 
@@ -546,6 +692,55 @@ export const helpArticleInputSchema = z
   })
   .meta({ id: 'HelpArticleInput' });
 
+export const adminHomeHeroSchema = z
+  .object({
+    hero: homeHeroSchema,
+    saved: z.boolean().meta({ description: 'False while the homepage shows its original text' }),
+  })
+  .meta({ id: 'AdminHomeHero' });
+
+export const adminSiteFooterSchema = z
+  .object({
+    footer: siteFooterSchema,
+    saved: z.boolean().meta({ description: 'False while the footer shows its original links' }),
+  })
+  .meta({ id: 'AdminSiteFooter' });
+
+export const featuredReviewsSchema = z
+  .object({ reviewIds: z.array(z.string().regex(/^[0-9a-f]{24}$/)).max(6) })
+  .meta({ id: 'FeaturedReviewsInput' });
+
+const adminReviewChoiceSchema = z
+  .object({
+    id: z.string(),
+    authorName: z.string().meta({ description: 'The Guest’s first name, as the homepage shows it' }),
+    overall: z.number().int(),
+    body: z.string(),
+    vehicleTitle: z.string(),
+    city: z.string().optional(),
+    createdAt: iso,
+    shown: z.boolean().meta({
+      description: 'Published and not hidden: a picked review that isn’t is left off the homepage',
+    }),
+  })
+  .meta({ id: 'AdminReviewChoice' });
+
+export const adminFeaturedReviewsSchema = z
+  .object({
+    reviewIds: z.array(z.string()),
+    reviews: z.array(adminReviewChoiceSchema),
+    homepageThreshold: z
+      .number()
+      .int()
+      .meta({ description: 'Published reviews needed before the homepage shows any (settings)' }),
+    publishedCount: z.number().int(),
+  })
+  .meta({ id: 'AdminFeaturedReviews' });
+
+export const reviewChoicesResponseSchema = z
+  .object({ reviews: z.array(adminReviewChoiceSchema) })
+  .meta({ id: 'AdminReviewChoices' });
+
 // Reports, audit log and jobs --------------------------------------------------------------------------------
 
 export const reportRangeSchema = z.object({
@@ -554,7 +749,7 @@ export const reportRangeSchema = z.object({
 });
 
 export const exportQuerySchema = reportRangeSchema.extend({
-  type: z.enum(['bookings', 'payments', 'refunds', 'payouts', 'cancellations', 'gst']),
+  type: z.enum(['bookings', 'payments', 'refunds', 'payouts', 'cancellations', 'gst', 'revenue']),
 });
 
 export const platformReportSchema = z
@@ -570,13 +765,39 @@ export const platformReportSchema = z
     }),
     money: z.object({
       grossBookingsCents: cents.meta({ description: 'Paid for trips starting in the range, GST included' }),
-      refundsCents: cents,
-      platformFeesCents: cents.meta({ description: 'Service fees and commission' }),
+      refundsCents: cents.meta({ description: 'Sent to Guests in the range' }),
+      platformFeesCents: cents.meta({
+        description:
+          'Service fees and commission, the platform’s share of cancellation fees kept and the commission on extra charges (fees.totalCents)',
+      }),
       hostPayoutsPaidCents: cents,
-      extraChargesCents: cents,
+      extraChargesCents: cents.meta({ description: 'Paid in the range, GST included' }),
       cancellationFeesKeptCents: cents,
-      gstCollectedCents: cents,
+      gstCollectedCents: cents.meta({ description: 'Net of refunds (gst.collectedCents)' }),
       gstOnPlatformFeesCents: cents,
+    }),
+    fees: z.object({
+      serviceFeesCents: cents.meta({ description: 'On trips starting in the range' }),
+      hostCommissionCents: cents.meta({ description: 'On trips starting in the range' }),
+      cancellationFeesShareCents: cents.meta({
+        description: 'The platform’s share of the fees kept from bookings cancelled in the range',
+      }),
+      extraChargeCommissionCents: cents.meta({ description: 'On extra charges paid in the range' }),
+      totalCents: cents,
+    }),
+    gst: z.object({
+      ratePct: z.number().meta({ description: 'From settings (plan §5: 15 %, provisional)' }),
+      inTripsCents: cents,
+      inExtraChargesCents: cents,
+      inCancellationFeesCents: cents.meta({
+        description: 'In the fees kept from bookings cancelled in the range',
+      }),
+      givenBackCents: cents.meta({
+        description:
+          'In refunds sent in the range of money counted here. A cancellation’s own refund is already left out of the fee kept.',
+      }),
+      collectedCents: cents.meta({ description: 'Trips, extra charges and fees kept, less refunds' }),
+      onPlatformFeesCents: cents,
     }),
   })
   .meta({ id: 'PlatformReport' });

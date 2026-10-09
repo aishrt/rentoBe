@@ -8,6 +8,13 @@ export const publicUserSchema = z
     email: z.email(),
     firstName: z.string(),
     lastName: z.string(),
+    dateOfBirth: z.string().optional().meta({
+      description: 'YYYY-MM-DD (NZ), from the driver licence details; absent until they are entered',
+    }),
+    nameLocked: z.boolean().meta({
+      description:
+        'The name must match the ID once the identity check has passed or is being checked: it is then corrected through a privacy request (POST /me/privacy-requests), not PATCH /me',
+    }),
     roles: z.array(z.enum(ROLES)),
     emailVerified: z.boolean(),
     phone: z.string().optional().meta({ description: 'Verified mobile number, E.164 (+64211234567)' }),

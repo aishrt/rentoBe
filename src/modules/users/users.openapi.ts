@@ -8,7 +8,12 @@ import {
   mfaStatusResponseSchema,
   mfaVerifySchema,
 } from '../auth/auth.schemas.js';
-import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
+import {
+  acceptAgreementsSchema,
+  changeEmailSchema,
+  changePasswordSchema,
+  updateMeSchema,
+} from './account.schemas.js';
 import {
   cardSetupResponseSchema,
   paymentHistoryResponseSchema,
@@ -31,6 +36,21 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
     summary: 'The signed-in user',
     security: signedIn,
     responses: { 200: jsonResponse('The signed-in user', userResponseSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'patch',
+    path: '/me',
+    tags: ['Account'],
+    summary: 'Change the name',
+    description:
+      'Personal details (plan §11): the first and last name, trimmed, 1 to 50 characters each. Allowed until the identity check has passed or is being checked (`nameLocked`); after that the name must match the ID, so it is refused with 409 NAME_LOCKED and corrected through a privacy request (POST /me/privacy-requests, CORRECTION). Written to the audit log.',
+    security: signedIn,
+    request: { body: jsonBody(updateMeSchema) },
+    responses: {
+      200: jsonResponse('The signed-in user, with the new name', userResponseSchema),
+      ...errorResponses(400, 401, 409, 429),
+    },
   });
 
   registry.registerPath({

@@ -1,12 +1,14 @@
-import type { ClientSession } from 'mongoose';
+import type { ClientSession, Types } from 'mongoose';
 import type Stripe from 'stripe';
 import { logger } from '../../integrations/logger.js';
 import { reportError } from '../../integrations/sentry.js';
+import { formatNzdExact } from '../../lib/format.js';
 import { applyExtraChargeIntent } from '../payments/extra-charges.service.js';
 import { PaymentModel } from '../payments/payment.model.js';
-import { holdBookingPayouts, releaseHeldPayouts } from '../payouts/payouts.service.js';
+import { holdBookingPayouts, hostRefundFailed, releaseHeldPayouts } from '../payouts/payouts.service.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import type { StripeEventHandler } from '../payments/stripe-webhook.js';
+import { BookingModel } from './booking.model.js';
 import { applyPaymentIntent, statusAfterRefunds } from './booking-payments.js';
 
 /*
@@ -42,6 +44,28 @@ async function chargeRefunded(event: Stripe.Event, session: ClientSession) {
   await payment.save({ session });
 }
 
+/**
+ * A Host-funded refund that failed no longer comes off the Host's payouts (plan §8.1, items 15 and 21). What
+ * was already taken from them is added to the staff alert, so staff can give it back.
+ */
+async function hostFundedRefundFailed(bookingId: Types.ObjectId, refundId: string, session: ClientSession) {
+  const booking = await BookingModel.findById(bookingId).select('hostId').session(session).lean();
+  if (!booking) return '';
+  const { droppedCents, deductedCents, reversedCents } = await hostRefundFailed(
+    booking.hostId,
+    refundId,
+    session,
+  );
+  const taken = [
+    ...(deductedCents > 0 ? [`${formatNzdExact(deductedCents)} taken off a payout`] : []),
+    ...(reversedCents > 0 ? [`${formatNzdExact(reversedCents)} taken back from a transfer`] : []),
+  ];
+  if (taken.length > 0) {
+    return ` The Host funded it and had already paid for it (${taken.join(' and ')}): please return that to the Host.`;
+  }
+  return droppedCents > 0 ? ' The Host funded it: it no longer comes off their next payout.' : '';
+}
+
 /** A refund failed (e.g. a closed card): recorded, and support is alerted (plan §8.1, item 21). */
 async function refundFailed(event: Stripe.Event, session: ClientSession) {
   const refund = event.data.object as Stripe.Refund;
@@ -56,11 +80,13 @@ async function refundFailed(event: Stripe.Event, session: ClientSession) {
   const error = new Error(`Refund ${refund.id} failed: ${record.failureReason}`);
   logger.error({ paymentId: payment.id, refundId: refund.id }, error.message);
   reportError(error, { tags: { area: 'refund' }, extra: { paymentId: payment.id } });
+  const hostNote =
+    record.fundedBy === 'HOST' ? await hostFundedRefundFailed(payment.bookingId, refund.id, session) : '';
   await alertStaff(
     {
       type: 'REFUND_FAILED',
       title: 'A refund failed',
-      body: `a refund of $${(record.amountCents / 100).toFixed(2)} failed (${record.failureReason}). Please return the money to the guest another way.`,
+      body: `a refund of $${(record.amountCents / 100).toFixed(2)} failed (${record.failureReason}). Please return the money to the guest another way.${hostNote}`,
       link: `/admin/payments`,
       dedupeKey: `REFUND_FAILED:${refund.id}`,
     },

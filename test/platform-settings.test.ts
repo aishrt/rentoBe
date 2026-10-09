@@ -109,6 +109,25 @@ describe('PATCH /api/v1/admin/settings', () => {
     expect(policies.body.roadsideAssistance).toEqual({ phone: '0800 123 456' });
   });
 
+  it('changes the SMS quiet hours, checking each is a 24-hour time', async () => {
+    await createStaff();
+    const agent = await staffAgent();
+
+    const bad = await agent
+      .patch('/api/v1/admin/settings')
+      .send({ sms: { quietHoursStart: '25:00', quietHoursEnd: '7:00' } });
+    expect(bad.status).toBe(400);
+    expect(Object.keys(bad.body.error.fields).sort()).toEqual(['sms.quietHoursEnd', 'sms.quietHoursStart']);
+
+    const saved = await agent
+      .patch('/api/v1/admin/settings')
+      .send({ sms: { quietHoursStart: '22:30', quietHoursEnd: '06:45' } });
+    expect(saved.status).toBe(200);
+    expect(saved.body.settings.sms).toEqual({ quietHoursStart: '22:30', quietHoursEnd: '06:45' });
+    const entry = await AuditLogModel.findOne({ action: 'settings.update' }).lean();
+    expect(entry?.entityId).toBe('sms');
+  });
+
   it('refuses invalid values with a message per field, and saves nothing', async () => {
     await createStaff();
     const agent = await staffAgent();

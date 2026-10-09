@@ -14,6 +14,7 @@ import { UserModel, type Role, type User } from '../users/user.model.js';
 import { effectiveRoles, isStaff } from '../users/user.service.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import type { adminUserDetailSchema, adminUserRowSchema, userListQuerySchema } from './admin-ops.schemas.js';
+import { documentComparison, staffLicenceView } from './verification-queue.service.js';
 
 /*
  * User management in the staff portal (spec §18; plan §6.2, §8.2): search, a person's record, suspending and
@@ -125,18 +126,25 @@ export async function userDetail(userId: string): Promise<z.infer<typeof adminUs
     ...row(user),
     ...(user.suspendedReason && { suspendedReason: user.suspendedReason }),
     emailVerified: Boolean(user.emailVerifiedAt),
+    ...(user.emailProblem && {
+      emailProblem: {
+        kind: user.emailProblem.kind,
+        ...(user.emailProblem.detail && { detail: user.emailProblem.detail }),
+        at: user.emailProblem.at.toISOString(),
+      },
+    }),
     phoneVerified: Boolean(user.phoneVerifiedAt),
     permissions: [...user.permissions],
     ...(user.lastLoginAt && { lastLoginAt: user.lastLoginAt.toISOString() }),
-    licence: user.driverLicence
-      ? {
-          class: user.driverLicence.class,
-          country: user.driverLicence.country,
-          numberEnding: user.driverLicence.numberEnding ?? '',
-          expiry: nzDate(user.driverLicence.expiry),
-          status: user.driverLicence.status,
-        }
-      : null,
+    // What staff compare a licence with (spec §22); the full number only on request.
+    licence: staffLicenceView(user.driverLicence),
+    ...(user.dob && { dob: nzDate(user.dob) }),
+    ...(user.identityVerification?.providerRef && {
+      identityDocument: {
+        ...(user.identityVerification.documentType && { type: user.identityVerification.documentType }),
+        ...documentComparison(user),
+      },
+    }),
     host: user.hostProfile
       ? {
           status: user.hostProfile.status,

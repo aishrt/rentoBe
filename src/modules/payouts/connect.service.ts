@@ -48,6 +48,8 @@ export interface PayoutAccountView {
   bankDays?: number;
   /** Host cancellation fees still to come off a payout. */
   feesOwedCents: number;
+  /** Host-funded refunds made after a booking's payout, still to come off one (plan §8.1, item 15). */
+  refundsOwedCents: number;
 }
 
 export function payoutAccountView(profile: Partial<HostProfile> | undefined): PayoutAccountView {
@@ -57,6 +59,7 @@ export function payoutAccountView(profile: Partial<HostProfile> | undefined): Pa
     requirements: profile?.payoutRequirements ?? [],
     ...(profile?.payoutDelayDays !== undefined && { bankDays: profile.payoutDelayDays }),
     feesOwedCents: profile?.feesOwedCents ?? 0,
+    refundsOwedCents: (profile?.refundsOwed ?? []).reduce((sum, refund) => sum + refund.amountCents, 0),
   };
 }
 

@@ -8,7 +8,11 @@ import {
 } from '../../modules/bookings/booking-view.js';
 import { postSystemMessage } from '../../modules/messages/thread-core.js';
 import { notify } from '../../modules/notifications/notify.js';
-import { requestReviews, revealReviews } from '../../modules/reviews/reviews.service.js';
+import {
+  requestReviews,
+  runReviewReveal,
+  sweepReviewReveals,
+} from '../../modules/reviews/reviews.service.js';
 import { alertStaff } from '../../modules/staff/staff-alerts.js';
 import type { JobContext } from './index.js';
 
@@ -80,9 +84,14 @@ export async function pickupReminderJob(
       },
     }),
     sms: {
-      body: `Rento Vroom: ${words.toLowerCase()} you pick up the ${booking.vehicleSnapshot.title} at ${nzTime(booking.startAt)}, ${place}. Check in with ${hostName}: ${guestUrl}`,
+      // The day-before text may wait for the end of quiet hours, so it names the day rather than "tomorrow".
+      body: soon
+        ? `Rento Vroom: ${words.toLowerCase()} you pick up the ${booking.vehicleSnapshot.title} at ${nzTime(booking.startAt)}, ${place}. Check in with ${hostName}: ${guestUrl}`
+        : `Rento Vroom: you pick up the ${booking.vehicleSnapshot.title} on ${when}, ${place}. Check in with ${hostName}: ${guestUrl}`,
       // A pickup within 3 hours is sent straight away, even in quiet hours (plan §7).
       urgent: soon,
+      whileBooking: { id: booking._id, statuses: ['CONFIRMED'] },
+      expiresAt: booking.startAt,
     },
     dedupeKey: `PICKUP_REMINDER:${key}`,
   });
@@ -162,9 +171,12 @@ export async function returnReminderJob(
         url: guestUrl,
       },
     },
+    // Not one of the texts that skip quiet hours (plan §7): one held past the return time isn't sent, and the
+    // late-return text (urgent) follows instead.
     sms: {
       body: `Rento Vroom: please return the ${booking.vehicleSnapshot.title} by ${nzTime(booking.endAt)}, ${place}, and do the check-out: ${guestUrl}`,
-      urgent: true,
+      whileBooking: { id: booking._id, statuses: ['CONFIRMED', 'ACTIVE'] },
+      expiresAt: booking.endAt,
     },
     dedupeKey: `RETURN_REMINDER:${key}`,
   });
@@ -268,8 +280,9 @@ export async function returnCheckJob(
     await alertStaff({
       type: 'TRIP_NO_CHECK_OUT',
       title: `Check-out missing on ${booking.ref}`,
-      body: `the ${booking.vehicleSnapshot.title} on booking ${booking.ref} was due back 24 hours ago and check-out isn't done. Complete the trip with the host's odometer and fuel reading and photos.`,
-      link: `/admin/bookings/${booking.ref}`,
+      body: `the ${booking.vehicleSnapshot.title} on booking ${booking.ref} was due back 24 hours ago and check-out isn't done. Complete the trip from the booking's Handover section with the host's odometer and fuel reading and photos.`,
+      // Straight to the booking's Handover section, where staff complete the trip (plan §8.2).
+      link: `/admin/bookings/${booking.ref}#handover`,
       dedupeKey: `TRIP_NO_CHECK_OUT:${key}`,
     });
     log.warn({ bookingId }, 'Check-out still missing; support alerted');
@@ -333,8 +346,17 @@ export async function reviewRequestJob({ bookingId }: { bookingId: string }, { l
   log.info({ bookingId }, 'Review requests sent');
 }
 
-/** `reviews.reveal`: the review window has closed; reviews still waiting are published (plan §4.3). */
+/**
+ * `reviews.reveal`: the review window has closed; reviews still waiting are published (plan §4.3). Queued
+ * again for the new close if staff have since lengthened the window.
+ */
 export async function revealReviewsJob({ bookingId }: { bookingId: string }, { log }: JobContext) {
-  const published = await revealReviews(bookingId);
+  const published = await runReviewReveal(bookingId);
   log.info({ bookingId, published }, 'Reviews revealed');
+}
+
+/** `daily.reviewReveal`: publishes reviews still waiting after their window closed (the safety net). */
+export async function reviewRevealSweepJob(_payload: Record<string, never>, { log }: JobContext) {
+  const published = await sweepReviewReveals();
+  log.info({ published }, 'Waiting reviews checked');
 }

@@ -1,7 +1,7 @@
 import { Router, type Response } from 'express';
 import helmet from 'helmet';
 import { env } from '../env.js';
-import { DestinationModel } from '../modules/cms/destination.model.js';
+import { DestinationModel, publishedDestination } from '../modules/cms/destination.model.js';
 import { VehicleModel } from '../modules/vehicles/vehicle.model.js';
 import { getAppShell, getSeoManifest } from './frontend-shell.js';
 import {
@@ -55,7 +55,11 @@ export function pagesRouter() {
   });
 
   router.get('/rental/:city', async (req, res) => {
-    const destination = await DestinationModel.findOne({ slug: req.params.city.toLowerCase() }).lean();
+    // An unknown or unpublished destination is a real 404.
+    const destination = await DestinationModel.findOne({
+      slug: req.params.city.toLowerCase(),
+      ...publishedDestination(),
+    }).lean();
     if (!destination) return sendPage(res, 404, notFoundPageTags(`/rental/${req.params.city}`));
     const { destinationPages } = await getSeoManifest();
     return sendPage(res, 200, destinationPageTags(destination, destinationPages, siteUrl()));

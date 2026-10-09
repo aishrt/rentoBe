@@ -15,9 +15,12 @@ import {
   destinationsResponseSchema,
   faqsResponseSchema,
   featuredReviewsResponseSchema,
+  homeHeroSchema,
   legalPageSchema,
   publicPoliciesSchema,
+  siteFooterSchema,
 } from './content.schemas.js';
+import { FOOTER_BLOCK_KEY, HERO_BLOCK_KEY } from './site-content.js';
 
 /** The contract for content.routes.ts, help.routes.ts and support.routes.ts (plan §2.3). */
 export function registerContentPaths(registry: OpenAPIRegistry) {
@@ -26,7 +29,7 @@ export function registerContentPaths(registry: OpenAPIRegistry) {
     path: '/destinations',
     tags: ['Content'],
     summary: 'City and destination landing pages',
-    description: 'Public. Featured ones first: they are the homepage tiles.',
+    description: 'Public. Published ones only, featured first: they are the homepage tiles.',
     responses: { 200: jsonResponse('Destinations', destinationsResponseSchema) },
   });
 
@@ -55,6 +58,31 @@ export function registerContentPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The page', z.object({ page: legalPageSchema }).meta({ id: 'LegalPageResponse' })),
       ...errorResponses(404),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: `/cms/${HERO_BLOCK_KEY}`,
+    tags: ['Content'],
+    summary: 'The homepage’s headline and supporting line',
+    description: 'Public. The original text until an admin saves their own.',
+    responses: {
+      200: jsonResponse('The text', z.object({ hero: homeHeroSchema }).meta({ id: 'HomeHeroResponse' })),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: `/cms/${FOOTER_BLOCK_KEY}`,
+    tags: ['Content'],
+    summary: 'The footer’s links and social accounts',
+    description: 'Public. The original links until an admin saves their own.',
+    responses: {
+      200: jsonResponse(
+        'The links',
+        z.object({ footer: siteFooterSchema }).meta({ id: 'SiteFooterResponse' }),
+      ),
     },
   });
 
@@ -90,7 +118,8 @@ export function registerContentPaths(registry: OpenAPIRegistry) {
     path: '/reviews/featured',
     tags: ['Content'],
     summary: 'Customer reviews for the homepage',
-    description: 'Public. Real published reviews only, and `show: false` until there are enough (settings).',
+    description:
+      'Public. Real published reviews only, and `show: false` until there are enough (settings). The ones admins picked, in order, or else the newest well-rated ones.',
     responses: { 200: jsonResponse('Reviews', featuredReviewsResponseSchema) },
   });
 

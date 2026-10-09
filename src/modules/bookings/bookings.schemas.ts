@@ -72,26 +72,72 @@ export const identityReviewSchema = z
   })
   .meta({ id: 'IdentityReviewRequest' });
 
+/** What a support decision on a Guest's identity check or licence did to the bookings waiting for it. */
+export const verificationOutcomeShape = {
+  confirmed: z.array(z.string()).meta({ description: 'References of the bookings this confirmed' }),
+  waitingForHost: z.array(z.string()).meta({ description: 'Requests the Host still has to answer' }),
+  released: z.array(z.string()).meta({ description: 'Bookings ended, with the card authorisation released' }),
+  stillInReview: z.array(z.string()).optional().meta({
+    description:
+      'Set when the other part (the identity check or the licence) still waits for support: the bookings that keep waiting for it',
+  }),
+};
+export type VerificationOutcome = {
+  confirmed: string[];
+  waitingForHost: string[];
+  released: string[];
+  stillInReview?: string[];
+};
+
 export const identityReviewResponseSchema = z
-  .object({
-    identityStatus: z.enum(['APPROVED', 'REJECTED']),
-    confirmed: z.array(z.string()).meta({ description: 'References of the bookings this confirmed' }),
-    waitingForHost: z.array(z.string()).meta({ description: 'Requests the Host still has to answer' }),
-    released: z
-      .array(z.string())
-      .meta({ description: 'Bookings ended, with the card authorisation released' }),
-  })
+  .object({ identityStatus: z.enum(['APPROVED', 'REJECTED']), ...verificationOutcomeShape })
   .meta({ id: 'IdentityReviewResponse' });
 export type IdentityReviewResult = z.infer<typeof identityReviewResponseSchema>;
 
+/** Why staff cancel (plan §8.2): a no-show (a confirmed booking only), or a platform cancellation. */
+export const ADMIN_CANCEL_REASONS = ['GUEST_NO_SHOW', 'HOST_NO_SHOW', 'PLATFORM'] as const;
+export type AdminCancelReason = (typeof ADMIN_CANCEL_REASONS)[number];
+
 export const adminCancelSchema = z
   .object({
-    reason: z.enum(['GUEST_NO_SHOW', 'HOST_NO_SHOW', 'PLATFORM']),
+    reason: z.enum(ADMIN_CANCEL_REASONS),
     note: z.string().trim().min(3, { error: 'Say why' }).max(500),
   })
   .meta({ id: 'AdminCancelRequest' });
 
+export const adminCancellationPreviewQuerySchema = z.object({
+  reason: z.enum(ADMIN_CANCEL_REASONS),
+});
+
+/** What a staff cancellation would refund and cost, for the reason chosen (plan §8.2: refund preview). */
+export const adminCancellationPreviewSchema = z
+  .object({
+    reason: z.enum(ADMIN_CANCEL_REASONS),
+    allowed: z.boolean(),
+    kind: z
+      .enum(['GUEST_CANCELLATION', 'HOST_CANCELLATION', 'PLATFORM_CANCELLATION'])
+      .nullable()
+      .meta({ description: 'How the policy engine treats it: a no-show is a Guest or Host cancellation' }),
+    refundCents: z.number().int().meta({ description: 'Back to the Guest’s card' }),
+    feeCents: z.number().int().meta({ description: 'What the Guest paid and doesn’t get back' }),
+    hostShareCents: z.number().int().meta({ description: 'The Host’s share of the kept fee' }),
+    hostFeeCents: z.number().int().meta({ description: 'A Host cancellation fee, off their next payout' }),
+    releasedCents: z.number().int().meta({
+      description:
+        'A request or a booking waiting for verification: the card authorisation released, as nothing was charged',
+    }),
+    refundPct: z.number(),
+    hoursBeforeStart: z.number().int(),
+    message: z.string().meta({ description: 'A sentence to show before staff confirm' }),
+  })
+  .meta({ id: 'AdminCancellationPreview' });
+export type AdminCancellationPreview = z.infer<typeof adminCancellationPreviewSchema>;
+
 const partySchema = z.object({
+  id: z
+    .string()
+    .optional()
+    .meta({ description: 'For their public profile; missing once an account is gone' }),
   firstName: z.string(),
   avatarUrl: z.string().optional(),
   verified: z.boolean().meta({ description: 'Identity verified' }),
@@ -179,11 +225,21 @@ export const bookingViewSchema = z
           .datetime()
           .optional()
           .meta({ description: 'Once paid: usually in the Host’s bank by then' }),
-        paidCents: z
-          .number()
-          .int()
+        paidCents: z.number().int().optional().meta({
+          description: 'Everything paid out for the booking so far, less any taken back for refunds',
+        }),
+        refunds: z
+          .array(
+            z.object({
+              amountCents: z.number().int(),
+              at: z.iso.datetime(),
+              fundedBy: z
+                .enum(['PLATFORM', 'HOST'])
+                .meta({ description: 'HOST: it comes off the Host’s payout (plan §8.1, item 15)' }),
+            }),
+          )
           .optional()
-          .meta({ description: 'Everything paid out for the booking so far' }),
+          .meta({ description: 'Refunds made to the Guest on the booking, oldest first' }),
       })
       .optional()
       .meta({ description: 'The Host’s view: what they earn and when it’s paid' }),

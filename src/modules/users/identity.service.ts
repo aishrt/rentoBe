@@ -101,6 +101,13 @@ export async function startIdentityCheck(userId: string, returnTo?: string): Pro
     metadata: { userId: user.id },
     return_url: returnUrl,
   });
+  const now = new Date();
+  // The check this one replaces may hold images too: it's kept so retention redacts it 90 days after it
+  // began (plan §14).
+  const earlier =
+    identity?.providerRef && identity.providerRef !== session.id && !identity.redactedAt
+      ? { providerRef: identity.providerRef, startedAt: identity.startedAt ?? now }
+      : undefined;
   await UserModel.updateOne(
     { _id: user._id },
     {
@@ -109,9 +116,11 @@ export async function startIdentityCheck(userId: string, returnTo?: string): Pro
         'identityVerification.provider': PROVIDER,
         'identityVerification.providerRef': session.id,
         'identityVerification.sessionStatus': session.status,
-        'identityVerification.startedAt': new Date(),
+        'identityVerification.startedAt': now,
       },
-      $unset: { 'identityVerification.lastError': 1 },
+      // A new check has images of its own until retention redacts them.
+      $unset: { 'identityVerification.lastError': 1, 'identityVerification.redactedAt': 1 },
+      ...(earlier && { $push: { 'identityVerification.earlierSessions': earlier } }),
     },
   );
   return { url: session.url! };
@@ -160,10 +169,15 @@ export async function syncIdentity(
   const session = await stripe().identity.verificationSessions.retrieve(ref);
   let next: Partial<IdentityVerification> = { sessionStatus: session.status };
   let outcome: 'APPROVED' | 'REVIEW' | 'RETRY' | 'WAIT' = 'WAIT';
+  // Passed with an ID that didn't confirm the licence: support checks the licence next (plan §8.2).
+  let licenceToCheck = false;
 
   if (session.status === 'verified') {
     let reason: string | undefined;
     let documentType: string | undefined;
+    // What the document said, kept (as a keyed hash and a yes or no) for staff checking the licence later.
+    let documentNumberHash: string | undefined;
+    let documentDobMatched: boolean | undefined;
     let licenceMatches = false;
     const reportId =
       typeof session.last_verification_report === 'string'
@@ -176,15 +190,18 @@ export async function syncIdentity(
         });
         const document = report.document;
         documentType = document?.type ?? undefined;
-        if (document?.type === 'driving_license' && document.number && user.driverLicence) {
-          licenceMatches = licenceNumberHash(document.number) === user.driverLicence.numberHash;
+        if (document?.type === 'driving_license' && document.number) {
+          documentNumberHash = licenceNumberHash(document.number);
+        }
+        if (documentNumberHash && user.driverLicence) {
+          licenceMatches = documentNumberHash === user.driverLicence.numberHash;
           if (!licenceMatches) reason = 'The licence number on the ID doesn’t match the one entered.';
         }
         const dob = document?.dob;
         if (dob?.year && dob.month && dob.day && user.dob) {
           const onDocument = `${dob.year}-${String(dob.month).padStart(2, '0')}-${String(dob.day).padStart(2, '0')}`;
-          if (onDocument !== nzDate(user.dob))
-            reason = 'The date of birth on the ID doesn’t match the one entered.';
+          documentDobMatched = onDocument === nzDate(user.dob);
+          if (!documentDobMatched) reason = 'The date of birth on the ID doesn’t match the one entered.';
         }
       } catch (error) {
         logger.warn({ err: error, userId }, 'Could not read the identity report');
@@ -194,11 +211,14 @@ export async function syncIdentity(
     next = {
       ...next,
       ...(documentType && { documentType }),
+      ...(documentNumberHash && { documentNumberHash }),
+      ...(documentDobMatched !== undefined && { documentDobMatched }),
       ...(reason ? { status: 'PENDING', reviewReason: reason } : { status: 'APPROVED', verifiedAt: now }),
     };
     if (!reason && licenceMatches) {
       await UserModel.updateOne({ _id: user._id }, { $set: { 'driverLicence.status': 'APPROVED' } });
     }
+    licenceToCheck = !reason && !licenceMatches && user.driverLicence?.status === 'PENDING';
   } else if (session.status === 'requires_input' && session.last_error?.code) {
     const code = session.last_error.code;
     if (REVIEW_CODES.has(code)) {
@@ -220,15 +240,64 @@ export async function syncIdentity(
   );
   await UserModel.updateOne({ _id: user._id, 'identityVerification.providerRef': ref }, { $set: set });
 
+  // Each outcome is emailed as well as shown on the bell (plan §7, "Verification required" and "Verification
+  // approved or rejected"); a person who closed the tab mid-check still hears how it went.
+  const accountUrl = `${siteUrl()}/account`;
   if (outcome === 'APPROVED') {
-    await resolveVerificationReview(user.id, 'APPROVE', undefined, now);
+    const { confirmed } = await resolveVerificationReview(user.id, 'APPROVE', undefined, now);
     await notify({
       userId: user._id,
       type: 'IDENTITY_APPROVED',
       title: 'Your identity is verified',
-      body: 'You’re all set to book.',
+      body:
+        confirmed.length > 0
+          ? `Booking ${confirmed.join(', ')} is confirmed.`
+          : licenceToCheck
+            ? 'Our team is checking your driver licence next.'
+            : 'You’re all set to book.',
       link: '/account',
+      email: {
+        template: 'tripNotice',
+        props: {
+          firstName: user.firstName,
+          heading: 'Your identity is verified',
+          paragraphs: [
+            'Your ID and selfie check has passed, so you’re verified on Rento Vroom.',
+            confirmed.length > 0
+              ? `Your booking ${confirmed.join(', ')} is confirmed.`
+              : licenceToCheck
+                ? 'Your ID didn’t confirm your driver licence, so our team will check your licence details by hand, usually within a few hours. A booking made meanwhile is held for you as a request, and your card isn’t charged until it’s approved.'
+                : 'You’re all set to book a car.',
+          ],
+          buttonLabel: 'Go to your account',
+          url: accountUrl,
+        },
+      },
       dedupeKey: `IDENTITY_APPROVED:${ref}`,
+    });
+  } else if (outcome === 'RETRY' && session.status === 'requires_input') {
+    // Stripe couldn't verify the ID or selfie and wants another try ("Verification required", spec §19).
+    const problem = next.lastError ?? 'The check didn’t finish.';
+    await notify({
+      userId: user._id,
+      type: 'IDENTITY_RETRY',
+      title: 'Your identity check needs another try',
+      body: problem,
+      link: '/account',
+      email: {
+        template: 'tripNotice',
+        props: {
+          firstName: user.firstName,
+          heading: 'Please try your identity check again',
+          paragraphs: [
+            `We couldn’t finish checking your ID: ${problem}`,
+            'It takes a couple of minutes: a photo of your driver licence (or passport) and a quick selfie. Good light and the whole card in the frame help.',
+          ],
+          buttonLabel: 'Try again',
+          url: accountUrl,
+        },
+      },
+      dedupeKey: `IDENTITY_RETRY:${ref}:${session.last_error?.code ?? 'error'}`,
     });
   } else if (outcome === 'REVIEW') {
     await alertStaff({
@@ -244,6 +313,19 @@ export async function syncIdentity(
       title: 'We’re checking your details',
       body: 'Our team will finish your identity check, usually within a few hours.',
       link: '/account',
+      email: {
+        template: 'tripNotice',
+        props: {
+          firstName: user.firstName,
+          heading: 'We’re checking your details',
+          paragraphs: [
+            'Your identity check needs a quick look from our team, usually within a few hours.',
+            'If you’ve booked a car meanwhile, it’s held for you as a request, and your card isn’t charged until the check is approved. We’ll email you when it’s done.',
+          ],
+          buttonLabel: 'Go to your account',
+          url: accountUrl,
+        },
+      },
       dedupeKey: `IDENTITY_IN_REVIEW:${ref}`,
     });
   }
@@ -273,4 +355,36 @@ export async function redactIdentity(userId: string, now = new Date()): Promise<
   await UserModel.updateOne({ _id: userId }, { $set: { 'identityVerification.redactedAt': now } });
   await recordAudit({ action: 'identity.redacted', entity: 'user', entityId: userId });
   return true;
+}
+
+/**
+ * The checks a person started before their latest one, each redacted once it began before `cutoff` (plan
+ * §14: 90 days). Returns how many were redacted; one Stripe refuses is tried again the next day. Called by
+ * `daily.dataRetention`.
+ */
+export async function redactEarlierSessions(userId: string, cutoff: Date, now = new Date()): Promise<number> {
+  const user = await UserModel.findById(userId).select('identityVerification.earlierSessions').lean();
+  let redacted = 0;
+  for (const earlier of user?.identityVerification?.earlierSessions ?? []) {
+    if (earlier.redactedAt || earlier.startedAt > cutoff) continue;
+    try {
+      await stripe().identity.verificationSessions.redact(earlier.providerRef);
+    } catch (error) {
+      logger.warn({ err: error, userId }, 'Could not redact an earlier identity check');
+      continue;
+    }
+    await UserModel.updateOne(
+      { _id: userId },
+      { $set: { 'identityVerification.earlierSessions.$[earlier].redactedAt': now } },
+      { arrayFilters: [{ 'earlier.providerRef': earlier.providerRef }] },
+    );
+    await recordAudit({
+      action: 'identity.redacted',
+      entity: 'user',
+      entityId: userId,
+      after: { session: earlier.providerRef },
+    });
+    redacted += 1;
+  }
+  return redacted;
 }

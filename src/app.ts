@@ -23,6 +23,7 @@ import { currencyRouter } from './modules/currency/currency.routes.js';
 import { helpRouter } from './modules/help/help.routes.js';
 import { incidentsRouter } from './modules/incidents/incidents.routes.js';
 import { reportsRouter, threadsRouter } from './modules/messages/messages.routes.js';
+import { deliveryWebhooksRouter } from './modules/notifications/delivery-webhooks.js';
 import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { stripeWebhookRouter } from './modules/payments/stripe-webhook.js';
 import { hostPayoutsRouter, payLinkRouter } from './modules/payouts/payouts.routes.js';
@@ -55,6 +56,8 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   // Stripe calls this from its servers, not a browser, and signs the raw body (plan §8.1), so it
   // comes before the JSON parser and the website-origin check.
   app.use('/api/v1/payments/webhook', stripeWebhookRouter());
+  // The same for Resend's and Twilio's delivery reports (plan §7).
+  app.use('/api/v1/webhooks', deliveryWebhooksRouter());
   app.use(express.json({ limit: '100kb' }));
   app.use(cookieParser());
 

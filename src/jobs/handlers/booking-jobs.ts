@@ -130,6 +130,7 @@ export async function refundUnwantedJob({ paymentId }: { paymentId: string }, { 
     fresh.refunds.push({
       amountCents: refund.amountCents,
       reason: 'Paid after the booking had ended',
+      kind: 'LATE_PAYMENT',
       fundedBy: 'PLATFORM',
       stripeRefundId: refund.stripeRefundId,
       status: refund.status,

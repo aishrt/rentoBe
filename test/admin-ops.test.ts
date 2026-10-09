@@ -229,7 +229,13 @@ describe('bookings', () => {
     expect(refunded.status).toBe(200);
     expect(refunded.body.refundableCents).toBe(33870 - 5000);
     expect((await PaymentModel.findById(payment._id))!.status).toBe('PARTIALLY_REFUNDED');
-    expect((await UserModel.findById(host._id))!.hostProfile!.feesOwedCents).toBe(5000);
+    // Owed as a refund, apart from Host cancellation fees (plan §8.1, item 15).
+    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 5000 });
+    const owed = (await UserModel.findById(host._id))!.hostProfile!;
+    expect(owed.feesOwedCents).toBe(0);
+    expect(owed.refundsOwed).toEqual([
+      expect.objectContaining({ bookingId: booking._id, stripeRefundId: 're_1', amountCents: 5000 }),
+    ]);
     expect(await NotificationModel.countDocuments({ type: 'REFUND_ISSUED', channel: 'IN_APP' })).toBe(1);
   });
 });
@@ -270,6 +276,73 @@ describe('payouts and cars', () => {
     expect(suspended.body.upcomingBookings[0].ref).toBe(booking.ref);
     const lifted = await agent.post(`/api/v1/admin/vehicles/${vehicle.id}/unsuspend`);
     expect(lifted.body.vehicle.status).toBe('INACTIVE');
+  });
+
+  it('lists every car for staff, by words, status and Host', async () => {
+    const { host, vehicle } = await trip();
+    const tama = await createHost('tama@example.co.nz');
+    await UserModel.updateOne({ _id: tama._id }, { $set: { firstName: 'Tama', lastName: 'Rewi' } });
+    const mazda = await createVehicle(tama._id, { make: 'Mazda', model: 'CX-5', status: 'SUSPENDED' });
+    const tesla = await createVehicle(tama._id, {
+      make: 'Tesla',
+      model: 'Model 3',
+      year: 2023,
+      status: 'DRAFT',
+      payoutsReady: false,
+    });
+    await createStaff('sam@example.co.nz', 'SUPPORT');
+    const agent = await staffAgent('sam@example.co.nz');
+    const search = (query: Record<string, string>) => agent.get('/api/v1/admin/vehicles/search').query(query);
+    const ids = (response: { body: { vehicles: { id: string }[] } }) =>
+      response.body.vehicles.map((car) => car.id).sort();
+
+    const all = await search({});
+    expect(all.status).toBe(200);
+    expect(all.body).toMatchObject({ total: 3, page: 1 });
+    expect(all.body.host).toBeUndefined();
+
+    // Every word must match: the year, make and model, as staff would type the car's name.
+    const corolla = await search({ q: '2021 toyota corolla' });
+    expect(corolla.body.vehicles).toEqual([
+      {
+        id: vehicle.id,
+        title: '2021 Toyota Corolla',
+        status: 'ACTIVE',
+        regoPlate: vehicle.regoPlate,
+        city: 'Auckland',
+        host: { id: host.id, name: 'Hana Tester', email: 'hana@example.co.nz' },
+        waitingForPayouts: false,
+        hostSuspended: false,
+        tripCount: 0,
+        updatedAt: expect.any(String),
+      },
+    ]);
+    expect(ids(await search({ q: mazda.regoPlate!.toLowerCase() }))).toEqual([mazda.id]);
+    expect(ids(await search({ q: 'tama@example' }))).toEqual([mazda.id, tesla.id].sort());
+    expect(ids(await search({ q: 'Tama Rewi' }))).toEqual([mazda.id, tesla.id].sort());
+    expect(ids(await search({ status: 'SUSPENDED' }))).toEqual([mazda.id]);
+    expect((await search({ q: 'tesla' })).body.vehicles[0]).toMatchObject({
+      status: 'DRAFT',
+      waitingForPayouts: true,
+    });
+
+    // One Host's cars, named for the filter.
+    const hosted = await search({ hostId: tama.id });
+    expect(ids(hosted)).toEqual([mazda.id, tesla.id].sort());
+    expect(hosted.body.host).toEqual({ id: tama.id, name: 'Tama Rewi' });
+    expect(ids(await search({ hostId: tama.id, status: 'DRAFT' }))).toEqual([tesla.id]);
+
+    // Search text is matched as text, and bad filters are refused.
+    expect((await search({ q: '(.*' })).body.total).toBe(0);
+    expect((await search({ hostId: 'nope' })).status).toBe(400);
+    expect((await search({ status: 'GONE' })).status).toBe(400);
+
+    // The review queue is unchanged, and the search doesn't hide a car's own page.
+    expect((await agent.get('/api/v1/admin/vehicles')).body.vehicles).toEqual([]);
+    expect((await agent.get(`/api/v1/admin/vehicles/${mazda.id}`)).body.vehicle.status).toBe('SUSPENDED');
+    const guest = browserAgent();
+    await guest.post('/api/v1/auth/login').send({ email: 'kiri@example.co.nz', password: PASSWORD });
+    expect((await guest.get('/api/v1/admin/vehicles/search')).status).toBe(403);
   });
 });
 

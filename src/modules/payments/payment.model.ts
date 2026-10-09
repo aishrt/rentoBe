@@ -18,10 +18,17 @@ export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 /** Who pays for a refund: the platform (goodwill, its own fees) or the Host (plan §8.1, item 15). */
 export const REFUND_FUNDERS = ['PLATFORM', 'HOST'] as const;
 
+/**
+ * Why a refund was made, for reports: a cancellation's own refund, the return of a payment that arrived after
+ * its booking ended, or one staff issued. Refunds recorded before this field existed have none.
+ */
+export const REFUND_KINDS = ['CANCELLATION', 'LATE_PAYMENT', 'STAFF'] as const;
+
 export interface Refund {
   _id?: Types.ObjectId;
   amountCents: number;
   reason: string;
+  kind?: (typeof REFUND_KINDS)[number];
   issuedBy?: Types.ObjectId;
   fundedBy: (typeof REFUND_FUNDERS)[number];
   stripeRefundId?: string;
@@ -59,6 +66,7 @@ export interface Payment {
 const refundSchema = new Schema<Refund>({
   amountCents: { ...cents({ required: true }), min: 1 },
   reason: { type: String, required: true },
+  kind: { type: String, enum: REFUND_KINDS },
   issuedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   fundedBy: { type: String, enum: REFUND_FUNDERS, required: true },
   stripeRefundId: String,

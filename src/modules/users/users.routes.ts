@@ -12,8 +12,13 @@ import {
   removeMfaDevice,
   startMfaSetup,
 } from '../auth/mfa.service.js';
-import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
-import { acceptLatestAgreements, changePassword, requestEmailChange } from './account.service.js';
+import {
+  acceptAgreementsSchema,
+  changeEmailSchema,
+  changePasswordSchema,
+  updateMeSchema,
+} from './account.schemas.js';
+import { acceptLatestAgreements, changePassword, requestEmailChange, updateName } from './account.service.js';
 import { hostApplicationSchema, hostProfilePatchSchema } from '../hosts/hosts.schemas.js';
 import { applyToHost, getHostProfile, updateHostProfile } from '../hosts/hosts.service.js';
 import { driverLicenceInputSchema } from './driver-licence.schemas.js';
@@ -56,6 +61,12 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
     // A deleted or suspended account loses access straight away, even with an unexpired access token.
     if (!user || user.status !== 'ACTIVE') throw unauthenticated();
     res.json({ user: toPublicUser(user) });
+  });
+
+  // Personal details (plan §11): the name, until the identity check fixes it to the ID.
+  router.patch('/', ...limit(accountChangeRateLimit), async (req, res) => {
+    const input = validate(updateMeSchema, req.body);
+    res.json({ user: await updateName(req.auth!.userId, input, req.ip) });
   });
 
   // Signs out every other device; this one stays signed in.

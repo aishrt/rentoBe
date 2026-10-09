@@ -26,8 +26,21 @@ export const DEDUCTION_TYPES = ['HOST_CANCELLATION_FEE', 'HOST_FUNDED_REFUND', '
 /** Money taken off a payout, shown as its own line (plan §8.1, items 10 and 15). */
 export interface Deduction {
   type: (typeof DEDUCTION_TYPES)[number];
+  /** HOST_FUNDED_REFUND: the booking the refund was made on. */
   bookingId?: Types.ObjectId;
+  /** HOST_FUNDED_REFUND: the Stripe refund it recovers, so a refund that fails later can be traced. */
+  stripeRefundId?: string;
+  /** Taken from what the Host owed (their profile), so it goes back there if the payout is cancelled unpaid. */
+  owed?: boolean;
   amountCents: number;
+}
+
+/** Part of a paid payout's transfer taken back for a Host-funded refund (plan §8.1, item 15). */
+export interface PayoutReversal {
+  stripeReversalId: string;
+  amountCents: number;
+  stripeRefundId?: string;
+  createdAt: Date;
 }
 
 /** The `payouts` collection (plan §3): money moved to a Host through Stripe Connect. */
@@ -52,6 +65,13 @@ export interface Payout {
   scheduledFor: Date;
   paidAt?: Date;
   deductions: Deduction[];
+  /**
+   * When the deductions were taken from what the Host owes, before the transfer. A retry sends the same
+   * amount, and a payout cancelled unpaid gives them back.
+   */
+  deductionsReservedAt?: Date;
+  /** Payouts made before reversals existed have none stored: read with `?? []`. */
+  reversals: PayoutReversal[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -60,7 +80,19 @@ const deductionSchema = new Schema<Deduction>(
   {
     type: { type: String, enum: DEDUCTION_TYPES, required: true },
     bookingId: { type: Schema.Types.ObjectId, ref: 'Booking' },
+    stripeRefundId: String,
+    owed: Boolean,
     amountCents: cents({ required: true }),
+  },
+  { _id: false },
+);
+
+const reversalSchema = new Schema<PayoutReversal>(
+  {
+    stripeReversalId: { type: String, required: true },
+    amountCents: cents({ required: true }),
+    stripeRefundId: String,
+    createdAt: { type: Date, required: true },
   },
   { _id: false },
 );
@@ -84,6 +116,8 @@ const payoutSchema = new Schema<Payout>(
     scheduledFor: { type: Date, required: true },
     paidAt: Date,
     deductions: { type: [deductionSchema], default: [] },
+    deductionsReservedAt: Date,
+    reversals: { type: [reversalSchema], default: [] },
   },
   { timestamps: true },
 );

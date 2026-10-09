@@ -9,12 +9,14 @@ import {
 } from '../vehicles/host-vehicles.schemas.js';
 import {
   adminVehicleSchema,
+  adminVehiclesResponseSchema,
   documentDecisionSchema,
   hostApplicationsResponseSchema,
   photoDecisionSchema,
   requiredNotesSchema,
   reviewNotesSchema,
   reviewQueueResponseSchema,
+  vehicleListQuerySchema,
 } from './admin-listings.schemas.js';
 
 const userParam = z.object({ userId: z.string() });
@@ -74,6 +76,21 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
     description: 'Listings under review, and live listings with new photos or documents waiting.',
     security: signedIn,
     responses: { 200: jsonResponse('The queue', reviewQueueResponseSchema), ...errorResponses(401, 403) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/vehicles/search',
+    tags: ['Admin'],
+    summary: 'Every car, to search',
+    description:
+      'Whatever its status (live, switched off, suspended, draft, under review…), 25 a page, most recently changed first. Each word of `q` must match the year, make, model or variant, the plate, or the Host’s name or email.',
+    security: signedIn,
+    request: { query: vehicleListQuerySchema },
+    responses: {
+      200: jsonResponse('The cars', adminVehiclesResponseSchema),
+      ...errorResponses(400, 401, 403),
+    },
   });
 
   registry.registerPath({

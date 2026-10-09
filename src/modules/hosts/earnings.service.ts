@@ -47,16 +47,26 @@ const gstIn = (cents: number, ratePct: number) => Math.round((cents * ratePct) /
 const sumLines = (booking: BookingRecord, codes: string[], field: 'amountCents' | 'gstCents') =>
   booking.lineItems.filter((line) => codes.includes(line.code)).reduce((sum, line) => sum + line[field], 0);
 
-/** One booking's earnings, every amount in NZD cents and GST included. */
+/**
+ * One booking's earnings, every amount in NZD cents and GST included. An extra charge's commission is the one
+ * its payout was made with; today's rate only covers a charge without a payout yet.
+ */
 function rowFor(
   booking: BookingRecord,
   hostRefunds: number,
+  extraChargeCommission: Map<string, number>,
   settings: { commissionPct: number; gstPct: number },
 ): EarningsRow {
   const cancelled = booking.status === 'CANCELLED';
   const extras = booking.extraCharges.filter((charge) => charge.status === 'SUCCEEDED');
   const extrasCents = extras.reduce((sum, charge) => sum + charge.amountCents, 0);
-  const extrasCommission = Math.round((extrasCents * settings.commissionPct) / 100);
+  const extrasCommission = extras.reduce(
+    (sum, charge) =>
+      sum +
+      (extraChargeCommission.get(charge._id!.toString()) ??
+        Math.round((charge.amountCents * settings.commissionPct) / 100)),
+    0,
+  );
   const rental = cancelled ? 0 : sumLines(booking, RENTAL_LINES, 'amountCents');
   const delivery = cancelled ? 0 : sumLines(booking, DELIVERY_LINES, 'amountCents');
   const tripCommission = cancelled
@@ -105,6 +115,20 @@ async function earningsRows(hostId: string, from?: Date, to?: Date): Promise<Ear
   })
     .select('bookingId refunds')
     .lean();
+  const extraPayouts = await PayoutModel.find({
+    bookingId: mongoose.trusted({ $in: bookings.map((booking) => booking._id) }),
+    type: 'EXTRA_CHARGE',
+    status: mongoose.trusted({ $ne: 'CANCELLED' }),
+  })
+    .select('extraChargeId commissionCents')
+    .lean();
+  const extraChargeCommission = new Map(
+    extraPayouts.flatMap((payout) =>
+      payout.extraChargeId && payout.commissionCents !== undefined
+        ? [[payout.extraChargeId.toString(), payout.commissionCents] as const]
+        : [],
+    ),
+  );
   const rates = { commissionPct: settings.fees.hostCommissionPct, gstPct: settings.fees.gstRatePct };
   return bookings
     .map((booking) => {
@@ -113,7 +137,7 @@ async function earningsRows(hostId: string, from?: Date, to?: Date): Promise<Ear
         .flatMap((payment) => payment.refunds)
         .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED')
         .reduce((sum, refund) => sum + refund.amountCents, 0);
-      return rowFor(booking, refunds, rates);
+      return rowFor(booking, refunds, extraChargeCommission, rates);
     })
     .filter((row) => row.status !== 'CANCELLED' || row.keptFeeCents > 0 || row.hostCancellationFeeCents > 0);
 }

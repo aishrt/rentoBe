@@ -2,7 +2,7 @@ import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { formatNzDate } from '../../lib/format.js';
-import { nextNzHour, nzDate } from '../../lib/nz-time.js';
+import { nextNzHour, nzDate, nzTripDays } from '../../lib/nz-time.js';
 import { BookingModel } from '../bookings/booking.model.js';
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { notify } from '../notifications/notify.js';
@@ -65,6 +65,25 @@ function datedDocuments(vehicle: VehicleRecord): ExpiringDocument[] {
     ...(vehicle.regoExpiry ? [{ label: 'Rego', expiry: vehicle.regoExpiry }] : []),
     ...(insurance ? [{ label: 'Insurance', expiry: insurance.expiry! }] : []),
   ];
+}
+
+/**
+ * Whether the car's Road User Charges licence runs out during a booked trip (plan §8.2). RUC is bought by
+ * distance, not by date, so it compares the licence's end reading with the car's latest odometer reading
+ * plus the trip's kilometre allowance. A trip with unlimited kilometres can't be measured ahead, so it
+ * counts when the licence is already within RUC_WARNING_KM of its end. Without a reading there's no telling.
+ */
+function rucRunsOutDuring(
+  vehicle: VehicleRecord,
+  odometer: number | null,
+  booking: { startAt: Date; endAt: Date; terms?: { unlimitedKm: boolean; kmAllowancePerDay?: number } },
+): boolean {
+  if (vehicle.rucValidToKm === undefined || odometer === null) return false;
+  const left = vehicle.rucValidToKm - odometer;
+  const perDay = booking.terms?.unlimitedKm ? undefined : booking.terms?.kmAllowancePerDay;
+  return perDay === undefined
+    ? left <= RUC_WARNING_KM
+    : left < perDay * nzTripDays(booking.startAt, booking.endAt);
 }
 
 /** The car's latest odometer reading, from its last check-in or check-out. */
@@ -237,7 +256,8 @@ export async function scheduleHostReminders(now = new Date()) {
 
 /**
  * `daily.hostReminders` (plan §4.3): document, RUC and maintenance reminders, and booked trips whose car
- * won't have a current WOF, CoF or rego when the trip ends (plan §8.2). Each reminder is sent once.
+ * won't have a current WOF, CoF, rego or RUC licence when the trip ends (plan §8.2). Each reminder is sent
+ * once.
  */
 export async function runHostReminders(now = new Date()): Promise<number> {
   await scheduleHostReminders(now);
@@ -245,6 +265,8 @@ export async function runHostReminders(now = new Date()): Promise<number> {
   const vehicles = await VehicleModel.find({
     status: mongoose.trusted({ $in: ['ACTIVE', 'INACTIVE'] }),
   }).lean<VehicleRecord[]>();
+  /** Each car's latest odometer reading, for the RUC checks. */
+  const odometers = new Map<string, number | null>();
 
   for (const vehicle of vehicles) {
     const title = vehicleTitle(vehicle);
@@ -281,6 +303,7 @@ export async function runHostReminders(now = new Date()): Promise<number> {
     }
 
     const odometer = await latestOdometer(vehicle._id);
+    odometers.set(vehicle._id.toString(), odometer);
     if (
       vehicle.rucValidToKm !== undefined &&
       odometer !== null &&
@@ -323,7 +346,7 @@ export async function runHostReminders(now = new Date()): Promise<number> {
     }
   }
 
-  // Booked trips that would end after the car's WOF, CoF or rego runs out (plan §8.2).
+  // Booked trips that would end after the car's WOF, CoF, rego or RUC licence runs out (plan §8.2).
   const booked = await BookingModel.find({
     status: 'CONFIRMED',
     startAt: mongoose.trusted({ $gt: now }),
@@ -331,11 +354,16 @@ export async function runHostReminders(now = new Date()): Promise<number> {
   for (const booking of booked) {
     const vehicle = vehicles.find((candidate) => candidate._id.equals(booking.vehicleId));
     if (!vehicle) continue;
-    const short = datedDocuments(vehicle).filter(
-      (document) => document.label !== 'Insurance' && document.expiry < booking.endAt,
-    );
+    const short = [
+      ...datedDocuments(vehicle)
+        .filter((document) => document.label !== 'Insurance' && document.expiry < booking.endAt)
+        .map((document) => document.label),
+      ...(rucRunsOutDuring(vehicle, odometers.get(vehicle._id.toString()) ?? null, booking)
+        ? ['RUC licence']
+        : []),
+    ];
     if (short.length === 0) continue;
-    const labels = short.map((document) => document.label).join(' and ');
+    const labels = short.join(' and ');
     await notify({
       userId: booking.hostId,
       type: 'DOCUMENT_BEFORE_TRIP',
@@ -349,7 +377,7 @@ export async function runHostReminders(now = new Date()): Promise<number> {
             (await UserModel.findById(booking.hostId).select('firstName').lean())?.firstName ?? 'there',
           heading: `Your car's ${labels} runs out before a booked trip ends`,
           paragraphs: [
-            `Booking ${booking.ref} runs until ${formatNzDate(booking.endAt)}, but the ${labels} for your ${booking.vehicleSnapshot.title} expires before then.`,
+            `Booking ${booking.ref} runs until ${formatNzDate(booking.endAt)}, but the ${labels} for your ${booking.vehicleSnapshot.title} runs out before then.`,
             `Please renew it and upload the new one. If it’s still missing ${DOCUMENT_ALERT_HOURS} hours before the trip, our support team will contact you both.`,
           ],
           buttonLabel: 'Upload the renewal',
@@ -362,7 +390,7 @@ export async function runHostReminders(now = new Date()): Promise<number> {
       await alertStaff({
         type: 'DOCUMENT_BEFORE_TRIP',
         title: `${booking.ref}: the car's ${labels} runs out during the trip`,
-        body: `booking ${booking.ref} starts ${formatNzDate(booking.startAt)} and the car's ${labels} expires before it ends. Contact both parties; it can be cancelled as a Host cancellation.`,
+        body: `booking ${booking.ref} starts ${formatNzDate(booking.startAt)} and the car's ${labels} runs out before it ends. Contact both parties; it can be cancelled as a Host cancellation.`,
         link: `/admin/bookings/${booking.ref}`,
         dedupeKey: `DOCUMENT_BEFORE_TRIP:${booking._id.toString()}`,
       });

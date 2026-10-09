@@ -9,7 +9,7 @@ import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.mod
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { MessageModel } from '../messages/message.model.js';
 import { ThreadModel } from '../messages/thread.model.js';
-import { redactIdentity } from '../users/identity.service.js';
+import { redactEarlierSessions, redactIdentity } from '../users/identity.service.js';
 import { UserModel } from '../users/user.model.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 
@@ -66,6 +66,12 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
         'identityVerification.status': mongoose.trusted({ $in: ['NONE', 'REJECTED'] }),
         'identityVerification.startedAt': mongoose.trusted({ $lte: idCutoff }),
       },
+      // Turned down before staff decisions kept the start time: 90 days after the account last changed.
+      {
+        'identityVerification.status': 'REJECTED',
+        'identityVerification.startedAt': mongoose.trusted({ $exists: false }),
+        updatedAt: mongoose.trusted({ $lte: idCutoff }),
+      },
     ],
   })
     .select('_id')
@@ -77,6 +83,18 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
     } catch (error) {
       logger.warn({ err: error, userId: user._id.toString() }, 'Could not redact an identity check');
     }
+  }
+  // Checks the person started again: each one 90 days after it began, whatever became of the latest.
+  const restarted = await UserModel.find({
+    'identityVerification.earlierSessions': mongoose.trusted({
+      $elemMatch: { startedAt: { $lte: idCutoff }, redactedAt: { $exists: false } },
+    }),
+  })
+    .select('_id')
+    .limit(BATCH)
+    .lean();
+  for (const user of restarted) {
+    result.identitiesRedacted += await redactEarlierSessions(user._id.toString(), idCutoff, now);
   }
 
   // Trip records: messages, their photos, inspection photos and closed cases' evidence.

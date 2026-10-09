@@ -24,6 +24,11 @@ export interface Report {
   targetId: Types.ObjectId;
   /** The person the report is about: the user, the message's sender, the review's author or the car's Host. */
   subjectUserId?: Types.ObjectId;
+  /**
+   * A member reported from a booking's conversation: that booking, so support can open its thread from the
+   * report (plan §6.2). Reported messages find theirs through the message.
+   */
+  bookingId?: Types.ObjectId;
   reason: string;
   note?: string;
   status: ReportStatus;
@@ -41,6 +46,7 @@ const reportSchema = new Schema<Report>(
     targetType: { type: String, enum: REPORT_TARGET_TYPES, required: true },
     targetId: { type: Schema.Types.ObjectId, required: true },
     subjectUserId: { type: Schema.Types.ObjectId, ref: 'User' },
+    bookingId: { type: Schema.Types.ObjectId, ref: 'Booking' },
     reason: { type: String, required: true },
     note: { type: String, maxlength: 2000 },
     status: { type: String, enum: REPORT_STATUSES, default: 'OPEN' },

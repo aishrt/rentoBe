@@ -49,7 +49,10 @@ export async function unreadMessageEmailJob(
       },
     },
     ...(recipient.notificationPrefs?.unreadMessageSms && {
-      sms: { body: `Rento Vroom: ${senderName} sent you a message about ${booking.ref}. Read it: ${url}` },
+      sms: {
+        body: `Rento Vroom: ${senderName} sent you a message about ${booking.ref}. Read it: ${url}`,
+        whileUnread: { threadId },
+      },
     }),
     dedupeKey: `NEW_MESSAGE:${threadId}:${recipientId}:${since.getTime()}`,
   });

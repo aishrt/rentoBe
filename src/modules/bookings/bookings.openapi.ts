@@ -4,6 +4,8 @@ import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/
 import { checkoutReadinessSchema, driverLicenceInputSchema } from '../users/driver-licence.schemas.js';
 import {
   BOOKING_GROUPS,
+  adminCancellationPreviewQuerySchema,
+  adminCancellationPreviewSchema,
   adminCancelSchema,
   bookingResponseSchema,
   bookingsResponseSchema,
@@ -268,12 +270,27 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: cancel for a no-show, or as a platform cancellation',
     description:
-      'Admins, and support staff with the REFUNDS permission. A Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund.',
+      'Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. Both parties are told, except the Host of an Instant Book that never reached them.',
     security: signedIn,
     request: { params: idParam, body: jsonBody(adminCancelSchema) },
     responses: {
       200: jsonResponse('The booking', bookingResponseSchema),
       ...errorResponses(400, 401, 403, 404, 409),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/bookings/{id}/cancellation-preview',
+    tags: ['Admin'],
+    summary: 'Staff: what a cancellation would refund and cost',
+    description:
+      'For the reason chosen, from the same policy engine as the cancellation (plan §8.2): the Guest’s refund (less any earlier refunds), what’s kept and the Host’s share, any Host cancellation fee, or the authorisation released for a pending booking. `allowed` is false, with the reason in `message`, when that cancellation isn’t possible.',
+    security: signedIn,
+    request: { params: idParam, query: adminCancellationPreviewQuerySchema },
+    responses: {
+      200: jsonResponse('The preview', adminCancellationPreviewSchema),
+      ...errorResponses(400, 401, 403, 404),
     },
   });
 

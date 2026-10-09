@@ -20,11 +20,23 @@ export class SmsNotConfiguredError extends Error {
   override name = 'SmsNotConfiguredError';
 }
 
+/**
+ * Where Twilio reports each text's delivery (POST /api/v1/webhooks/twilio, plan §7). Only an API with a
+ * public HTTPS address asks for the reports: Twilio can't reach a local one.
+ */
+export function twilioStatusCallbackUrl(): string | undefined {
+  return env.API_PUBLIC_URL.startsWith('https://')
+    ? `${env.API_PUBLIC_URL}/api/v1/webhooks/twilio`
+    : undefined;
+}
+
 export function createTwilioSender(config: {
   accountSid: string;
   authToken: string;
   messagingServiceSid?: string;
   from?: string;
+  /** Twilio posts the text's delivery status here. */
+  statusCallback?: string;
   fetch?: typeof fetch;
 }): SmsSender {
   const { fetch: fetchImpl = globalThis.fetch } = config;
@@ -45,7 +57,12 @@ export function createTwilioSender(config: {
         {
           method: 'POST',
           headers: { Authorization: authorization, 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ To: to, Body: body, ...sender }),
+          body: new URLSearchParams({
+            To: to,
+            Body: body,
+            ...sender,
+            ...(config.statusCallback && { StatusCallback: config.statusCallback }),
+          }),
           signal: AbortSignal.timeout(15_000),
         },
       );
@@ -107,6 +124,7 @@ export function getSmsSender(): SmsSender {
           authToken: env.TWILIO_AUTH_TOKEN!,
           messagingServiceSid: env.TWILIO_MESSAGING_SERVICE_SID,
           from: env.TWILIO_FROM_NUMBER,
+          statusCallback: twilioStatusCallbackUrl(),
         })
       : env.SMS_DRIVER === 'dummy'
         ? createDummySender()

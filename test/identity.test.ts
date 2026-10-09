@@ -5,6 +5,7 @@ import { env } from '../src/env.js';
 import { stripe } from '../src/integrations/stripe.js';
 import { JobModel } from '../src/jobs/job.model.js';
 import { runDataRetention } from '../src/modules/admin/data-retention.service.js';
+import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { ConditionReportModel } from '../src/modules/inspections/condition-report.model.js';
 import { MessageModel } from '../src/modules/messages/message.model.js';
@@ -205,6 +206,94 @@ describe('the identity check', () => {
     expect(decided.body.licenceStatus).toBe('REJECTED');
     expect(await AuditLogModel.countDocuments({ action: 'licence.rejected' })).toBe(1);
   });
+
+  it('gives staff what to check a licence against, and the full number on request, logged each time', async () => {
+    const { user, agent } = await guestWithLicence();
+    await agent.post('/api/v1/me/verification').send({});
+    session = { ...session, status: 'verified', last_verification_report: 'vr_1' };
+    report = licenceReport('ZZ999999');
+    await syncIdentity(user.id);
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+
+    // The identity check comes first, with how the ID compared and the licence's details.
+    const licence = {
+      class: 'NZ_FULL',
+      country: 'New Zealand',
+      numberEnding: '456',
+      version: '123',
+      issuedAt: '2012-05-01',
+      expiry: '2034-05-01',
+      status: 'PENDING',
+    };
+    expect((await staff.get('/api/v1/admin/verifications')).body.items).toEqual([
+      expect.objectContaining({
+        kind: 'IDENTITY',
+        identity: {
+          status: 'PENDING',
+          documentType: 'driving_license',
+          licenceNumberMatched: false,
+          dobMatched: true,
+        },
+        licence,
+        dob: '1990-04-21',
+      }),
+    ]);
+    await staff.post(`/api/v1/admin/users/${user.id}/identity-review`).send({ decision: 'APPROVE' });
+    // Support's decision keeps the check's start time and what the document showed.
+    expect((await UserModel.findById(user._id).lean())!.identityVerification).toMatchObject({
+      status: 'APPROVED',
+      startedAt: expect.any(Date),
+      documentType: 'driving_license',
+    });
+
+    // Then the licence the ID didn't confirm.
+    expect((await staff.get('/api/v1/admin/verifications')).body.items).toEqual([
+      expect.objectContaining({
+        kind: 'LICENCE',
+        reason: expect.stringMatching(/different number/),
+        identity: expect.objectContaining({ status: 'APPROVED', licenceNumberMatched: false }),
+      }),
+    ]);
+    const record = await staff.get(`/api/v1/admin/users/${user.id}`);
+    expect(record.body.user).toMatchObject({
+      dob: '1990-04-21',
+      licence,
+      identityDocument: { type: 'driving_license', licenceNumberMatched: false, dobMatched: true },
+    });
+
+    // The full number, decrypted for staff, never cached, and in the audit log each time.
+    const shown = await staff.get(`/api/v1/admin/users/${user.id}/licence-number`);
+    expect(shown.body).toEqual({ number: 'AB123456' });
+    expect(shown.headers['cache-control']).toBe('no-store');
+    await staff.get(`/api/v1/admin/users/${user.id}/licence-number`);
+    expect(await AuditLogModel.countDocuments({ action: 'licence.number-viewed', entityId: user.id })).toBe(
+      2,
+    );
+    expect((await agent.get(`/api/v1/admin/users/${user.id}/licence-number`)).status).toBe(403);
+  });
+
+  it('queues a licence for a person only when no identity check is still to confirm it', async () => {
+    const { user } = await guestWithLicence();
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    // The identity check is needed before booking and may read the licence itself.
+    expect((await staff.get('/api/v1/admin/verifications')).body.items).toEqual([]);
+
+    // With no identity check needed, the licence goes to support straight away.
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { verification: { identityBeforeFirstBooking: false } },
+    });
+    expect((await staff.get('/api/v1/admin/verifications')).body.items).toEqual([
+      expect.objectContaining({
+        userId: user.id,
+        kind: 'LICENCE',
+        identity: { status: 'NONE' },
+        reason: expect.stringMatching(/No identity check/),
+      }),
+    ]);
+  });
 });
 
 describe('data retention', () => {
@@ -269,5 +358,51 @@ describe('data retention', () => {
     expect(await JobModel.countDocuments({ type: 'daily.dataRetention' })).toBe(1);
     // Done once.
     expect(await runDataRetention()).toMatchObject({ identitiesRedacted: 0, tripsCleared: 0 });
+  });
+
+  it('redacts a check support turned down, and each one started again, 90 days after it began', async () => {
+    const { user, agent } = await guestWithLicence();
+    session = { id: 'vs_first', status: 'requires_input', url: 'https://verify.stripe.com/start/first' };
+    await agent.post('/api/v1/me/verification').send({});
+    // They gave up on the first check and started again: the first may hold images too.
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { 'identityVerification.sessionStatus': 'canceled' } },
+    );
+    session = { id: 'vs_second', status: 'requires_input', url: 'https://verify.stripe.com/start/second' };
+    await agent.post('/api/v1/me/verification').send({});
+    expect((await UserModel.findById(user._id).lean())!.identityVerification).toMatchObject({
+      providerRef: 'vs_second',
+      earlierSessions: [{ providerRef: 'vs_first', startedAt: expect.any(Date) }],
+    });
+
+    // The second needs a person, and support turns it down.
+    session = {
+      ...session,
+      last_error: { code: 'selfie_face_mismatch', reason: 'The selfie doesn’t match the ID.' },
+    } as Partial<Stripe.Identity.VerificationSession>;
+    await syncIdentity(user.id);
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    const rejected = await staff
+      .post(`/api/v1/admin/users/${user.id}/identity-review`)
+      .send({ decision: 'REJECT' });
+    expect(rejected.body.identityStatus).toBe('REJECTED');
+    expect((await UserModel.findById(user._id).lean())!.identityVerification!.startedAt).toBeDefined();
+
+    // Not yet 90 days: both keep their images.
+    expect(await runDataRetention(new Date(Date.now() + 10 * DAY_MS))).toMatchObject({
+      identitiesRedacted: 0,
+    });
+    const later = new Date(Date.now() + 91 * DAY_MS);
+    expect(await runDataRetention(later)).toMatchObject({ identitiesRedacted: 2 });
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledWith('vs_second');
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledWith('vs_first');
+    const identity = (await UserModel.findById(user._id).lean())!.identityVerification!;
+    expect(identity.redactedAt).toBeDefined();
+    expect(identity.earlierSessions![0]!.redactedAt).toBeDefined();
+    expect(await AuditLogModel.countDocuments({ action: 'identity.redacted', entityId: user.id })).toBe(2);
+    // Done once.
+    expect(await runDataRetention(later)).toMatchObject({ identitiesRedacted: 0 });
   });
 });

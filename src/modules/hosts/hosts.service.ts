@@ -79,6 +79,17 @@ export async function applyToHost(
     tripCount: user.hostProfile?.tripCount ?? 0,
     rating: user.hostProfile?.rating ?? { avg: 0, count: 0 },
     feesOwedCents: user.hostProfile?.feesOwedCents ?? 0,
+    // Host-funded refunds still owed stay owed (plan §8.1, item 15).
+    ...(user.hostProfile?.refundsOwed?.length && {
+      refundsOwed: user.hostProfile.refundsOwed.map(
+        ({ bookingId, stripeRefundId, amountCents, createdAt }) => ({
+          bookingId,
+          stripeRefundId,
+          amountCents,
+          createdAt,
+        }),
+      ),
+    }),
     reviewedBy: reapplying ? undefined : user.hostProfile?.reviewedBy,
     stripeAccountId: user.hostProfile?.stripeAccountId,
     responseRate: user.hostProfile?.responseRate,

@@ -5,6 +5,7 @@ import { enqueue } from '../../jobs/queue.js';
 import { fromNzWallClock, toNzWallClock, addNzDays } from '../../lib/nz-time.js';
 import { emitToUser } from '../../realtime/realtime.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
+import type { BookingStatus } from '../bookings/booking.model.js';
 import { UserModel } from '../users/user.model.js';
 import { NotificationModel } from './notification.model.js';
 
@@ -19,6 +20,29 @@ export type EmailContent = {
   [Name in EmailTemplateName]: { template: Name; props: EmailTemplateProps<Name> };
 }[EmailTemplateName];
 
+export interface SmsContent {
+  body: string;
+  /** Sent straight away, even in quiet hours. */
+  urgent?: boolean;
+  /**
+   * A text that waits for the end of quiet hours can be out of date by then. It's dropped if the booking it's
+   * about is no longer in one of these statuses (e.g. a request already answered or cancelled)…
+   */
+  whileBooking?: { id: Types.ObjectId | string; statuses: readonly BookingStatus[] };
+  /** …if it would arrive after this time (e.g. a reminder for a pickup that's already passed)… */
+  expiresAt?: Date;
+  /** …or, for a new-message text, if the person has read the conversation since. */
+  whileUnread?: { threadId: Types.ObjectId | string };
+}
+
+/** What an SMS notification stores, and what `notification.send` checks before sending it. */
+export interface SmsPayload {
+  body: string;
+  whileBooking?: { id: string; statuses: BookingStatus[] };
+  expiresAt?: Date;
+  whileUnread?: { threadId: string };
+}
+
 export interface NotifyInput {
   userId: Types.ObjectId | string;
   /** E.g. BOOKING_CONFIRMED. */
@@ -30,7 +54,7 @@ export interface NotifyInput {
   link?: string;
   email?: EmailContent;
   /** Sent only to a verified mobile. Non-urgent messages wait for the end of quiet hours (plan §7). */
-  sms?: { body: string; urgent?: boolean };
+  sms?: SmsContent;
   /** One event's notifications are sent once, however often the code behind them runs. */
   dedupeKey?: string;
 }
@@ -104,10 +128,18 @@ export async function notify(
     const runAt = input.sms.urgent
       ? now
       : smsSendTime(now, settings.sms.quietHoursStart, settings.sms.quietHoursEnd);
-    const [sms] = await NotificationModel.create(
-      [{ ...base, channel: 'SMS', status: 'QUEUED', payload: { body: input.sms.body } }],
-      { session },
-    );
+    const { whileBooking, expiresAt, whileUnread } = input.sms;
+    const payload: SmsPayload = {
+      body: input.sms.body,
+      ...(whileBooking && {
+        whileBooking: { id: whileBooking.id.toString(), statuses: [...whileBooking.statuses] },
+      }),
+      ...(expiresAt && { expiresAt }),
+      ...(whileUnread && { whileUnread: { threadId: whileUnread.threadId.toString() } }),
+    };
+    const [sms] = await NotificationModel.create([{ ...base, channel: 'SMS', status: 'QUEUED', payload }], {
+      session,
+    });
     await enqueue(
       'notification.send',
       { notificationId: sms!.id },

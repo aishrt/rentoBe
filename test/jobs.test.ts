@@ -4,7 +4,9 @@ import type { EmailJobPayload } from '../src/jobs/handlers/email-send.js';
 import type { JobHandlers } from '../src/jobs/handlers/index.js';
 import { JobModel } from '../src/jobs/job.model.js';
 import { cancelJobs, enqueue } from '../src/jobs/queue.js';
+import { scheduleRecurringJobs } from '../src/jobs/recurring.js';
 import { createJobRunner, type JobRunnerOptions } from '../src/jobs/runner.js';
+import { toNzWallClock } from '../src/lib/nz-time.js';
 
 const send = vi.hoisted(() => vi.fn());
 vi.mock('../src/integrations/mailer/index.js', async (importOriginal) => ({
@@ -231,5 +233,25 @@ describe('job queue', () => {
       expect.objectContaining({ to: 'hana@example.co.nz', subject: 'Welcome to Rento Vroom, Hana' }),
     );
     expect(await JobModel.countDocuments({ status: 'DONE' })).toBe(1);
+  });
+});
+
+describe('recurring jobs', () => {
+  it('queues the next run of each daily and monthly job once, however many instances start', async () => {
+    const now = new Date('2026-10-09T02:00:00.000Z');
+    await scheduleRecurringJobs(now);
+    await scheduleRecurringJobs(now);
+
+    for (const type of [
+      'availability.expandRecurring',
+      'daily.hostReminders',
+      'daily.dataRetention',
+      'daily.reviewReveal',
+    ]) {
+      expect(await JobModel.countDocuments({ type, status: 'QUEUED' }), type).toBe(1);
+    }
+    // The safety net for reviews still waiting after their window closed: 4 am NZ time, the next morning.
+    const sweep = await JobModel.findOne({ type: 'daily.reviewReveal' }).lean();
+    expect(toNzWallClock(sweep!.runAt)).toMatchObject({ day: 10, hour: 4, minute: 0 });
   });
 });

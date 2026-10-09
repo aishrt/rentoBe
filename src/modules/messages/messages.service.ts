@@ -384,7 +384,10 @@ export async function openThreadForStaff(
       const thread = message ? await ThreadModel.findById(message.threadId).select('bookingId').lean() : null;
       allowed = Boolean(thread?.bookingId.equals(booking._id));
     } else if (report?.targetType === 'USER') {
-      allowed = booking.guestId.equals(report.targetId) || booking.hostId.equals(report.targetId);
+      // Only the conversation the member was reported from: a report made elsewhere opens no thread.
+      allowed =
+        Boolean(report.bookingId?.equals(booking._id)) &&
+        (booking.guestId.equals(report.targetId) || booking.hostId.equals(report.targetId));
     }
   }
   if (!allowed) {

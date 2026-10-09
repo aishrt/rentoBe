@@ -4,7 +4,12 @@ import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/
 import { testPaymentSchema, testPaymentStatusSchema } from '../payments/payments.schemas.js';
 import { adminOverviewSchema } from './admin.schemas.js';
 import { platformSettingsResponseSchema, platformSettingsUpdateSchema } from './platform-settings.schemas.js';
-import { licenceReviewSchema, verificationQueueSchema } from './verification-queue.service.js';
+import {
+  licenceNumberSchema,
+  licenceReviewResultSchema,
+  licenceReviewSchema,
+  verificationQueueSchema,
+} from './verification-queue.service.js';
 
 /** The contract for admin.routes.ts (plan §2.3). Every admin route needs an active staff account. */
 export function registerAdminPaths(registry: OpenAPIRegistry) {
@@ -24,14 +29,28 @@ export function registerAdminPaths(registry: OpenAPIRegistry) {
     path: '/admin/users/{id}/licence-review',
     tags: ['Admin'],
     summary: 'Staff: approve or reject a driver licence checked by hand',
+    description:
+      'Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`). Rejecting releases them with their card authorisations. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check.',
     security: signedIn,
     request: { params: z.object({ id: z.string() }), body: jsonBody(licenceReviewSchema) },
     responses: {
-      200: jsonResponse(
-        'Decided',
-        z.object({ licenceStatus: z.enum(['APPROVED', 'REJECTED']) }).meta({ id: 'LicenceReviewResult' }),
-      ),
-      ...errorResponses(400, 401, 403, 404),
+      200: jsonResponse('Decided', licenceReviewResultSchema),
+      ...errorResponses(400, 401, 403, 404, 409),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/users/{id}/licence-number',
+    tags: ['Admin'],
+    summary: 'Staff: show the full driver licence number',
+    description:
+      'Decrypted to check the licence by hand. Each time it’s shown is written to the audit log (plan §14). Not cached.',
+    security: signedIn,
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: jsonResponse('The number', licenceNumberSchema),
+      ...errorResponses(401, 403, 404),
     },
   });
 

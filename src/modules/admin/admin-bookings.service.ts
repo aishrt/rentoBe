@@ -16,7 +16,13 @@ import { afterTripCompleted } from '../bookings/trip-completion.js';
 import { IncidentModel } from '../incidents/incident.model.js';
 import { notify } from '../notifications/notify.js';
 import { PaymentModel } from '../payments/payment.model.js';
-import { releaseHeldPayouts } from '../payouts/payouts.service.js';
+import {
+  recoverHostRefund,
+  releaseHeldPayouts,
+  reversePayoutTransfer,
+  tripPayoutPending,
+  type HostRefundRecovery,
+} from '../payouts/payouts.service.js';
 import { PayoutModel } from '../payouts/payout.model.js';
 import { SupportTicketModel } from '../support/support-ticket.model.js';
 import { UserModel } from '../users/user.model.js';
@@ -159,6 +165,8 @@ export async function adminBookingDetail(
     })),
     tickets: tickets.map((ticket) => ({ ref: ticket.ref, subject: ticket.subject, status: ticket.status })),
     refundableCents: paid ? Math.max(0, paid.amountCents - refunded) : 0,
+    // A Host-funded refund then comes off the Host's next payout or the transfer (plan §8.1, item 15).
+    tripPayoutSent: !(await tripPayoutPending(booking._id)),
   };
 }
 
@@ -222,8 +230,8 @@ export async function editBookingStatus(
 
 /**
  * POST /admin/bookings/{id}/refunds: a refund to the Guest's card, with the refunds permission (plan §6.2).
- * A Host-funded refund comes off the trip's payout, or off the Host's next payout once it's paid (plan §8.1,
- * item 15).
+ * A Host-funded refund comes off the trip's payout while it's still to be sent. Once it's sent, it comes off
+ * the Host's next payout, or staff can choose to reverse the Stripe transfer instead (plan §8.1, item 15).
  */
 export async function adminRefund(
   actor: Actor,
@@ -240,12 +248,21 @@ export async function adminRefund(
     input.amountCents,
     `refund-${payment.id}-admin-${new mongoose.Types.ObjectId().toString()}`,
   );
+  const hostFunded = input.fundedBy === 'HOST' && refund.status !== 'FAILED';
+  const recoverFrom = input.recoverFrom ?? 'NEXT_PAYOUT';
+  // Reversing the transfer is a Stripe call, so it's made before the refund is recorded.
+  const reversal =
+    hostFunded && recoverFrom === 'REVERSE_TRANSFER' && !(await tripPayoutPending(booking._id))
+      ? await reversePayoutTransfer(booking, refund)
+      : undefined;
+  let hostRefund: HostRefundRecovery | undefined;
   await withTransaction(async (session) => {
     const fresh = await PaymentModel.findById(payment._id).session(session);
     if (!fresh) return;
     fresh.refunds.push({
       amountCents: refund.amountCents,
       reason: input.reason,
+      kind: 'STAFF',
       issuedBy: new mongoose.Types.ObjectId(actor.userId),
       fundedBy: input.fundedBy,
       stripeRefundId: refund.stripeRefundId,
@@ -255,21 +272,7 @@ export async function adminRefund(
     });
     fresh.status = statusAfterRefunds(fresh);
     await fresh.save({ session });
-    if (input.fundedBy === 'HOST' && refund.status !== 'FAILED') {
-      // Paid already: the Host owes it, and it comes off their next payout.
-      const tripPaid = await PayoutModel.exists({
-        bookingId: booking._id,
-        type: 'TRIP',
-        status: 'PAID',
-      }).session(session);
-      if (tripPaid) {
-        await UserModel.updateOne(
-          { _id: booking.hostId },
-          { $inc: { 'hostProfile.feesOwedCents': refund.amountCents } },
-          { session },
-        );
-      }
-    }
+    if (hostFunded) hostRefund = await recoverHostRefund(booking, refund, reversal, session, now);
     await notify(
       {
         userId: booking.guestId,
@@ -311,10 +314,12 @@ export async function adminRefund(
       fundedBy: input.fundedBy,
       reason: input.reason,
       status: refund.status,
+      // How a Host-funded refund is recovered, as staff chose and as it happened (plan §8.1, item 15).
+      ...(hostRefund && { recoverFrom, hostRefund }),
     },
     ...(ip && { ip }),
   });
-  return adminBookingDetail(actor, booking.id);
+  return { ...(await adminBookingDetail(actor, booking.id)), ...(hostRefund && { hostRefund }) };
 }
 
 async function upcomingFor(filter: Record<string, unknown>, now: Date) {

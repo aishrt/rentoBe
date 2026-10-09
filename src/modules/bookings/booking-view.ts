@@ -131,6 +131,8 @@ function party(
   showPhone: boolean,
 ) {
   return {
+    // For a link to their public profile (plan §6.2).
+    ...(user && { id: user._id.toString() }),
     firstName: user?.firstName ?? 'Former member',
     ...(user?.avatarUrl && { avatarUrl: user.avatarUrl }),
     verified: user?.identityVerification?.status === 'APPROVED',
@@ -145,9 +147,17 @@ function payoutView(booking: BookingRecord, context: BookingContext) {
   const main = context.payouts.find(
     (payout) => payout.type !== 'EXTRA_CHARGE' && payout.status !== 'CANCELLED',
   );
+  // What actually reached the Host: transfers less any taken back for refunds (plan §8.1, item 15).
   const paid = context.payouts
     .filter((payout) => payout.status === 'PAID')
-    .reduce((sum, payout) => sum + payout.amountCents, 0);
+    .reduce(
+      (sum, payout) =>
+        sum +
+        payout.amountCents -
+        (payout.reversals ?? []).reduce((reversed, reversal) => reversed + reversal.amountCents, 0),
+      0,
+    );
+  const refunds = (context.payment?.refunds ?? []).filter((refund) => refund.status !== 'FAILED');
   return {
     hostPayoutCents: booking.price.hostPayoutCents,
     platformFeeCents: booking.price.platformFeeCents,
@@ -164,6 +174,13 @@ function payoutView(booking: BookingRecord, context: BookingContext) {
       }),
     }),
     ...(paid > 0 && { paidCents: paid }),
+    ...(refunds.length > 0 && {
+      refunds: refunds.map((refund) => ({
+        amountCents: refund.amountCents,
+        at: refund.createdAt.toISOString(),
+        fundedBy: refund.fundedBy,
+      })),
+    }),
   };
 }
 
