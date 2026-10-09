@@ -49,6 +49,15 @@ describe('environment', () => {
     expect(() => parseEnv({ ...baseEnv, STRIPE_WEBHOOK_SECRET: 'sk_test_51Abc' })).toThrow(/whsec_/);
   });
 
+  it("takes Resend's webhook signing secret, trimmed, and refuses anything else", () => {
+    const secret = `whsec_${Buffer.from('a-test-signing-key-of-32-bytes!!').toString('base64')}`;
+    expect(parseEnv(baseEnv).RESEND_WEBHOOK_SECRET).toBeUndefined();
+    expect(parseEnv({ ...baseEnv, RESEND_WEBHOOK_SECRET: ` ${secret}\n` }).RESEND_WEBHOOK_SECRET).toBe(
+      secret,
+    );
+    expect(() => parseEnv({ ...baseEnv, RESEND_WEBHOOK_SECRET: 're_123abc' })).toThrow(/whsec_/);
+  });
+
   it('needs the bucket and the media address for S3 uploads', () => {
     expect(parseEnv(baseEnv)).toMatchObject({ UPLOAD_DRIVER: 'local', S3_REGION: 'ap-southeast-2' });
     expect(() => parseEnv({ ...baseEnv, UPLOAD_DRIVER: 's3' })).toThrow(/S3_BUCKET[\s\S]*MEDIA_PUBLIC_URL/);

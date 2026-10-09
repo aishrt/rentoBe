@@ -73,6 +73,8 @@ const envSchema = z
     // Without it POST /webhooks/resend answers 503 and emails stay "sent".
     RESEND_WEBHOOK_SECRET: z
       .string()
+      // A secret pasted into Secrets Manager with a space or line break around it still works.
+      .trim()
       .regex(/^whsec_[A-Za-z0-9+/]+={0,2}$/, 'RESEND_WEBHOOK_SECRET starts with whsec_')
       .optional(),
 

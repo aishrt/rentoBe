@@ -88,6 +88,10 @@
         {
           "name": "GOOGLE_MAPS_SERVER_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:GOOGLE_MAPS_SERVER_KEY::"
+        },
+        {
+          "name": "RESEND_WEBHOOK_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:RESEND_WEBHOOK_SECRET::"
         }
       ],
       "logConfiguration": {
