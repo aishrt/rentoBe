@@ -1,4 +1,5 @@
-import mongoose, { type Types } from 'mongoose';
+import mongoose, { type ClientSession, type Types } from 'mongoose';
+import Stripe from 'stripe';
 import { withTransaction } from '../../db.js';
 import { stripe } from '../../integrations/stripe.js';
 import { enqueue } from '../../jobs/queue.js';
@@ -12,9 +13,13 @@ import {
   reserveTripDates,
   tripDatesStillHeld,
 } from '../availability/availability.service.js';
-import { PaymentModel } from '../payments/payment.model.js';
+import { ConditionReportModel } from '../inspections/condition-report.model.js';
+import { bookingPayment } from '../payments/booking-payment.js';
+import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
+import { tripPayoutOnCancel } from '../payouts/payouts.service.js';
 import { ReviewModel } from '../reviews/review.model.js';
 import { checkBookingVelocity } from '../risk/risk-signals.js';
+import { alertStaff } from '../staff/staff-alerts.js';
 import { eligibilityProblems, verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel, type Role } from '../users/user.model.js';
 import { isStaff } from '../users/user.service.js';
@@ -28,6 +33,8 @@ import {
   cancelIntent,
   captureIntent,
   refundIntent,
+  releaseOtherPayments,
+  releasePayment,
   statusAfterRefunds,
   vehicleSuspended,
   vehicleTakesBookings,
@@ -299,8 +306,17 @@ const GUEST_SAW_IT = {
   $or: [...REACHED_THE_HOST.$or, { paymentReturnedAt: mongoose.trusted({ $exists: true }) }],
 };
 
-/** GET /bookings: a Guest's trips or a Host's bookings, grouped as in plan §8.2 (dashboard grouping). */
-export async function listBookings(userId: string, role: 'guest' | 'host', group?: string, now = new Date()) {
+/**
+ * GET /bookings: a Guest's trips or a Host's bookings, grouped as in plan §8.2 (dashboard grouping), a page
+ * at a time (`skip`, `limit`).
+ */
+export async function listBookings(
+  userId: string,
+  role: 'guest' | 'host',
+  group?: string,
+  now = new Date(),
+  { skip = 0, limit = 100 }: { skip?: number; limit?: number } = {},
+) {
   const owner = role === 'guest' ? { guestId: userId } : { hostId: userId };
   const grouped =
     group && GROUP_FILTERS[group]
@@ -308,9 +324,11 @@ export async function listBookings(userId: string, role: 'guest' | 'host', group
       : { status: mongoose.trusted({ $ne: 'PAYMENT_PENDING' }) };
   const filter = { ...owner, $and: [grouped, role === 'host' ? REACHED_THE_HOST : GUEST_SAW_IT] };
   const ascending = group === 'upcoming' || group === 'requests';
+  // The id settles ties, so the pages never overlap.
   const bookings = await BookingModel.find(filter)
-    .sort({ startAt: ascending ? 1 : -1 })
-    .limit(100)
+    .sort({ startAt: ascending ? 1 : -1, _id: ascending ? 1 : -1 })
+    .skip(skip)
+    .limit(limit)
     .lean();
   const others = await UserModel.find({
     _id: mongoose.trusted({
@@ -457,14 +475,24 @@ export async function acceptBooking(
   if (booking.status !== 'PENDING')
     throw new HttpError(409, 'NOT_PENDING', 'This request has already been answered.');
   if (booking.instantBook) throw notARequest();
-  if (booking.hostAcceptedAt) return booking;
+  // Accepted already: it waits for support to approve the Guest's verification. Once nothing else blocks it,
+  // accepting again captures the payment, if Stripe couldn't be reached to capture it before.
+  if (booking.hostAcceptedAt && booking.verificationReview?.status === 'PENDING') return booking;
+  // Too late once the trip has started (plan §8.2): the request ends now, and the card hold is released, unless
+  // the capture had gone through after all, which confirmed it.
+  if (booking.startAt <= now) {
+    await expireRequest(booking.id, now, { force: true });
+    const fresh = await BookingModel.findById(booking._id);
+    if (fresh?.status === 'CONFIRMED') return fresh;
+    throw tripStarted('request');
+  }
   if (!booking.requestExpiresAt || booking.requestExpiresAt <= now) {
     throw new HttpError(409, 'REQUEST_EXPIRED', 'This request has expired.');
   }
   // A suspended car takes no new bookings (plan §8.2): the request waits for staff, or expires.
   if (!(await vehicleTakesBookings(booking.vehicleId))) throw vehicleSuspended();
 
-  if (booking.verificationReview?.status === 'PENDING') {
+  if (booking.verificationReview?.status === 'PENDING' && !booking.hostAcceptedAt) {
     const accepted = await withTransaction(async (session) => {
       const updated = await BookingModel.findOneAndUpdate(
         { _id: booking._id, status: 'PENDING', hostAcceptedAt: mongoose.trusted({ $exists: false }) },
@@ -486,16 +514,36 @@ export async function acceptBooking(
   return (await BookingModel.findById(booking._id))!;
 }
 
+/** The trip has started: a request or a booking waiting for verification can't be confirmed (plan §8.2). */
+const tripStarted = (what: 'request' | 'booking') =>
+  new HttpError(
+    409,
+    'TRIP_STARTED',
+    what === 'request'
+      ? "The trip's start time has passed, so this request can't be accepted any more. The guest's card hold is released."
+      : "The trip's start time has passed, so this booking can't be confirmed any more. The guest's card hold is released.",
+  );
+
+/** The codes capturePending() ends a booking with: its authorisation is released, not captured. */
+const ENDED_UNCAPTURED = ['PAYMENT_EXPIRED', 'TRIP_STARTED'];
+/** The codes it leaves a booking waiting with: Stripe's webhook, a retry or the request's expiry settles it. */
+const CAPTURE_UNSETTLED = ['PAYMENTS_UNAVAILABLE', 'CAPTURE_FAILED'];
+
 /**
- * Captures a pending booking's authorisation, which confirms it. An authorisation that can no longer
- * be captured ends the booking instead.
+ * Captures a pending booking's authorisation, which confirms it. An authorisation that can no longer be
+ * captured, or a trip that has already started, ends the booking instead (plan §8.1, item 14). A capture
+ * whose result isn't known (Stripe unreachable) ends nothing: it may have gone through, so its webhook
+ * confirms the booking, or trying again captures it (the idempotency key never captures twice).
  */
 async function capturePending(booking: BookingDocument, now: Date): Promise<void> {
-  const payment = await PaymentModel.findOne({
-    bookingId: booking._id,
-    type: 'BOOKING',
-    status: 'AUTHORISED',
-  }).sort({ createdAt: -1 });
+  if (booking.startAt <= now) {
+    await expireRequest(booking.id, now, { force: true });
+    // Stripe had captured it already: then it's confirmed.
+    if ((await BookingModel.findById(booking._id).select('status').lean())?.status === 'CONFIRMED') return;
+    throw tripStarted('booking');
+  }
+  const found = await bookingPayment(booking);
+  const payment = found?.status === 'AUTHORISED' ? found : null;
   if (!payment)
     throw new HttpError(
       409,
@@ -503,22 +551,56 @@ async function capturePending(booking: BookingDocument, now: Date): Promise<void
       "The guest's payment isn't authorised. Please contact support.",
     );
 
-  let intent;
+  let intent: Stripe.PaymentIntent;
   try {
     intent = await captureIntent(payment);
   } catch (error) {
-    // The authorisation can no longer be captured: the request can't go ahead.
-    await expireRequest(booking.id, now, { force: true });
-    throw new HttpError(
-      409,
-      'PAYMENT_EXPIRED',
-      "The guest's card authorisation has lapsed, so this request has expired.",
-      {
-        reason: error instanceof Error ? error.message : 'capture failed',
-      },
-    );
+    if (
+      !(error instanceof Stripe.errors.StripeCardError) &&
+      !(error instanceof Stripe.errors.StripeInvalidRequestError)
+    ) {
+      throw new HttpError(
+        503,
+        'PAYMENTS_UNAVAILABLE',
+        "We couldn't reach our payment provider to take the guest's payment. Please try again in a moment.",
+      );
+    }
+    // Stripe refused the capture. It may have been captured already; otherwise the authorisation lapsed or
+    // was released, and the request can't go ahead.
+    const current = await stripe()
+      .paymentIntents.retrieve(payment.stripePaymentIntentId)
+      .catch(() => null);
+    if (current?.status === 'succeeded') {
+      intent = current;
+    } else if (!current || current.status === 'requires_capture' || current.status === 'processing') {
+      throw new HttpError(
+        409,
+        'CAPTURE_FAILED',
+        "The guest's payment couldn't be taken just now. Please try again, or contact support.",
+        { reason: error.message },
+      );
+    } else {
+      await expireRequest(booking.id, now, { force: true });
+      throw new HttpError(
+        409,
+        'PAYMENT_EXPIRED',
+        "The guest's card authorisation has lapsed, so this request has expired.",
+        { reason: error.message },
+      );
+    }
   }
   await withTransaction((session) => applyPaymentIntent(intent, session, now));
+}
+
+/** Staff hear of a capture that couldn't be settled while confirming bookings in bulk; the others go on. */
+async function captureUnsettled(booking: BookingDocument, error: HttpError) {
+  await alertStaff({
+    type: 'CAPTURE_UNSETTLED',
+    title: `Payment for ${booking.ref} not taken yet`,
+    body: `booking ${booking.ref} is ready to confirm, but the guest's payment couldn't be taken (${error.message}). It's confirmed if Stripe took it; otherwise it's released when the request expires. Contact the guest if it doesn't go ahead.`,
+    link: `/admin/bookings/${booking.ref}`,
+    dedupeKey: `CAPTURE_UNSETTLED:${booking.id}`,
+  });
 }
 
 /**
@@ -534,6 +616,7 @@ export async function confirmAfterSuspension(
     status: 'PENDING',
     'verificationReview.status': 'APPROVED',
     requestExpiresAt: mongoose.trusted({ $gt: now }),
+    startAt: mongoose.trusted({ $gt: now }),
     $or: [{ instantBook: true }, { hostAcceptedAt: mongoose.trusted({ $exists: true }) }],
   });
   const confirmed: string[] = [];
@@ -543,7 +626,9 @@ export async function confirmAfterSuspension(
       await capturePending(booking, now);
       confirmed.push(booking.ref);
     } catch (error) {
-      if (!(error instanceof HttpError) || error.code !== 'PAYMENT_EXPIRED') throw error;
+      if (!(error instanceof HttpError)) throw error;
+      if (CAPTURE_UNSETTLED.includes(error.code)) await captureUnsettled(booking, error);
+      else if (!ENDED_UNCAPTURED.includes(error.code)) throw error;
     }
   }
   return confirmed;
@@ -558,10 +643,9 @@ export async function declineBooking(
   if (booking.status !== 'PENDING' || booking.hostAcceptedAt)
     throw new HttpError(409, 'NOT_PENDING', 'This request has already been answered.');
   if (booking.instantBook) throw notARequest();
-  const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
-    createdAt: -1,
-  });
-  await cancelIntent(payment);
+  const payment = await bookingPayment(booking);
+  // Captured a moment ago (a double click on Accept): the booking is confirmed, not declined.
+  if ((await releasePayment(payment)) !== 'released') throw justChanged('PENDING', 'HOST');
   const declined = await withTransaction(async (session) => {
     const ended = await endBooking(
       booking,
@@ -569,29 +653,86 @@ export async function declineBooking(
       session,
     );
     if (!ended) return null;
-    if (payment)
-      await PaymentModel.updateOne({ _id: payment._id }, { $set: { status: 'CANCELLED' } }, { session });
+    if (payment) await markReleased(payment, session);
     await notifyRequestEnded(record(ended), await loadBookingContext(record(ended)), 'DECLINED', { session });
     return ended;
   });
+  if (declined) await releaseOtherPayments(booking, payment);
   await updateResponseRate(booking.hostId);
   return declined ?? (await BookingModel.findById(booking._id))!;
 }
 
-/** What a cancellation would do, for the actor's role (plan §11: cancellation-preview). */
-async function outcomeFor(
-  booking: BookingDocument,
-  viewer: Viewer,
-  now: Date,
-): Promise<CancellationOutcome | null> {
-  const settings = await getPlatformSettings();
-  if (viewer === 'GUEST') {
-    if (booking.status === 'PAYMENT_PENDING') return noCharge('ABANDON_CHECKOUT', booking, now);
-    if (booking.status === 'PENDING') return noCharge('WITHDRAW_REQUEST', booking, now);
-    if (booking.status === 'CONFIRMED') return guestCancellation(booking, settings, now);
+/** A released payment is recorded as cancelled, unless it's already recorded as taken (plan §8.1, item 14). */
+const markReleased = (payment: PaymentDocument, session: ClientSession) =>
+  PaymentModel.updateOne(
+    { _id: payment._id, status: mongoose.trusted({ $in: ['PENDING', 'AUTHORISED', 'FAILED'] }) },
+    { $set: { status: 'CANCELLED' } },
+    { session },
+  );
+
+/**
+ * Stripe took the payment a moment ago (the Host accepted, or 3-D Secure finished), so the booking moved on
+ * instead of ending (plan §8.1, item 14).
+ */
+/** The trip's payout is being sent this moment: a cancellation waits for it (plan §8.1, items 15 and 16). */
+const payoutInFlight = () =>
+  new HttpError(409, 'PAYOUT_IN_FLIGHT', 'The Host’s payout is being sent right now. Try again in a minute.');
+
+const justChanged = (status: BookingDocument['status'], by: 'GUEST' | 'HOST' | 'SUPPORT' = 'GUEST') =>
+  new HttpError(
+    409,
+    'ALREADY_CHANGED',
+    status === 'PAYMENT_PENDING'
+      ? 'The payment went through a moment ago, so this booking has moved on. Please refresh to see it.'
+      : by === 'HOST'
+        ? 'This request was accepted a moment ago, so it can’t be declined. Please refresh.'
+        : 'This request was accepted and paid for a moment ago. Please refresh: it can still be cancelled under the cancellation policy.',
+  );
+
+/** A cancellation's outcome once the payment's earlier refunds are counted. */
+interface PaidOutcome extends CancellationOutcome {
+  /** Refunds already made on the payment (staff may part-refund a confirmed trip), failed ones aside. */
+  earlierRefundCents: number;
+  /** The policy's refund, before the earlier refunds came off it. */
+  policyRefundCents: number;
+}
+
+/**
+ * Earlier refunds come off what a cancellation can still give back (plan §8.1, items 10 and 15): the refund
+ * is the policy's, up to what's left of the payment, and what's kept is what the Guest has still paid after
+ * it. The Host's share of the kept fee stays the policy's: an earlier refund the Host funded is recovered from
+ * them once (it's owed when the trip's payout is cancelled), and one the platform funded is its own cost.
+ */
+function afterEarlierRefunds(outcome: CancellationOutcome, payment: PaymentDocument | null): PaidOutcome {
+  const earlierRefundCents = (payment?.refunds ?? [])
+    .filter((refund) => refund.status !== 'FAILED')
+    .reduce((sum, refund) => sum + refund.amountCents, 0);
+  if (!payment || earlierRefundCents === 0) {
+    return { ...outcome, earlierRefundCents, policyRefundCents: outcome.refundCents };
   }
-  if (viewer === 'HOST' && booking.status === 'CONFIRMED') return hostCancellation(booking, settings, now);
-  return null;
+  const left = Math.max(0, payment.amountCents - earlierRefundCents);
+  const refundCents = Math.min(outcome.refundCents, left);
+  return {
+    ...outcome,
+    refundCents,
+    feeCents: left - refundCents,
+    earlierRefundCents,
+    policyRefundCents: outcome.refundCents,
+  };
+}
+
+/** What a cancellation would do, for the actor's role (plan §11: cancellation-preview). */
+async function outcomeFor(booking: BookingDocument, viewer: Viewer, now: Date): Promise<PaidOutcome | null> {
+  const settings = await getPlatformSettings();
+  let outcome: CancellationOutcome | null = null;
+  if (viewer === 'GUEST') {
+    if (booking.status === 'PAYMENT_PENDING') outcome = noCharge('ABANDON_CHECKOUT', booking, now);
+    if (booking.status === 'PENDING') outcome = noCharge('WITHDRAW_REQUEST', booking, now);
+    if (booking.status === 'CONFIRMED') outcome = guestCancellation(booking, settings, now);
+  }
+  if (viewer === 'HOST' && booking.status === 'CONFIRMED') outcome = hostCancellation(booking, settings, now);
+  if (!outcome) return null;
+  return afterEarlierRefunds(outcome, booking.status === 'CONFIRMED' ? await bookingPayment(booking) : null);
 }
 
 const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -623,18 +764,35 @@ export async function cancellationPreview(
   const policy = booking.cancellationTerms
     ? `the ${booking.cancellationTerms.name} policy`
     : 'the cancellation policy';
+  // Refunds staff made earlier come off what goes back now; everything already back leaves nothing to refund.
+  const allBack =
+    outcome.earlierRefundCents > 0 && outcome.refundCents === 0 && outcome.policyRefundCents > 0;
+  const earlier =
+    outcome.earlierRefundCents === 0 || allBack
+      ? ''
+      : viewer === 'GUEST'
+        ? ` You’ve already had ${formatDollars(outcome.earlierRefundCents)} back${outcome.refundCents < outcome.policyRefundCents ? `, which comes off the ${formatDollars(outcome.policyRefundCents)} the policy gives back` : ''}.`
+        : ` ${formatDollars(outcome.earlierRefundCents)} was already refunded to the guest.`;
+  const hostFee =
+    outcome.hostFeeCents > 0
+      ? ` A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off your next payout.`
+      : '';
   const message =
     outcome.kind === 'WITHDRAW_REQUEST'
       ? 'Your card authorisation will be released. Nothing is charged.'
       : outcome.kind === 'ABANDON_CHECKOUT'
         ? "The dates you're holding will be released. Nothing has been charged."
         : outcome.kind === 'HOST_CANCELLATION'
-          ? `The guest gets a full refund of ${formatDollars(outcome.refundCents)}.${outcome.hostFeeCents > 0 ? ` A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off your next payout.` : ''}`
-          : outcome.feeCents === 0
-            ? `You'll get a full refund of ${formatDollars(outcome.refundCents)}.`
-            : outcome.refundCents === 0
-              ? `Under ${policy}, this cancellation isn't refundable.`
-              : `Under ${policy} you'll get ${formatDollars(outcome.refundCents)} back; ${formatDollars(outcome.feeCents)} is kept.`;
+          ? allBack
+            ? `Everything the guest paid has already been refunded, so nothing more goes back.${hostFee}`
+            : `The guest gets a full refund of ${formatDollars(outcome.refundCents)}.${earlier}${hostFee}`
+          : allBack
+            ? 'Everything you paid has already been refunded, so nothing more comes back.'
+            : outcome.feeCents === 0
+              ? `You'll get a full refund of ${formatDollars(outcome.refundCents)}.${earlier}`
+              : outcome.refundCents === 0
+                ? `Under ${policy}, this cancellation isn't refundable.${earlier}`
+                : `Under ${policy} you'll get ${formatDollars(outcome.refundCents)} back; ${formatDollars(outcome.feeCents)} is kept.${earlier}`;
   return {
     allowed: true,
     kind: outcome.kind,
@@ -669,21 +827,29 @@ async function carryOut(
   },
   now: Date,
 ): Promise<BookingDocument> {
-  const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
-    createdAt: -1,
-  });
+  const payment = await bookingPayment(booking);
   // An unpaid checkout or a request was only authorised: the authorisation is released, not refunded.
   const uncaptured = booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING';
+  // The trip's payout: one being sent this moment is neither cancelled nor paid twice, so the cancellation waits
+  // for it; one already paid is settled against the Host's share of the kept fee (plan §8.1, items 15 and 16).
+  const tripPayout = uncaptured ? null : await tripPayoutOnCancel(booking._id, outcome.hostShareCents);
+  if (tripPayout?.state === 'IN_FLIGHT') throw payoutInFlight();
   let refund: RefundRecord | undefined;
   if (uncaptured) {
-    await cancelIntent(payment);
+    // Stripe may have taken it a moment ago (the Host accepted, 3-D Secure finished): then it isn't ended.
+    if ((await releasePayment(payment, now)) !== 'released') throw justChanged(booking.status);
   } else if (outcome.refundCents > 0) {
     // A payment staff already refunded in part can still be refunded, up to what's left.
     if (!payment || !isPaid(payment.status)) {
       throw new HttpError(409, 'NOT_PAID', "This booking's payment isn't complete. Please contact support.");
     }
-    refund = await refundIntent(payment, outcome.refundCents, `refund-${booking.id}-cancellation`);
+    // Nothing left to give back (staff refunded the rest meanwhile): it's cancelled all the same.
+    if (afterEarlierRefunds(outcome, payment).refundCents > 0) {
+      refund = await refundIntent(payment, outcome.refundCents, `refund-${booking.id}-cancellation`);
+    }
   }
+  // What actually goes back, for the booking's record and what both parties are told.
+  const applied: CancellationOutcome = { ...outcome, refundCents: refund?.amountCents ?? 0 };
 
   const cancelled = await withTransaction(async (session) => {
     const ended = await endBooking(
@@ -692,13 +858,15 @@ async function carryOut(
         ? { to: 'EXPIRED', from: ['PAYMENT_PENDING'], by: input.by, reason: 'Checkout abandoned', now }
         : {
             to: 'CANCELLED',
-            from: booking.status === 'PENDING' ? ['PENDING'] : ['CONFIRMED'],
+            // ACTIVE: a Guest no-show after the Host's check-in, which the Guest never confirmed (plan §8.2).
+            from:
+              booking.status === 'PENDING' || booking.status === 'ACTIVE' ? [booking.status] : ['CONFIRMED'],
             by: input.by,
             reason: input.note,
             now,
             cancellation: {
               reason: input.reason,
-              refundCents: refund?.amountCents ?? outcome.refundCents,
+              refundCents: applied.refundCents,
               feeCents: outcome.feeCents,
               hostShareCents: outcome.hostShareCents,
               hostFeeCents: outcome.hostFeeCents,
@@ -712,6 +880,9 @@ async function carryOut(
       const fresh = await PaymentModel.findById(payment._id).session(session);
       if (fresh) {
         if (refund) {
+          // Recorded from Stripe already if an earlier try's transaction failed (plan §8.1, item 13): replaced.
+          const known = fresh.refunds.findIndex((item) => item.stripeRefundId === refund.stripeRefundId);
+          if (known >= 0) fresh.refunds.splice(known, 1);
           fresh.refunds.push({
             amountCents: refund.amountCents,
             reason: `Cancellation (${input.reason})`,
@@ -745,13 +916,22 @@ async function carryOut(
       await notifyCancelled(
         record(ended),
         await loadBookingContext(record(ended)),
-        outcome,
+        applied,
         input.cancelledBy,
-        { session, released: uncaptured },
+        {
+          session,
+          released: uncaptured,
+          ...(tripPayout?.state === 'PAID' && {
+            tripPayoutSentCents: tripPayout.paidCents,
+            hostOwesCents: tripPayout.owedCents,
+          }),
+        },
       );
     }
     return ended;
   });
+  // A second payment still live at Stripe goes too.
+  if (uncaptured) await releaseOtherPayments(booking, payment, now);
 
   await recordAudit({
     actorId: input.by,
@@ -760,7 +940,7 @@ async function carryOut(
     entityId: booking.id,
     before: { status: booking.status },
     after: {
-      refundCents: refund?.amountCents ?? outcome.refundCents,
+      refundCents: applied.refundCents,
       feeCents: outcome.feeCents,
       hostFeeCents: outcome.hostFeeCents,
       ...(uncaptured && { authorisationReleased: true }),
@@ -811,13 +991,15 @@ export async function cancelBooking(
  * the start time (whenever support records it, which is usually after the start), a Host no-show or a Host
  * cancellation made for the Host is a Host cancellation, and a platform cancellation a full refund. A request,
  * or a booking waiting for the Guest's verification, was only authorised: it's a platform cancellation that
- * releases the authorisation, with no fee for anyone.
+ * releases the authorisation, with no fee for anyone. A trip under way can be cancelled only as a Guest no-show,
+ * when the Host recorded the check-in alone and the Guest never confirmed it. Earlier refunds come off the
+ * refund (afterEarlierRefunds).
  */
 async function adminOutcome(
   booking: BookingDocument,
   reason: AdminCancelReason,
   now: Date,
-): Promise<CancellationOutcome> {
+): Promise<PaidOutcome> {
   if (booking.status === 'PENDING') {
     if (reason !== 'PLATFORM') {
       throw new HttpError(
@@ -826,9 +1008,17 @@ async function adminOutcome(
         'A no-show or a Host cancellation applies only to a confirmed booking. Cancel this request as a platform cancellation.',
       );
     }
-    return { ...platformCancellation(booking, now), refundCents: 0 };
+    return afterEarlierRefunds({ ...platformCancellation(booking, now), refundCents: 0 }, null);
   }
-  if (booking.status !== 'CONFIRMED') {
+  if (booking.status === 'ACTIVE') {
+    if (reason !== 'GUEST_NO_SHOW' || !(await guestMayNotHaveShown(booking))) {
+      throw new HttpError(
+        409,
+        'NOT_CANCELLABLE',
+        'A trip under way can be cancelled only as a Guest no-show, when the Host did the check-in alone and the Guest hasn’t confirmed it.',
+      );
+    }
+  } else if (booking.status !== 'CONFIRMED') {
     throw new HttpError(
       409,
       'NOT_CANCELLABLE',
@@ -836,11 +1026,36 @@ async function adminOutcome(
     );
   }
   const settings = await getPlatformSettings();
-  return reason === 'GUEST_NO_SHOW'
-    ? guestCancellation(booking, settings, booking.startAt)
-    : reason === 'HOST_NO_SHOW' || reason === 'HOST_CANCELLED'
-      ? hostCancellation(booking, settings, now)
-      : platformCancellation(booking, now);
+  const outcome =
+    reason === 'GUEST_NO_SHOW'
+      ? guestCancellation(booking, settings, booking.startAt)
+      : reason === 'HOST_NO_SHOW' || reason === 'HOST_CANCELLED'
+        ? hostCancellation(booking, settings, now)
+        : platformCancellation(booking, now);
+  const paid = afterEarlierRefunds(outcome, await bookingPayment(booking));
+  // The trip's payout is being sent this moment (a trip under way): the cancellation waits for it.
+  if ((await tripPayoutOnCancel(booking._id, paid.hostShareCents)).state === 'IN_FLIGHT') {
+    throw payoutInFlight();
+  }
+  return paid;
+}
+
+/**
+ * A trip the Host checked in alone, which the Guest hasn't confirmed and which has no check-out: the Guest may
+ * never have turned up (plan §8.2, no-shows). The trip started with the Host's check-in, so staff can still
+ * cancel it as a Guest no-show, and the start check reminds the Guest and alerts staff.
+ */
+export async function guestMayNotHaveShown(booking: Pick<BookingRecord, '_id' | 'hostId'>): Promise<boolean> {
+  const reports = await ConditionReportModel.find({ bookingId: booking._id })
+    .select('stage submittedBy confirmedByGuestAt')
+    .lean();
+  const checkIn = reports.find((report) => report.stage === 'CHECK_IN');
+  return Boolean(
+    checkIn &&
+    !reports.some((report) => report.stage === 'CHECK_OUT') &&
+    checkIn.submittedBy?.equals(booking.hostId) &&
+    !checkIn.confirmedByGuestAt,
+  );
 }
 
 /** Staff cancel a confirmed booking or a pending one (plan §8.2), with the normal path's side effects. */
@@ -865,7 +1080,7 @@ export async function adminCancellationPreview(
   now = new Date(),
 ): Promise<AdminCancellationPreview> {
   const none = { refundCents: 0, feeCents: 0, hostShareCents: 0, hostFeeCents: 0, releasedCents: 0 };
-  let outcome: CancellationOutcome;
+  let outcome: PaidOutcome;
   try {
     outcome = await adminOutcome(booking, reason, now);
   } catch (error) {
@@ -886,9 +1101,7 @@ export async function adminCancellationPreview(
     refundPct: outcome.refundPct,
     hoursBeforeStart: outcome.hoursBeforeStart,
   };
-  const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
-    createdAt: -1,
-  });
+  const payment = await bookingPayment(booking);
 
   if (booking.status === 'PENDING') {
     const releasedCents = payment?.amountCents ?? booking.price.totalCents;
@@ -908,24 +1121,36 @@ export async function adminCancellationPreview(
       message: "This booking's payment isn't complete, so there's nothing to refund yet.",
     };
   }
-  // Earlier refunds come off what can still go back to the card.
-  const refunded = (payment?.refunds ?? [])
-    .filter((item) => item.status !== 'FAILED')
-    .reduce((sum, item) => sum + item.amountCents, 0);
-  const refundCents = Math.min(outcome.refundCents, Math.max(0, (payment?.amountCents ?? 0) - refunded));
+  // Earlier refunds came off what can still go back to the card (afterEarlierRefunds).
+  const refundCents = outcome.refundCents;
   const policy = booking.cancellationTerms
     ? `the ${booking.cancellationTerms.name} policy`
     : 'the cancellation policy';
   const capped =
-    refundCents < outcome.refundCents
-      ? ` That's ${formatDollars(outcome.refundCents)} under the policy, less what was already refunded.`
+    refundCents < outcome.policyRefundCents
+      ? ` That's ${formatDollars(outcome.policyRefundCents)} under the policy, less what was already refunded.`
       : '';
+  // The Host's share of the kept fee is the policy's, so after an earlier refund it can be more than is kept.
+  const hostShare =
+    outcome.hostShareCents <= outcome.feeCents
+      ? `, of which the Host gets ${formatDollars(outcome.hostShareCents)}`
+      : `, and the Host gets ${formatDollars(outcome.hostShareCents)}`;
+  // The trip's payout already went (a no-show after the Host's check-in): settled against their share.
+  const trip = await tripPayoutOnCancel(booking._id, outcome.hostShareCents);
+  const sent =
+    trip.state !== 'PAID'
+      ? ''
+      : trip.owedCents > 0
+        ? ` The Host’s trip payout of ${formatDollars(trip.paidCents)} was already sent, so ${formatDollars(trip.owedCents)} of it comes off their next payout.`
+        : trip.topUpCents > 0
+          ? ` The Host’s trip payout of ${formatDollars(trip.paidCents)} was already sent, so they’re paid the ${formatDollars(trip.topUpCents)} difference.`
+          : ` The Host’s trip payout of ${formatDollars(trip.paidCents)} was already sent, which is their share.`;
   const message =
     outcome.kind === 'GUEST_CANCELLATION'
-      ? `A Guest cancellation at the start time, under ${policy}: the Guest gets ${formatDollars(refundCents)} back${outcome.feeCents > 0 ? ` and ${formatDollars(outcome.feeCents)} is kept, of which the Host gets ${formatDollars(outcome.hostShareCents)}` : ''}.${capped}`
+      ? `A Guest cancellation at the start time, under ${policy}: the Guest gets ${formatDollars(refundCents)} back${outcome.feeCents > 0 || outcome.hostShareCents > 0 ? ` and ${formatDollars(outcome.feeCents)} is kept${outcome.hostShareCents > 0 ? hostShare : ''}` : ''}.${capped}${sent}`
       : outcome.kind === 'HOST_CANCELLATION'
-        ? `A Host cancellation: the Guest gets ${formatDollars(refundCents)} back, a full refund.${capped} ${outcome.hostFeeCents > 0 ? `A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off the Host’s next payout.` : 'The Host cancellation fee in the settings is $0.'}`
-        : `The Guest gets ${formatDollars(refundCents)} back, a full refund, and the Host pays no fee.${capped}`;
+        ? `A Host cancellation: the Guest gets ${formatDollars(refundCents)} back, a full refund.${capped} ${outcome.hostFeeCents > 0 ? `A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off the Host’s next payout.` : 'The Host cancellation fee in the settings is $0.'}${sent}`
+        : `The Guest gets ${formatDollars(refundCents)} back, a full refund, and the Host pays no fee.${capped}${sent}`;
   return {
     ...base,
     allowed: true,
@@ -979,26 +1204,32 @@ export async function expirePaymentHold(
   if (!booking || booking.status !== 'PAYMENT_PENDING') return 'skipped';
   if (booking.holdExpiresAt && booking.holdExpiresAt > now) return 'skipped';
 
-  const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
-    createdAt: -1,
-  });
+  const payment = await bookingPayment(booking);
   if (payment) {
     const intent = await stripe().paymentIntents.retrieve(payment.stripePaymentIntentId);
     if (intent.status === 'succeeded' || intent.status === 'requires_capture') {
       await withTransaction((session) => applyPaymentIntent(intent, session, now));
       return 'paid';
     }
-    if (intent.status === 'processing') {
-      // The bank is still deciding: keep the dates held until the next check, unless someone else booked
-      // them since the hold ran out (then the payment is refunded if it goes through).
-      await withTransaction(async (session) => {
+    // The bank is still deciding: keep the dates held until the next check, unless someone else booked
+    // them since the hold ran out (then the payment is refunded if it goes through).
+    const keepWaiting = () =>
+      withTransaction(async (session) => {
         if (await tripDatesStillHeld(booking, session, now)) {
           await extendTripHold(booking._id, new Date(now.getTime() + PROCESSING_HOLD_MS), session);
         }
       });
+    if (intent.status === 'processing') {
+      await keepWaiting();
       return 'waiting';
     }
-    await cancelIntent(payment);
+    // 3-D Secure may finish between the check above and the release: then it's applied, not expired.
+    const released = await releasePayment(payment, now);
+    if (released === 'paid') return 'paid';
+    if (released === 'processing') {
+      await keepWaiting();
+      return 'waiting';
+    }
   }
   await withTransaction(async (session) => {
     const ended = await endBooking(
@@ -1006,13 +1237,9 @@ export async function expirePaymentHold(
       { to: 'EXPIRED', from: ['PAYMENT_PENDING'], reason: 'Payment not completed in time', now },
       session,
     );
-    if (ended && payment)
-      await PaymentModel.updateOne(
-        { _id: payment._id, status: 'PENDING' },
-        { $set: { status: 'CANCELLED' } },
-        { session },
-      );
+    if (ended && payment) await markReleased(payment, session);
   });
+  await releaseOtherPayments(booking, payment, now);
   return 'expired';
 }
 
@@ -1041,10 +1268,18 @@ export async function expireRequest(
     : booking.instantBook || (awaitsVerification(booking) && !hostAnswers(booking))
       ? 'VERIFICATION_EXPIRED'
       : 'EXPIRED';
-  const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
-    createdAt: -1,
-  });
-  await cancelIntent(payment);
+  const payment = await bookingPayment(booking);
+  // A capture that went through a moment ago (the Host accepted, or support approved the check, as the 24 h
+  // ran out; a capture that timed out) confirms the booking instead: it's never ended with the money taken.
+  const released = await releasePayment(payment, now);
+  if (released === 'paid') return false;
+  if (released === 'processing') {
+    throw new HttpError(
+      409,
+      'PAYMENT_PROCESSING',
+      "The guest's payment is still being processed. Please try again in a few minutes.",
+    );
+  }
   const ended = await withTransaction(async (session) => {
     const done = await endBooking(
       booking,
@@ -1052,12 +1287,14 @@ export async function expireRequest(
       session,
     );
     if (!done) return null;
-    if (payment)
-      await PaymentModel.updateOne({ _id: payment._id }, { $set: { status: 'CANCELLED' } }, { session });
+    if (payment) await markReleased(payment, session);
     await notifyRequestEnded(record(done), await loadBookingContext(record(done)), outcome, { session });
     return done;
   });
-  if (ended) await updateResponseRate(booking.hostId);
+  if (ended) {
+    await releaseOtherPayments(booking, payment, now);
+    await updateResponseRate(booking.hostId);
+  }
   return Boolean(ended);
 }
 
@@ -1089,6 +1326,15 @@ export async function resolveVerificationReview(
   }
 
   for (const booking of waiting) {
+    // An approval after the trip's start time (or after the 24 h) comes too late (plan §8.2): the booking
+    // ends with its card hold released, rather than being charged for a trip that should have started.
+    if (
+      decision === 'APPROVE' &&
+      (booking.startAt <= now || (booking.requestExpiresAt && booking.requestExpiresAt <= now))
+    ) {
+      if (await expireRequest(booking.id, now, { force: true })) result.released.push(booking.ref);
+      continue;
+    }
     const decided = await BookingModel.findOneAndUpdate(
       { _id: booking._id, status: 'PENDING', 'verificationReview.status': 'PENDING' },
       {
@@ -1122,9 +1368,12 @@ export async function resolveVerificationReview(
       await capturePending(decided, now);
       result.confirmed.push(decided.ref);
     } catch (error) {
-      // The authorisation lapsed, so the booking was ended; the others still go ahead.
-      if (!(error instanceof HttpError) || error.code !== 'PAYMENT_EXPIRED') throw error;
-      result.released.push(decided.ref);
+      // The authorisation lapsed (or the trip started), so the booking was ended; one whose capture couldn't be
+      // settled waits for Stripe, and staff hear of it. The others still go ahead.
+      if (!(error instanceof HttpError)) throw error;
+      if (CAPTURE_UNSETTLED.includes(error.code)) await captureUnsettled(decided, error);
+      else if (ENDED_UNCAPTURED.includes(error.code)) result.released.push(decided.ref);
+      else throw error;
     }
   }
   forget('vehicles:featured');

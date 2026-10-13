@@ -10,6 +10,7 @@ import { resolveVerificationReview } from '../bookings/booking.service.js';
 import { verificationOutcomeShape, type VerificationOutcome } from '../bookings/bookings.schemas.js';
 import { notify } from '../notifications/notify.js';
 import { UserModel, type User } from '../users/user.model.js';
+import { assertNotOwnRecord } from './own-record.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 
 /*
@@ -269,6 +270,7 @@ export async function reviewLicence(
     ? await UserModel.findById(userId).select('firstName driverLicence')
     : null;
   if (!user?.driverLicence) throw new HttpError(404, 'NOT_FOUND', 'This person has no licence details.');
+  await assertNotOwnRecord(staffId, [user._id]);
   const notInReview = () =>
     new HttpError(409, 'NOT_IN_REVIEW', "This person's licence isn't waiting for a check.");
   if (user.driverLicence.status !== 'PENDING') throw notInReview();

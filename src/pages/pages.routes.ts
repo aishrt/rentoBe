@@ -2,7 +2,7 @@ import { Router, type Response } from 'express';
 import helmet from 'helmet';
 import { env } from '../env.js';
 import { DestinationModel, publishedDestination } from '../modules/cms/destination.model.js';
-import { VehicleModel } from '../modules/vehicles/vehicle.model.js';
+import { VehicleModel, isLiveVehicle } from '../modules/vehicles/vehicle.model.js';
 import { getAppShell, getSeoManifest } from './frontend-shell.js';
 import {
   destinationPageTags,
@@ -47,7 +47,7 @@ export function pagesRouter() {
   router.get('/cars/:slug', async (req, res) => {
     const vehicle = await VehicleModel.findOne({ slug: req.params.slug.toLowerCase() }).lean();
     // An unknown, draft, inactive or suspended car is a real 404.
-    if (!vehicle || vehicle.status !== 'ACTIVE') {
+    if (!vehicle || !isLiveVehicle(vehicle)) {
       return sendPage(res, 404, notFoundPageTags(`/cars/${req.params.slug}`));
     }
     const { vehiclePages } = await getSeoManifest();

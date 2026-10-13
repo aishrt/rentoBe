@@ -26,7 +26,9 @@ export const hostPayoutSchema = z
     type: z.enum(PAYOUT_TYPES),
     status: z.enum(PAYOUT_STATUSES),
     holdReason: z.enum(PAYOUT_HOLD_REASONS).optional(),
-    amountCents: z.number().int().meta({ description: 'Sent (PAID), or due before deductions' }),
+    amountCents: z.number().int().meta({
+      description: 'Sent (PAID), or due: less any deductions already reserved for it, which are listed',
+    }),
     grossCents: z.number().int().optional(),
     commissionCents: z.number().int().optional(),
     commissionGstCents: z.number().int().optional(),
@@ -60,8 +62,27 @@ export const hostPayoutSchema = z
   })
   .meta({ id: 'HostPayout' });
 
+export const hostPayoutsQuerySchema = z.object({
+  cursor: z
+    .string()
+    .regex(/^[a-f0-9]{24}$/)
+    .optional()
+    .meta({ description: 'The nextCursor of the page before: the next page of paid payouts' }),
+});
+
 export const hostPayoutsResponseSchema = z
-  .object({ account: payoutAccountSchema, payouts: z.array(hostPayoutSchema) })
+  .object({
+    account: payoutAccountSchema,
+    payouts: z.array(hostPayoutSchema).meta({
+      description:
+        'Payouts still to be sent, soonest first (on the first page only), then paid ones, newest first, a page at a time',
+    }),
+    paidCount: z.number().int().meta({ description: 'Paid payouts in all' }),
+    nextCursor: z
+      .string()
+      .optional()
+      .meta({ description: 'Set when there are more paid payouts: send it as cursor for the next page' }),
+  })
   .meta({ id: 'HostPayouts' });
 
 export const linkResponseSchema = z
@@ -78,7 +99,15 @@ export const payLinkSchema = z
     description: z.string(),
     type: z.enum(EXTRA_CHARGE_TYPES),
     amountCents: z.number().int(),
-    status: z.enum(['DUE', 'PAID']),
+    status: z.enum(['DUE', 'PAID', 'REFUNDED', 'CANCELLED']).meta({
+      description:
+        'DUE: still to pay. PAID: paid (refundedCents says how much came back, if any). REFUNDED: paid and all given back. CANCELLED: taken off by support, nothing to pay',
+    }),
+    refundedCents: z
+      .number()
+      .int()
+      .optional()
+      .meta({ description: 'Refunds made on the charge that didn’t fail; left out when none' }),
     failureReason: z.string().optional(),
   })
   .meta({ id: 'PayLink' });
@@ -130,7 +159,9 @@ export const earningsResponseSchema = z
       monthCents: cents,
       previousMonthCents: cents,
       lifetimeCents: cents,
-      upcomingPayoutsCents: cents.meta({ description: 'Scheduled and held payouts, before deductions' }),
+      upcomingPayoutsCents: cents.meta({
+        description: 'Payouts still to be sent, less the deductions already reserved for them',
+      }),
       platformFeesMonthCents: cents,
       platformFeesLifetimeCents: cents,
     }),

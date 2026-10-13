@@ -5,7 +5,7 @@ import { earningsStatement, hostEarnings } from '../hosts/earnings.service.js';
 import { payLinkView, startPayLink, syncPayLink } from '../payments/extra-charges.service.js';
 import { UserModel } from '../users/user.model.js';
 import { dashboardLink, onboardingLink, payoutAccountView, syncPayoutAccount } from './connect.service.js';
-import { statementQuerySchema } from './payouts.schemas.js';
+import { hostPayoutsQuerySchema, statementQuerySchema } from './payouts.schemas.js';
 import { listHostPayouts } from './payouts.service.js';
 
 /** Mounted at /api/v1/host, next to the vehicle routes: the Host's payouts and payout setup. */
@@ -14,10 +14,11 @@ export function hostPayoutsRouter() {
   router.use(requireAuth);
 
   router.get('/payouts', async (req, res) => {
+    const { cursor } = validate(hostPayoutsQuerySchema, req.query);
     const host = await UserModel.findById(req.auth!.userId).select('hostProfile').lean();
     res.json({
       account: payoutAccountView(host?.hostProfile),
-      payouts: await listHostPayouts(req.auth!.userId),
+      ...(await listHostPayouts(req.auth!.userId, cursor)),
     });
   });
 

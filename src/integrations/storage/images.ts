@@ -12,6 +12,9 @@ import { HttpError } from '../../lib/http-error.js';
 /** Listing photo widths: cards and phones use the smaller one, the gallery the larger. */
 export const PHOTO_WIDTHS = [800, 1600] as const;
 
+/** A member's profile photo: shown at most 80 px across (the member page), so one copy is enough. */
+export const PROFILE_PHOTO_WIDTHS = [400] as const;
+
 /** Documents stay sharp enough to read the small print, but no larger. */
 const DOCUMENT_MAX_PX = 4000;
 
@@ -44,12 +47,18 @@ async function opener(buffer: Buffer): Promise<() => Sharp> {
   return () => sharp(buffer, { failOn: 'error' }).autoOrient();
 }
 
-/** The WebP copies of a listing photo, one for each of PHOTO_WIDTHS. Smaller photos aren't enlarged. */
-export async function photoVariants(buffer: Buffer): Promise<{ width: number; body: Buffer }[]> {
+/**
+ * The WebP copies of a public photo, one for each width (a listing photo's PHOTO_WIDTHS unless given).
+ * Smaller photos aren't enlarged.
+ */
+export async function photoVariants(
+  buffer: Buffer,
+  widths: readonly number[] = PHOTO_WIDTHS,
+): Promise<{ width: number; body: Buffer }[]> {
   try {
     const open = await opener(buffer);
     return await Promise.all(
-      PHOTO_WIDTHS.map(async (width) => ({
+      widths.map(async (width) => ({
         width,
         body: await open()
           .resize({ width, height: width, fit: 'inside', withoutEnlargement: true })

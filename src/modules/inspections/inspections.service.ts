@@ -165,7 +165,9 @@ export async function getHandover(
     fuelShortfall: fuelShort(booking, checkIn, checkOut),
     actions: {
       checkIn: Boolean(party) && booking.status === 'CONFIRMED' && !checkIn && now >= opensAt,
-      checkOut: Boolean(party) && booking.status === 'ACTIVE' && Boolean(checkIn) && !checkOut,
+      // Also on a trip support marked as started without a check-in (plan §8.2): there's then no
+      // check-in record to compare with, and no extra kilometres to work out.
+      checkOut: Boolean(party) && booking.status === 'ACTIVE' && !checkOut,
       confirmCheckIn: Boolean(party && checkIn) && !confirmedBy(checkIn, party!),
       confirmCheckOut: Boolean(party && checkOut) && !confirmedBy(checkOut, party!),
       // Either party, for the whole damage-report window after check-out (plan §8.2): confirming the
@@ -318,9 +320,9 @@ export async function submitInspection(
       }
     }
   } else {
-    // Staff may complete a trip that was marked started without a check-in in the app (plan §8.2); its
-    // extra kilometres can't then be worked out.
-    if (booking.status !== 'ACTIVE' || (!checkIn && viewer !== 'STAFF') || checkOut) {
+    // A trip support marked as started without a check-in in the app (plan §8.2) can be checked out by
+    // either party, or completed by staff; its extra kilometres can't then be worked out.
+    if (booking.status !== 'ACTIVE' || checkOut) {
       throw problem(
         'NOT_CHECK_OUT',
         checkOut

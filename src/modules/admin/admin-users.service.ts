@@ -5,6 +5,7 @@ import { enqueue } from '../../jobs/queue.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
 import { nzDate } from '../../lib/nz-time.js';
+import { toMobileE164 } from '../../lib/phone.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { SessionModel } from '../auth/session.model.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
@@ -13,10 +14,12 @@ import { notify } from '../notifications/notify.js';
 import { disconnectUser } from '../../realtime/realtime.js';
 import { releaseHeldPayouts } from '../payouts/payouts.service.js';
 import { accountClosure } from '../users/privacy.service.js';
+import { deleteProfilePhotoFile } from '../users/profile-photo.service.js';
 import { UserModel, type Role, type User } from '../users/user.model.js';
 import { effectiveRoles, isStaff } from '../users/user.service.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import type { adminUserDetailSchema, adminUserRowSchema, userListQuerySchema } from './admin-ops.schemas.js';
+import { assertNotOwnRecord } from './own-record.js';
 import { documentComparison, staffLicenceView } from './verification-queue.service.js';
 
 /*
@@ -51,13 +54,27 @@ function row(user: UserRecord): Row {
   };
 }
 
+/**
+ * The people a staff search finds (spec §18): each word must be in their first or last name, email or mobile,
+ * so "Jane Smith" finds Jane Smith. A mobile typed as people write it in NZ ("021 123 4567") also finds the
+ * number it is, which is stored in E.164 (+64211234567).
+ */
+export function personSearchFilter(q: string) {
+  const words = q.split(/\s+/).filter(Boolean).slice(0, 5);
+  const byWords = {
+    $and: words.map((word) => {
+      const pattern = new RegExp(escape(word), 'i');
+      return { $or: [{ firstName: pattern }, { lastName: pattern }, { email: pattern }, { phone: pattern }] };
+    }),
+  };
+  const mobile = toMobileE164(q);
+  return mobile ? { $or: [byWords, { phone: mobile }] } : byWords;
+}
+
 /** GET /admin/users: search by name, email or mobile, newest first. */
 export async function listUsers(query: z.infer<typeof userListQuerySchema>) {
   const filter: Record<string, unknown> = {};
-  if (query.q) {
-    const pattern = new RegExp(escape(query.q), 'i');
-    filter.$or = [{ firstName: pattern }, { lastName: pattern }, { email: pattern }, { phone: pattern }];
-  }
+  if (query.q) Object.assign(filter, personSearchFilter(query.q));
   if (query.role) filter.roles = query.role;
   if (query.status) filter.status = query.status;
   if (query.flagged) filter.riskFlags = mongoose.trusted({ $elemMatch: { clearedAt: { $exists: false } } });
@@ -241,6 +258,14 @@ export async function unsuspendUser(
 ) {
   const user = await findUser(userId);
   guardTarget(user, staffId, staffRoles);
+  // A closed account stays suspended (plan §8.2): its details are gone, and the member signs up again instead.
+  if (user.closedAt) {
+    throw new HttpError(
+      409,
+      'ACCOUNT_CLOSED',
+      'This account was closed at the member’s request, so it can’t be reinstated. They can sign up again.',
+    );
+  }
   if (user.status !== 'SUSPENDED') throw new HttpError(409, 'NOT_SUSPENDED', 'This account isn’t suspended.');
   await UserModel.updateOne(
     { _id: user._id },
@@ -266,11 +291,17 @@ export async function unsuspendUser(
 /** POST /admin/users/{id}/risk-flags/{flagId}/clear: staff looked into it (plan §14). */
 export async function clearRiskFlag(staffId: string, userId: string, flagId: string, ip?: string) {
   const user = await findUser(userId);
+  await assertNotOwnRecord(staffId, [user._id]);
   const result = await UserModel.updateOne(
     {
       _id: user._id,
-      'riskFlags._id': mongoose.isValidObjectId(flagId) ? flagId : null,
-      'riskFlags.clearedAt': mongoose.trusted({ $exists: false }),
+      // One element must match both: separate conditions on an array would need *no* flag to be cleared.
+      riskFlags: mongoose.trusted({
+        $elemMatch: {
+          _id: mongoose.isValidObjectId(flagId) ? new mongoose.Types.ObjectId(flagId) : null,
+          clearedAt: { $exists: false },
+        },
+      }),
     },
     { $set: { 'riskFlags.$.clearedAt': new Date(), 'riskFlags.$.clearedBy': staffId } },
   );
@@ -353,6 +384,8 @@ export async function closeAccount(
       },
     },
   );
+  // The profile photo itself goes too, not only the link to it.
+  if (user.avatarUrl) await deleteProfilePhotoFile(user.avatarUrl);
   await SessionModel.deleteMany({ userId: user._id });
   disconnectUser(user._id.toString());
   await VehicleModel.updateMany({ hostId: user._id }, { $set: { status: 'INACTIVE', hostSuspended: true } });
@@ -394,6 +427,7 @@ export async function waiveHostFee(
   ip?: string,
 ) {
   const user = await findUser(userId);
+  await assertNotOwnRecord(staffId, [user._id]);
   const owed = user.hostProfile?.feesOwedCents ?? 0;
   if (owed <= 0) throw new HttpError(409, 'NOTHING_OWED', 'This Host owes no cancellation fees.');
   const waived = Math.min(owed, amountCents ?? owed);

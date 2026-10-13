@@ -541,6 +541,8 @@ describe('a payment that arrives after its hold ran out', () => {
     const job = await unwantedJob();
     expect(job).toEqual({ paymentId: payment.id, reason: 'DATES_TAKEN' });
 
+    // The job does what Stripe says the payment is, not what it's recorded as.
+    intentStatus = 'succeeded';
     await refundUnwantedJob(job!, context);
     expect(client.refunds.create).toHaveBeenCalledWith(
       expect.objectContaining({ payment_intent: piId, amount: 33_870 }),
@@ -604,6 +606,7 @@ describe('a payment that arrives after its hold ran out', () => {
     const job = await unwantedJob();
     expect(job).toEqual({ paymentId: payment.id, reason: 'DATES_TAKEN' });
 
+    intentStatus = 'requires_capture';
     await refundUnwantedJob(job!, context);
     expect(client.paymentIntents.cancel).toHaveBeenCalledWith(piId, {}, { idempotencyKey: `cancel-${piId}` });
     expect(client.refunds.create).not.toHaveBeenCalled();
@@ -693,6 +696,7 @@ describe('a suspended car', () => {
       const job = await unwantedJob();
       expect(job).toEqual({ paymentId: payment.id, reason: 'CAR_UNAVAILABLE' });
 
+      intentStatus = 'succeeded';
       await refundUnwantedJob(job!, context);
       expect(await PaymentModel.findById(payment._id).lean()).toMatchObject({
         status: 'REFUNDED',
@@ -767,16 +771,48 @@ describe('a check approved while the car is suspended', () => {
 });
 
 describe('Host-funded refunds larger than the trip’s payout', () => {
-  it('take the whole payout, and the rest comes off the next one', async () => {
+  it('cost the Host their share of the rental at most: the whole payout', async () => {
     const parts = await confirmedTrip();
     await checkIn(parts.booking._id, parts.host._id);
     await createStaff();
     const admin = await staffAgent();
     const refunded = await admin
       .post(`/api/v1/admin/bookings/${parts.booking.ref}/refunds`)
-      .send({ amountCents: 25_000, reason: 'The car broke down on the first day', fundedBy: 'HOST' });
+      .send({ amountCents: 26_700, reason: 'The car broke down on the first day', fundedBy: 'HOST' });
     expect(refunded.status).toBe(200);
     expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'THIS_PAYOUT' });
+
+    expect(await runPayout(parts.payout.id)).toBe('paid');
+    expect(transfers).toHaveLength(0);
+    const paid = await PayoutModel.findById(parts.payout._id).lean();
+    expect(paid).toMatchObject({ status: 'PAID', amountCents: 0 });
+    // The whole rental back to the Guest: the Host repays their $213.60, not the platform's commission.
+    expect(paid!.deductions).toEqual([
+      expect.objectContaining({ type: 'HOST_FUNDED_REFUND', stripeRefundId: 're_1', amountCents: 21_360 }),
+    ]);
+    expect(await refundsOwed(parts.host._id)).toEqual([]);
+  });
+
+  it('recorded before the Host’s share was kept take the whole payout, and the rest comes off the next one', async () => {
+    const parts = await confirmedTrip();
+    await checkIn(parts.booking._id, parts.host._id);
+    // Without hostCents, the Host paid all of it.
+    await PaymentModel.updateOne(
+      { _id: parts.payment._id },
+      {
+        $push: {
+          refunds: {
+            amountCents: 25_000,
+            reason: 'The car broke down on the first day',
+            kind: 'STAFF',
+            fundedBy: 'HOST',
+            stripeRefundId: 're_1',
+            status: 'SUCCEEDED',
+            createdAt: new Date(),
+          },
+        },
+      },
+    );
 
     expect(await runPayout(parts.payout.id)).toBe('paid');
     expect(transfers).toHaveLength(0);
@@ -863,6 +899,8 @@ describe('refunds of extra charges', () => {
         type: 'EXTRA_KM',
         description: '50 km over the 750 km included',
         refundableCents: 1_750,
+        // The Host's share of the charge is its payout, $14 of the $17.50.
+        hostFunding: { maxCents: 1_750, baseCents: 1_750, payoutCents: 1_400, hostLeftCents: 1_400 },
         payoutSent: false,
       },
     ]);
@@ -895,10 +933,11 @@ describe('refunds of extra charges', () => {
     expect(await refundsOwed(host._id)).toEqual([]);
 
     expect(await runPayout(chargePayout.id)).toBe('paid');
+    // The Host's share of the $5: $4 (their payout is 80 % of the charge).
     expect((await PayoutModel.findById(chargePayout._id).lean())!.deductions).toEqual([
-      expect.objectContaining({ type: 'HOST_FUNDED_REFUND', stripeRefundId: 're_1', amountCents: 500 }),
+      expect.objectContaining({ type: 'HOST_FUNDED_REFUND', stripeRefundId: 're_1', amountCents: 400 }),
     ]);
-    expect(transfers.at(-1)!.amount).toBe(1_400 - 500);
+    expect(transfers.at(-1)!.amount).toBe(1_400 - 400);
     // The trip's own payout doesn't take it again.
     expect(await runPayout(payout.id)).toBe('paid');
     expect((await PayoutModel.findById(payout._id).lean())!.deductions).toEqual([]);
@@ -914,9 +953,9 @@ describe('refunds of extra charges', () => {
     expect(detail.body.refundableCharges[0]).toMatchObject({ payoutSent: true });
 
     const owed = await refund({ fundedBy: 'HOST' });
-    expect(owed.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 500 });
+    expect(owed.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 400 });
     expect(await refundsOwed(host._id)).toEqual([
-      expect.objectContaining({ stripeRefundId: 're_1', amountCents: 500, bookingId: booking._id }),
+      expect.objectContaining({ stripeRefundId: 're_1', amountCents: 400, bookingId: booking._id }),
     ]);
     const told = await NotificationModel.findOne({
       userId: host._id,
@@ -931,12 +970,12 @@ describe('refunds of extra charges', () => {
       .spyOn(client.transfers, 'createReversal')
       .mockResolvedValueOnce({ id: 'trr_1' } as Stripe.Response<Stripe.TransferReversal>);
     const reversed = await refund({ fundedBy: 'HOST', amountCents: 300, recoverFrom: 'REVERSE_TRANSFER' });
-    expect(reversed.body.hostRefund).toEqual({ recoveredFrom: 'REVERSE_TRANSFER', reversedCents: 300 });
-    expect(reversal).toHaveBeenCalledWith('tr_2', expect.objectContaining({ amount: 300 }), {
+    expect(reversed.body.hostRefund).toEqual({ recoveredFrom: 'REVERSE_TRANSFER', reversedCents: 240 });
+    expect(reversal).toHaveBeenCalledWith('tr_2', expect.objectContaining({ amount: 240 }), {
       idempotencyKey: 'reversal-re_2',
     });
     expect((await PayoutModel.findById(chargePayout._id).lean())!.reversals).toEqual([
-      expect.objectContaining({ stripeReversalId: 'trr_1', amountCents: 300, stripeRefundId: 're_2' }),
+      expect.objectContaining({ stripeReversalId: 'trr_1', amountCents: 240, stripeRefundId: 're_2' }),
     ]);
     expect((await PayoutModel.findById(payout._id).lean())!.reversals).toEqual([]);
     expect(await refundsOwed(host._id)).toHaveLength(1);
@@ -1064,10 +1103,10 @@ describe('waiving Host cancellation fees', () => {
       .slice(0, 7);
     const statement = await agent.get('/api/v1/host/earnings/statement').query({ period: month });
     expect(statement.text).toContain(
-      `${newer.ref},2021 Toyota Corolla,CANCELLED,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,20.00,-20.00`,
+      `${newer.ref},2021 Toyota Corolla,CANCELLED,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,20.00,2.61,-20.00`,
     );
     expect(statement.text).toContain(
-      `${older.ref},2021 Toyota Corolla,CANCELLED,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,50.00,-50.00`,
+      `${older.ref},2021 Toyota Corolla,CANCELLED,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,0.00,50.00,6.52,-50.00`,
     );
 
     // The rest: what's left of the newer fee, then the older one.

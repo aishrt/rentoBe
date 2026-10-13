@@ -24,10 +24,20 @@ import {
   type BookingUploadPurpose,
   type UploadPurpose,
 } from './uploads.schemas.js';
-import { bookingUploadFolder, supportUploadFolder, uploadFolder } from './upload-folders.js';
+import {
+  bookingUploadFolder,
+  profilePhotoFolder,
+  supportUploadFolder,
+  uploadFolder,
+} from './upload-folders.js';
 
 /** Purposes that take photos only; documents, incident evidence and support ticket files can also be a PDF. */
-const PHOTO_PURPOSES: UploadPurpose[] = ['VEHICLE_PHOTO', 'MESSAGE_PHOTO', 'INSPECTION_PHOTO'];
+const PHOTO_PURPOSES: UploadPurpose[] = [
+  'VEHICLE_PHOTO',
+  'MESSAGE_PHOTO',
+  'INSPECTION_PHOTO',
+  'PROFILE_PHOTO',
+];
 
 const isBookingPurpose = (purpose: UploadPurpose): purpose is BookingUploadPurpose =>
   (BOOKING_UPLOAD_PURPOSES as readonly string[]).includes(purpose);
@@ -85,6 +95,9 @@ export function uploadsRouter(options: { rateLimit: boolean } = { rateLimit: tru
     } else if (input.purpose === 'SUPPORT_FILE') {
       // Anyone signed in can write to support; their files go in their own folder (plan §3).
       target = supportUploadFolder(req.auth!.userId);
+    } else if (input.purpose === 'PROFILE_PHOTO') {
+      // Only ever their own photo (PUT /me/photo checks the key is in this folder).
+      target = profilePhotoFolder(req.auth!.userId);
     } else {
       const vehicle = await VehicleModel.findById(input.vehicleId).select('hostId').lean();
       if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No car with that id.');
@@ -153,10 +166,13 @@ export function filesRouter() {
     await sendLocalFile(res, key, 'private, no-store');
   });
 
-  // Listing photos are public once uploaded; documents never are.
+  // Listing and profile photos are public once uploaded; documents never are.
   router.get('/*key', async (req, res) => {
     const key = (req.params.key as unknown as string[]).join('/');
-    if (!/^vehicles\/[0-9a-f]{24}\/photos\//.test(key) || !mongoose.isValidObjectId(key.split('/')[1])) {
+    if (
+      !/^(vehicles\/[0-9a-f]{24}\/photos|members\/[0-9a-f]{24}\/photo)\//.test(key) ||
+      !mongoose.isValidObjectId(key.split('/')[1])
+    ) {
       throw new HttpError(404, 'NOT_FOUND', 'No such file.');
     }
     await sendLocalFile(res, key, 'public, max-age=31536000, immutable');

@@ -159,7 +159,8 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     method: 'post',
     path: '/admin/users/{id}/unsuspend',
     summary: 'Staff: lift a suspension',
-    description: 'Their listings return to search and held payouts are sent.',
+    description:
+      'Their listings return to search and held payouts are sent. 409 ACCOUNT_CLOSED for an account closed on request, which stays suspended.',
     params: id,
     response: adminUserResponseSchema,
     errors: [401, 403, 404, 409],
@@ -168,6 +169,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     method: 'post',
     path: '/admin/users/{id}/risk-flags/{flagId}/clear',
     summary: 'Staff: clear a risk flag after looking into it',
+    description: '403 OWN_RECORD for a support member’s own flags: another team member clears them.',
     params: z.object({ id: z.string(), flagId: z.string() }),
     response: adminUserResponseSchema,
   });
@@ -231,7 +233,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     path: '/admin/bookings/{id}/status',
     summary: 'Staff: mark a trip as started or completed',
     description:
-      'Only CONFIRMED → ACTIVE and ACTIVE → COMPLETED, with the same side effects as check-in and check-out (plan §8.2).',
+      'Only CONFIRMED → ACTIVE and ACTIVE → COMPLETED, with the same side effects as check-in and check-out (plan §8.2). 403 OWN_RECORD when the support member is its Guest or Host.',
     params: id,
     body: adminStatusEditSchema,
     response: adminBookingDetailSchema,
@@ -253,7 +255,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     path: '/admin/vehicles/{id}/suspend',
     summary: 'Staff: suspend a car',
     description:
-      'Hidden at once; its upcoming bookings are returned for staff to keep or cancel (plan §8.2).',
+      'Hidden at once; its upcoming bookings are returned for staff to keep or cancel (plan §8.2). 403 OWN_RECORD for a support member’s own car, here and when lifting it.',
     params: id,
     body: suspendSchema,
     response: adminVehicleSuspensionSchema,
@@ -273,6 +275,8 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     method: 'get',
     path: '/admin/payments',
     summary: 'Staff with the refunds permission: payments',
+    description:
+      'Newest first. view=failed lists those that didn’t go through, including cards declined at checkout, each with its failure reason and the status it ended in.',
     query: paymentListQuerySchema,
     response: adminPaymentsResponseSchema,
     errors: [400, 401, 403],
@@ -611,7 +615,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Admin: a report as a CSV file',
     description:
-      'Bookings, payments, refunds, payouts, cancellations, the monthly GST summary, or revenue and fees by day, for a range of NZ days. Every total matches the summary for the same days.',
+      'Bookings, payments, refunds, payouts, cancellations, the monthly GST summary, or revenue and fees by day, for a range of NZ days. Every total matches the summary for the same days. UTF-8 with a byte order mark, so Excel shows macrons.',
     security: signedIn,
     request: { query: exportQuerySchema },
     responses: {
@@ -623,6 +627,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     method: 'get',
     path: '/admin/audit',
     summary: 'Admin: the audit log',
+    description: 'Newest first, 50 a page; `from` and `to` reach entries older than the last page.',
     query: auditQuerySchema,
     response: auditResponseSchema,
     errors: [400, 401, 403],

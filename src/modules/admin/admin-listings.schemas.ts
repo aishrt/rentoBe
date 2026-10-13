@@ -35,8 +35,20 @@ export const hostApplicationSchema = z
   })
   .meta({ id: 'HostApplication' });
 
+/** The furthest page a list goes to; a narrower search reaches the rest. */
+const page = z.coerce.number().int().min(1).max(500).default(1);
+
+export const hostApplicationsQuerySchema = z.object({
+  status: z.enum(HOST_STATUSES).default('APPLIED'),
+  page,
+});
+
 export const hostApplicationsResponseSchema = z
-  .object({ applications: z.array(hostApplicationSchema) })
+  .object({
+    applications: z.array(hostApplicationSchema),
+    total: z.number().int(),
+    page: z.number().int(),
+  })
   .meta({ id: 'HostApplications' });
 
 export const reviewNotesSchema = z
@@ -82,7 +94,7 @@ export const vehicleListQuerySchema = z.object({
     .regex(/^[0-9a-f]{24}$/i, { error: 'Not a user id' })
     .optional()
     .meta({ description: 'Only this Host’s cars' }),
-  page: z.coerce.number().int().min(1).max(500).default(1),
+  page,
 });
 
 export const adminVehicleRowSchema = z

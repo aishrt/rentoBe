@@ -6,6 +6,7 @@ import type { IdentityReviewResult } from '../bookings/bookings.schemas.js';
 import { env } from '../../env.js';
 import { notify } from '../notifications/notify.js';
 import { UserModel } from '../users/user.model.js';
+import { assertNotOwnRecord } from './own-record.js';
 
 /**
  * Support decides an identity check that needed a manual review (plan §8.2). The Guest's bookings that
@@ -22,6 +23,7 @@ export async function reviewIdentity(
 ): Promise<IdentityReviewResult> {
   const user = mongoose.isValidObjectId(userId) ? await UserModel.findById(userId) : null;
   if (!user) throw new HttpError(404, 'NOT_FOUND', 'No such user.');
+  await assertNotOwnRecord(staffId, [user._id]);
   if (user.identityVerification?.status !== 'PENDING') {
     throw new HttpError(409, 'NOT_IN_REVIEW', "This person's identity check isn't waiting for a review.");
   }

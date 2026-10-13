@@ -589,22 +589,17 @@ describe('licences and the identity check', () => {
     ]);
   });
 
-  it('sends a licence with another date of birth to support, and says the date didn’t match', async () => {
+  it('refuses a date of birth other than the one the verified ID showed, as it does a name', async () => {
     const { user, agent } = await guest();
     await passCheck(user, agent);
 
+    // Corrected through a privacy request instead, where support check it against the ID.
     const saved = await agent.put('/api/v1/me/driver-licence').send(licence('AB123456', '1991-04-21'));
-    expect(saved.body.licence.status).toBe('PENDING');
-    expect(saved.body.licenceInReview).toBe(true);
-    expect((await UserModel.findById(user._id).lean())!.identityVerification!.documentDobMatched).toBe(false);
-    await createStaff();
-    expect((await (await staffAgent()).get('/api/v1/admin/verifications')).body.items).toEqual([
-      expect.objectContaining({
-        userId: user.id,
-        kind: 'LICENCE',
-        identity: expect.objectContaining({ licenceNumberMatched: true, dobMatched: false }),
-      }),
-    ]);
+    expect(saved.status).toBe(409);
+    expect(saved.body.error).toMatchObject({ code: 'DOB_LOCKED', fields: { dob: expect.any(String) } });
+    const fresh = (await UserModel.findById(user._id).lean())!;
+    expect(fresh.dob).toBeUndefined();
+    expect(fresh.driverLicence).toBeUndefined();
   });
 
   it('doesn’t approve a check whose report can’t be read, and the account page still answers', async () => {

@@ -11,9 +11,9 @@ async function signedInAs(email: string) {
   return agent;
 }
 
-describe('GET /api/v1/admin/overview', () => {
+describe('GET /api/v1/admin/dashboard', () => {
   it('needs a signed-in user', async () => {
-    const response = await request(testApp()).get('/api/v1/admin/overview');
+    const response = await request(testApp()).get('/api/v1/admin/dashboard');
     expect(response.status).toBe(401);
   });
 
@@ -21,7 +21,7 @@ describe('GET /api/v1/admin/overview', () => {
     await createUser({ roles: ['GUEST', 'HOST'] });
     const agent = await signedInAs('kiri@example.co.nz');
 
-    const response = await agent.get('/api/v1/admin/overview');
+    const response = await agent.get('/api/v1/admin/dashboard');
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe('FORBIDDEN');
   });
@@ -29,13 +29,13 @@ describe('GET /api/v1/admin/overview', () => {
   it("opens to staff who haven't turned on two-factor sign-in, but not once they're suspended", async () => {
     const staff = await createUser({ email: 'aroha@example.co.nz', roles: ['SUPPORT'] });
     const agent = await signedInAs('aroha@example.co.nz');
-    expect((await agent.get('/api/v1/admin/overview')).status).toBe(200);
+    expect((await agent.get('/api/v1/admin/dashboard')).status).toBe(200);
 
     await UserModel.updateOne({ _id: staff._id }, { $set: { status: 'SUSPENDED' } });
-    expect((await agent.get('/api/v1/admin/overview')).status).toBe(401);
+    expect((await agent.get('/api/v1/admin/dashboard')).status).toBe(401);
   });
 
-  it('returns real user counts to staff, and null for metrics not tracked yet', async () => {
+  it('returns real user counts to staff; the old overview, with its blank figures, is gone', async () => {
     await createStaff('aroha@example.co.nz', 'ADMIN');
     await createStaff('sam@example.co.nz', 'SUPPORT');
     await createUser({ email: 'hana@example.co.nz', roles: ['GUEST', 'HOST'] });
@@ -43,18 +43,11 @@ describe('GET /api/v1/admin/overview', () => {
     await createUser({ email: 'tama@example.co.nz', roles: ['GUEST'], status: 'SUSPENDED' });
 
     for (const email of ['aroha@example.co.nz', 'sam@example.co.nz']) {
-      const response = await (await staffAgent(email)).get('/api/v1/admin/overview');
+      const agent = await staffAgent(email);
+      const response = await agent.get('/api/v1/admin/dashboard');
       expect(response.status).toBe(200);
-      expect(response.body.metrics).toEqual({
-        totalUsers: 3,
-        activeHosts: 1,
-        staffMembers: 2,
-        suspendedUsers: 1,
-        activeVehicles: null,
-        upcomingBookings: null,
-        bookingRevenueCents: null,
-        pendingVerifications: null,
-      });
+      expect(response.body.figures).toMatchObject({ totalUsers: 3, suspendedUsers: 1 });
+      expect((await agent.get('/api/v1/admin/overview')).status).toBe(404);
     }
   });
 });

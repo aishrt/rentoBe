@@ -299,10 +299,23 @@ export async function notifyCancelled(
   context: BookingContext,
   outcome: CancellationOutcome,
   cancelledBy: 'GUEST' | 'HOST' | 'SUPPORT',
-  { session, released = false }: Options & { released?: boolean } = {},
+  {
+    session,
+    released = false,
+    tripPayoutSentCents,
+    hostOwesCents,
+  }: Options & {
+    released?: boolean;
+    /** The trip's payout already went to the Host (a no-show after their check-in): what it was. */
+    tripPayoutSentCents?: number;
+    /** What of it comes off their next payout, beyond their share of the kept fee. */
+    hostOwesCents?: number;
+  } = {},
 ) {
   const id = booking._id.toString();
   const withdrawn = outcome.kind === 'WITHDRAW_REQUEST';
+  // Settled against the trip's payout already sent: the Host keeps their share from it (plan §8.1, item 15).
+  const sent = tripPayoutSentCents !== undefined;
   await notify(
     {
       userId: booking.guestId,
@@ -343,7 +356,9 @@ export async function notifyCancelled(
         title: withdrawn
           ? `${context.guest?.firstName ?? 'The guest'} withdrew their request`
           : `Booking ${booking.ref} is cancelled`,
-        body: 'The dates are free again.',
+        body: hostOwesCents
+          ? `The dates are free again. Your payout for this trip was already sent, so ${formatNzdExact(hostOwesCents)} of it comes off your next payout.`
+          : 'The dates are free again.',
         link: `/host/bookings/${booking.ref}`,
         email: {
           template: 'bookingCancelled',
@@ -355,6 +370,8 @@ export async function notifyCancelled(
             ...(withdrawn && { withdrawn: true }),
             ...(outcome.hostShareCents > 0 && { hostShare: formatNzdExact(outcome.hostShareCents) }),
             ...(outcome.hostFeeCents > 0 && { hostFee: formatNzdExact(outcome.hostFeeCents) }),
+            ...(sent && { tripPayoutSent: formatNzdExact(tripPayoutSentCents) }),
+            ...(hostOwesCents && { hostOwes: formatNzdExact(hostOwesCents) }),
             url: hostBookingUrl(booking),
           },
         },

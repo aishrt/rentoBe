@@ -48,7 +48,7 @@ describe('the one admin (ADMIN_EMAIL)', () => {
 
     const { agent, login } = await signedInAs('mallory@example.co.nz');
     expect(login.body.user.roles).toEqual(['GUEST']);
-    expect((await agent.get('/api/v1/admin/overview')).status).toBe(403);
+    expect((await agent.get('/api/v1/admin/dashboard')).status).toBe(403);
   });
 
   it('refuses a signed token that claims ADMIN for another account', async () => {
@@ -66,8 +66,11 @@ describe('the one admin (ADMIN_EMAIL)', () => {
     await createStaff('sam@example.co.nz', 'SUPPORT');
     await createUser({ email: 'mallory@example.co.nz', roles: ['ADMIN'] });
 
-    const overview = await (await staffAgent()).get('/api/v1/admin/overview');
-    expect(overview.body.metrics.staffMembers).toBe(2);
+    const list = await (await staffAgent()).get('/api/v1/admin/staff');
+    expect(list.body.staff.map((member: { email: string }) => member.email).sort()).toEqual([
+      'aroha@example.co.nz',
+      'sam@example.co.nz',
+    ]);
   });
 
   it('is never created by sign-up, whatever the form sends', async () => {
@@ -276,7 +279,7 @@ describe('GET /api/v1/admin/staff and DELETE /api/v1/admin/staff/:id', () => {
     await createStaff();
     const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
     const samAgent = await staffAgent('sam@example.co.nz');
-    expect((await samAgent.get('/api/v1/admin/overview')).status).toBe(200);
+    expect((await samAgent.get('/api/v1/admin/dashboard')).status).toBe(200);
 
     const admin = await staffAgent();
     expect((await admin.delete(`/api/v1/admin/staff/${sam.id}`)).status).toBe(204);
@@ -286,7 +289,7 @@ describe('GET /api/v1/admin/staff and DELETE /api/v1/admin/staff/:id', () => {
     expect(removed?.mfa).toBeUndefined();
     expect(await SessionModel.countDocuments({ userId: sam._id })).toBe(0);
     // The access token is still valid for a few minutes, but the account's roles are read again.
-    expect((await samAgent.get('/api/v1/admin/overview')).status).toBe(403);
+    expect((await samAgent.get('/api/v1/admin/dashboard')).status).toBe(403);
 
     const again = await admin
       .post('/api/v1/admin/staff/invites')

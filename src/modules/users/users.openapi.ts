@@ -12,6 +12,7 @@ import {
   acceptAgreementsSchema,
   changeEmailSchema,
   changePasswordSchema,
+  profilePhotoSchema,
   updateMeSchema,
 } from './account.schemas.js';
 import {
@@ -50,6 +51,34 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The signed-in user, with the new name', userResponseSchema),
       ...errorResponses(400, 401, 409, 429),
+    },
+  });
+
+  registry.registerPath({
+    method: 'put',
+    path: '/me/photo',
+    tags: ['Account'],
+    summary: 'Set the profile photo',
+    description:
+      'Spec §8, plan §6.2: the other party on a booking sees your first name and photo, as does your public profile. Upload the photo first with POST /uploads/signature (purpose PROFILE_PHOTO: JPEG, PNG, WebP or HEIC, up to 15 MB), then send its key here. It is stored as an upright WebP without its metadata, and replaces any photo you had, which is deleted. 400 UPLOAD_NOT_FOUND for a key that is not your own upload; 400 UNREADABLE_IMAGE when the file is not a photo we can read.',
+    security: signedIn,
+    request: { body: jsonBody(profilePhotoSchema) },
+    responses: {
+      200: jsonResponse('The signed-in user, with the photo in avatarUrl', userResponseSchema),
+      ...errorResponses(400, 401, 429, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'delete',
+    path: '/me/photo',
+    tags: ['Account'],
+    summary: 'Remove the profile photo',
+    description: 'Deletes the photo; you show as your initials again. Fine when there is no photo.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('The signed-in user, without avatarUrl', userResponseSchema),
+      ...errorResponses(401, 429),
     },
   });
 

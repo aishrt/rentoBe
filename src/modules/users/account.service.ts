@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
+import { disconnectUser } from '../../realtime/realtime.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { consumeAuthLink, createAuthLink } from '../auth/auth-links.js';
 import {
@@ -60,6 +61,8 @@ export async function changePassword(
     { $set: { passwordHash: await hashPassword(input.newPassword) } },
   );
   await SessionModel.deleteMany({ userId: user._id, _id: mongoose.trusted({ $ne: auth.sessionId }) });
+  // Their open tabs stop receiving messages and notifications at once, too.
+  disconnectUser(user._id, { except: auth.sessionId });
   await sendPasswordChangedEmail(user);
   await recordAudit({ actorId: user._id, action: 'password.changed', entity: 'user', entityId: user.id, ip });
 }

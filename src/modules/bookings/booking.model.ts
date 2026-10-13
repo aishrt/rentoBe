@@ -120,6 +120,8 @@ export interface ExtraCharge {
   addedBy?: Types.ObjectId;
   paymentId?: Types.ObjectId;
   status: (typeof EXTRA_CHARGE_STATUSES)[number];
+  /** The staff form's key for the submit that added it, so a repeated submit adds no second charge. */
+  idempotencyKey?: string;
 }
 
 /** The `bookings` collection (plan §3). */
@@ -176,6 +178,11 @@ export interface Booking {
    * its car suspended meanwhile) and was given back: the Guest sees the booking among their cancelled trips.
    */
   paymentReturnedAt?: Date;
+  /**
+   * The BOOKING payment that made the booking: the one authorised for its request, or the one that confirmed
+   * it. A second payment for the same booking never replaces it. Bookings from before it have none.
+   */
+  bookingPaymentId?: Types.ObjectId;
   lineItems: LineItem[];
   statusHistory: StatusChange[];
   extraCharges: ExtraCharge[];
@@ -214,6 +221,7 @@ const extraChargeSchema = new Schema<ExtraCharge>({
   addedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   paymentId: { type: Schema.Types.ObjectId, ref: 'Payment' },
   status: { type: String, enum: EXTRA_CHARGE_STATUSES, default: 'PENDING' },
+  idempotencyKey: String,
 });
 
 const bookingSchema = new Schema<Booking>(
@@ -340,6 +348,7 @@ const bookingSchema = new Schema<Booking>(
     hostCancellationFeeCents: cents(),
     hostCancellationFeeWaivedCents: cents(),
     paymentReturnedAt: Date,
+    bookingPaymentId: { type: Schema.Types.ObjectId, ref: 'Payment' },
     lineItems: { type: [lineItemSchema], default: [] },
     statusHistory: { type: [statusChangeSchema], default: [] },
     extraCharges: { type: [extraChargeSchema], default: [] },

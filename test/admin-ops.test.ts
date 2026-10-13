@@ -229,12 +229,12 @@ describe('bookings', () => {
     expect(refunded.status).toBe(200);
     expect(refunded.body.refundableCents).toBe(33870 - 5000);
     expect((await PaymentModel.findById(payment._id))!.status).toBe('PARTIALLY_REFUNDED');
-    // Owed as a refund, apart from Host cancellation fees (plan §8.1, item 15).
-    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 5000 });
+    // Owed as a refund, apart from Host cancellation fees (plan §8.1, item 15): the Host's 80 % share of it.
+    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 4000 });
     const owed = (await UserModel.findById(host._id))!.hostProfile!;
     expect(owed.feesOwedCents).toBe(0);
     expect(owed.refundsOwed).toEqual([
-      expect.objectContaining({ bookingId: booking._id, stripeRefundId: 're_1', amountCents: 5000 }),
+      expect.objectContaining({ bookingId: booking._id, stripeRefundId: 're_1', amountCents: 4000 }),
     ]);
     expect(await NotificationModel.countDocuments({ type: 'REFUND_ISSUED', channel: 'IN_APP' })).toBe(1);
   });
@@ -533,5 +533,12 @@ describe('risk flags', () => {
     const flagId = queue.body.users[0].flags[0].id;
     const cleared = await agent.post(`/api/v1/admin/users/${guest.id}/risk-flags/${flagId}/clear`);
     expect(cleared.body.user.openRiskFlags).toBe(2);
+    // A second flag clears too, once another on the same person has been cleared.
+    const secondId = queue.body.users[0].flags[1].id;
+    const second = await agent.post(`/api/v1/admin/users/${guest.id}/risk-flags/${secondId}/clear`);
+    expect(second.status).toBe(200);
+    expect(second.body.user.openRiskFlags).toBe(1);
+    const again = await agent.post(`/api/v1/admin/users/${guest.id}/risk-flags/${flagId}/clear`);
+    expect(again.status).toBe(404);
   });
 });

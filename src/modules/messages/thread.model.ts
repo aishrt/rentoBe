@@ -12,27 +12,30 @@ export interface Thread {
   participantIds: Types.ObjectId[];
   lastMessageAt?: Date;
   reads: ThreadRead[];
+  /**
+   * When each participant was last sent an unread-message notice (plan §4.3, `messages.unreadEmail`): the
+   * next waits 12 hours unless they've read the conversation since. Missing on older threads.
+   */
+  unreadNotices?: ThreadRead[];
   createdAt: Date;
   updatedAt: Date;
 }
+
+const threadReadSchema = new Schema<ThreadRead>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    at: { type: Date, required: true },
+  },
+  { _id: false },
+);
 
 const threadSchema = new Schema<Thread>(
   {
     bookingId: { type: Schema.Types.ObjectId, ref: 'Booking', required: true },
     participantIds: { type: [{ type: Schema.Types.ObjectId, ref: 'User' }], default: [] },
     lastMessageAt: Date,
-    reads: {
-      type: [
-        new Schema<ThreadRead>(
-          {
-            userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-            at: { type: Date, required: true },
-          },
-          { _id: false },
-        ),
-      ],
-      default: [],
-    },
+    reads: { type: [threadReadSchema], default: [] },
+    unreadNotices: { type: [threadReadSchema], default: [] },
   },
   { timestamps: true },
 );

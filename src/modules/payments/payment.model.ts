@@ -31,6 +31,11 @@ export interface Refund {
   kind?: (typeof REFUND_KINDS)[number];
   issuedBy?: Types.ObjectId;
   fundedBy: (typeof REFUND_FUNDERS)[number];
+  /**
+   * HOST: the Host's share of it, what they pay back (plan §8.1, item 15); the platform covers its
+   * commission. Refunds recorded before this field existed have none: the Host paid all of it.
+   */
+  hostCents?: number;
   stripeRefundId?: string;
   /** A failed refund alerts support (plan §8.1, item 21). */
   status: 'PENDING' | 'SUCCEEDED' | 'FAILED';
@@ -69,6 +74,7 @@ const refundSchema = new Schema<Refund>({
   kind: { type: String, enum: REFUND_KINDS },
   issuedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   fundedBy: { type: String, enum: REFUND_FUNDERS, required: true },
+  hostCents: cents(),
   stripeRefundId: String,
   status: { type: String, enum: ['PENDING', 'SUCCEEDED', 'FAILED'], default: 'PENDING' },
   failureReason: String,

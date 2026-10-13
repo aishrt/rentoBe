@@ -10,6 +10,7 @@ import {
   lineItemSchema,
   protectionPlanSummarySchema,
 } from '../vehicles/vehicles.schemas.js';
+import { FUEL_POLICIES } from '../vehicles/vehicle.model.js';
 import {
   BOOKING_STATUSES,
   CANCELLATION_REASONS,
@@ -171,8 +172,34 @@ const hostAcceptedSchema = z.boolean().optional().meta({
   description: 'PENDING: the Host has accepted, and the booking now waits only for the Guest’s verification',
 });
 
+/**
+ * Why a booking expired (plan §8.2: each labelled). PAYMENT_TIMEOUT: not paid within the 30-minute hold.
+ * CHECKOUT_ABANDONED: the Guest left or replaced the checkout. HOST_NO_ANSWER: the Host didn't answer the
+ * request within 24 hours. VERIFICATION_EXPIRED / VERIFICATION_REJECTED: the Guest's verification wasn't
+ * approved in time, or was rejected. DATES_TAKEN / CAR_UNAVAILABLE: the payment went through after the dates
+ * were booked by someone else, or after the car was taken off the site.
+ */
+export const EXPIRY_REASONS = [
+  'PAYMENT_TIMEOUT',
+  'CHECKOUT_ABANDONED',
+  'HOST_NO_ANSWER',
+  'VERIFICATION_EXPIRED',
+  'VERIFICATION_REJECTED',
+  'DATES_TAKEN',
+  'CAR_UNAVAILABLE',
+] as const;
+
+const refundStatusSchema = z.enum(['PENDING', 'SUCCEEDED', 'FAILED']);
+
 /** Where a charge after the trip stands, as both parties see it. */
-export const BOOKING_EXTRA_CHARGE_STATUSES = ['PENDING', 'PAID', 'UNPAID', 'FAILED', 'CANCELLED'] as const;
+export const BOOKING_EXTRA_CHARGE_STATUSES = [
+  'PENDING',
+  'PAID',
+  'UNPAID',
+  'FAILED',
+  'CANCELLED',
+  'REFUNDED',
+] as const;
 
 const bookingExtraChargeSchema = z.object({
   id: z.string(),
@@ -181,13 +208,36 @@ const bookingExtraChargeSchema = z.object({
   amountCents: z.number().int().meta({ description: 'Including GST' }),
   status: z.enum(BOOKING_EXTRA_CHARGE_STATUSES).meta({
     description:
-      'PENDING: being charged to the saved card. UNPAID: the saved card didn’t go through, so the Guest has a link to pay it, and it’s tried again. FAILED: it couldn’t be collected. CANCELLED: taken off by support',
+      'PENDING: being charged to the saved card. UNPAID: the saved card didn’t go through, so the Guest has a link to pay it, and it’s tried again. FAILED: it couldn’t be collected. CANCELLED: taken off by support. REFUNDED: paid, and all of it given back',
   }),
+  refundedCents: z
+    .number()
+    .int()
+    .optional()
+    .meta({ description: 'A paid charge’s refunds that didn’t fail; left out when none' }),
   addedAt: z.iso.datetime(),
   payPath: z
     .string()
     .optional()
     .meta({ description: 'The Guest’s view of an UNPAID charge: /pay/{paymentId}' }),
+});
+
+/** The fuel and kilometre terms as booked (plan §3: later listing changes don't apply to the trip). */
+const bookedTermsSchema = z.object({
+  fuelPolicy: z.enum(FUEL_POLICIES),
+  unlimitedKm: z.boolean(),
+  kmAllowancePerDay: z
+    .number()
+    .int()
+    .optional()
+    .meta({ description: 'Left out when kilometres are unlimited' }),
+  allowanceKm: z
+    .number()
+    .int()
+    .optional()
+    .meta({ description: 'The whole trip’s allowance: the daily allowance times the trip’s days' }),
+  extraKmCents: z.number().int().meta({ description: 'For each kilometre over the allowance' }),
+  electric: z.boolean().meta({ description: 'An electric car: its fuel policy is about battery charge' }),
 });
 
 export const bookingViewSchema = z
@@ -219,12 +269,17 @@ export const bookingViewSchema = z
       .extend({ priceCents: z.number().int() })
       .nullable(),
     cancellationTier: cancellationTierSchema.nullable(),
+    terms: bookedTermsSchema,
     lineItems: z.array(lineItemSchema),
     price: guestPriceSchema,
     payout: z
       .object({
         hostPayoutCents: z.number().int(),
-        platformFeeCents: z.number().int(),
+        commissionCents: z.number().int().meta({
+          description:
+            'The platform’s commission on the rental and delivery, as the trip’s payout was made with it',
+        }),
+        commissionGstCents: z.number().int().meta({ description: 'The GST included in the commission' }),
         status: z.enum(PAYOUT_STATUSES).optional().meta({ description: 'Once confirmed: the trip’s payout' }),
         holdReason: z.enum(PAYOUT_HOLD_REASONS).optional(),
         scheduledFor: z.iso.datetime().optional(),
@@ -244,10 +299,20 @@ export const bookingViewSchema = z
               fundedBy: z
                 .enum(['PLATFORM', 'HOST'])
                 .meta({ description: 'HOST: it comes off the Host’s payout (plan §8.1, item 15)' }),
+              hostCents: z.number().int().optional().meta({
+                description:
+                  'HOST: what the Host pays back for it, their share; Rento Vroom covers its commission',
+              }),
+              extraCharge: z
+                .boolean()
+                .optional()
+                .meta({ description: 'A refund of one of the booking’s extra charges' }),
             }),
           )
           .optional()
-          .meta({ description: 'Refunds made to the Guest on the booking, oldest first' }),
+          .meta({
+            description: 'Refunds made to the Guest on the booking and its extra charges, oldest first',
+          }),
       })
       .optional()
       .meta({ description: 'The Host’s view: what they earn and when it’s paid' }),
@@ -267,11 +332,27 @@ export const bookingViewSchema = z
         by: z.enum(['GUEST', 'HOST', 'SUPPORT']),
         reason: z.enum(CANCELLATION_REASONS).optional(),
         refundCents: z.number().int().optional(),
+        refundStatus: refundStatusSchema.optional().meta({
+          description:
+            'Where the refund stands, once one was made: PENDING (on its way), SUCCEEDED, or FAILED (support returns it another way)',
+        }),
         feeCents: z.number().int().optional(),
         hostShareCents: z.number().int().optional(),
         hostFeeCents: z.number().int().optional(),
       })
       .nullable(),
+    expiry: z
+      .object({
+        reason: z.enum(EXPIRY_REASONS),
+        paymentReturned: z.boolean().meta({
+          description:
+            'The Guest’s card was charged after the booking ended, so the payment is refunded in full (an authorisation is only released)',
+        }),
+        refundCents: z.number().int().optional(),
+        refundStatus: refundStatusSchema.optional(),
+      })
+      .optional()
+      .meta({ description: 'EXPIRED: why, and whether a payment that went through was given back' }),
     extraCharges: z.array(bookingExtraChargeSchema).optional().meta({
       description: 'Charges after the trip, such as extra kilometres or from an incident, oldest first',
     }),
@@ -315,13 +396,26 @@ export const bookingSummarySchema = z
   })
   .meta({ id: 'BookingSummary' });
 
+/** Bookings on each page of a list. */
+export const BOOKINGS_PAGE_SIZE = 100;
+
 export const bookingsQuerySchema = z.object({
   role: z.enum(['guest', 'host']).default('guest'),
   group: z.enum(BOOKING_GROUPS).optional(),
+  page: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .default(1)
+    .meta({ description: `Each page has up to ${BOOKINGS_PAGE_SIZE} bookings` }),
 });
 
 export const bookingsResponseSchema = z
-  .object({ bookings: z.array(bookingSummarySchema) })
+  .object({
+    bookings: z.array(bookingSummarySchema),
+    nextPage: z.number().int().optional().meta({ description: 'Set when there are more bookings' }),
+  })
   .meta({ id: 'Bookings' });
 
 export const cancellationPreviewSchema = z
@@ -379,6 +473,15 @@ export const receiptSchema = z
           gstCents: z.number().int().meta({ description: 'The GST included in the charge' }),
           paidAt: z.iso.datetime(),
           paidWith: z.string(),
+          refunds: z
+            .array(receiptRefundSchema)
+            .optional()
+            .meta({ description: 'Refunds made on the charge since; left out when there are none' }),
+          refundedCents: z
+            .number()
+            .int()
+            .optional()
+            .meta({ description: 'Its refunds that went through; set with refunds' }),
         }),
       )
       .optional()

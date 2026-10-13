@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { errorResponseSchema } from '../src/lib/http-error.js';
-import { adminOverviewSchema } from '../src/modules/admin/admin.schemas.js';
+import { adminDashboardSchema } from '../src/modules/admin/admin-ops.schemas.js';
 import { ACCESS_COOKIE } from '../src/modules/auth/auth.cookies.js';
 import { consoleCodeFor } from '../src/integrations/sms/phone-verifier.js';
 import {
@@ -51,7 +51,7 @@ describe('API contract (openapi.json)', () => {
     userResponseSchema.parse(withCode.body);
     sessionResponseSchema.parse((await agent.post('/api/v1/auth/session')).body);
     userResponseSchema.parse((await agent.get('/api/v1/me')).body);
-    adminOverviewSchema.parse((await agent.get('/api/v1/admin/overview')).body);
+    adminDashboardSchema.parse((await agent.get('/api/v1/admin/dashboard')).body);
     userResponseSchema.parse((await agent.post('/api/v1/auth/refresh')).body);
 
     const loggedOut = await agent.post('/api/v1/auth/logout');

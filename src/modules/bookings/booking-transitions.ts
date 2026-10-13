@@ -65,7 +65,9 @@ export async function confirmBooking(
   session: ClientSession,
   now = new Date(),
 ) {
+  // The payment that confirmed it is the booking's own (a second one for it is given back).
   const confirmed = await transition(booking._id, ['PAYMENT_PENDING', 'PENDING'], 'CONFIRMED', session, {
+    set: { bookingPaymentId: payment._id },
     now,
   });
   if (!confirmed) return null;
@@ -89,12 +91,21 @@ export async function confirmBooking(
 
 /**
  * The card is authorised for a request, or for a booking whose Guest's verification is in review:
- * 24 h for the Host to answer, for support to approve the check, or both (plan §8.2).
+ * 24 h for the Host to answer, for support to approve the check, or both (plan §8.2), but never past the
+ * trip's start: a booking can't be confirmed and charged once its trip should have begun.
  */
-export async function markRequested(booking: BookingDocument, session: ClientSession, now = new Date()) {
-  const requestExpiresAt = new Date(now.getTime() + REQUEST_HOURS * HOUR_MS);
+export async function markRequested(
+  booking: BookingDocument,
+  session: ClientSession,
+  now = new Date(),
+  /** The authorised payment: the booking's own from now on. */
+  payment?: PaymentDocument,
+) {
+  const requestExpiresAt = new Date(
+    Math.min(now.getTime() + REQUEST_HOURS * HOUR_MS, booking.startAt.getTime()),
+  );
   const pending = await transition(booking._id, ['PAYMENT_PENDING'], 'PENDING', session, {
-    set: { requestExpiresAt },
+    set: { requestExpiresAt, ...(payment && { bookingPaymentId: payment._id }) },
     now,
   });
   if (!pending) return null;

@@ -16,6 +16,7 @@ import type {
   ticketListQuerySchema,
   ticketUpdateSchema,
 } from './admin-ops.schemas.js';
+import { assertNotOwnRecord } from './own-record.js';
 
 /*
  * The support inbox (spec §18; plan §9 Days 20–22): tickets from the Contact form, a booking's Contact
@@ -100,6 +101,17 @@ export async function listTickets(staffId: string, query: z.infer<typeof ticketL
   return { tickets: await rows(tickets), total, page: query.page };
 }
 
+/**
+ * A support member's own request, or one about a booking they are the Guest or Host on, is someone else's to
+ * answer (plan §6.2).
+ */
+async function assertNotOwnTicket(staffId: string, ticket: TicketRecord) {
+  const booking = ticket.bookingId
+    ? await BookingModel.findById(ticket.bookingId).select('guestId hostId').lean()
+    : null;
+  await assertNotOwnRecord(staffId, [ticket.userId, booking?.guestId, booking?.hostId]);
+}
+
 async function findTicket(ref: string) {
   if (!/^ST-[A-Z0-9]{6}$/i.test(ref)) throw notFound();
   const ticket = await SupportTicketModel.findOne({ ref: ref.toUpperCase() }).lean<TicketRecord>();
@@ -143,6 +155,7 @@ export async function replyToTicket(
   ip?: string,
 ) {
   const ticket = await findTicket(ref);
+  await assertNotOwnTicket(staffId, ticket);
   // A closed account can't sign in, and notify() sends it nothing: its sender is answered at the
   // address on the ticket, like a visitor from the Contact form.
   const account = ticket.userId ? await UserModel.findById(ticket.userId).select('closedAt').lean() : null;
@@ -222,6 +235,7 @@ export async function updateTicket(
   ip?: string,
 ) {
   const ticket = await findTicket(ref);
+  await assertNotOwnTicket(staffId, ticket);
   await SupportTicketModel.updateOne(
     { _id: ticket._id },
     {

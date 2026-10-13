@@ -6,7 +6,7 @@ import { fromNzWallClock, toNzWallClock, addNzDays } from '../../lib/nz-time.js'
 import { emitToUser } from '../../realtime/realtime.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import type { BookingStatus } from '../bookings/booking.model.js';
-import { UserModel } from '../users/user.model.js';
+import { UserModel, type NotificationPrefs } from '../users/user.model.js';
 import { NotificationModel } from './notification.model.js';
 
 /*
@@ -36,9 +36,14 @@ export interface SmsContent {
   whileBooking?: { id: Types.ObjectId | string; statuses: readonly BookingStatus[] };
   /** …if it would arrive after this time (e.g. a reminder for a pickup that's already passed)… */
   expiresAt?: Date;
-  /** …or, for a new-message text, if the person has read the conversation since. */
+  /** …or, for a new-message text, if the person has read the conversation since or blocked the sender… */
   whileUnread?: { threadId: Types.ObjectId | string };
+  /** …or, for a text they chose to get, if they've turned that choice off since (plan §7). */
+  whileOptedIn?: SmsOptIn;
 }
+
+/** The notification choices that turn on optional texts. */
+export type SmsOptIn = Extract<keyof NotificationPrefs, 'unreadMessageSms' | 'marketingSms'>;
 
 /** What an SMS notification stores, and what `notification.send` checks before sending it. */
 export interface SmsPayload {
@@ -46,6 +51,7 @@ export interface SmsPayload {
   whileBooking?: { id: string; statuses: BookingStatus[] };
   expiresAt?: Date;
   whileUnread?: { threadId: string };
+  whileOptedIn?: SmsOptIn;
 }
 
 export interface NotifyInput {
@@ -133,7 +139,7 @@ export async function notify(
     const runAt = input.sms.urgent
       ? now
       : smsSendTime(now, settings.sms.quietHoursStart, settings.sms.quietHoursEnd);
-    const { whileBooking, expiresAt, whileUnread } = input.sms;
+    const { whileBooking, expiresAt, whileUnread, whileOptedIn } = input.sms;
     const payload: SmsPayload = {
       body: input.sms.body,
       ...(whileBooking && {
@@ -141,6 +147,7 @@ export async function notify(
       }),
       ...(expiresAt && { expiresAt }),
       ...(whileUnread && { whileUnread: { threadId: whileUnread.threadId.toString() } }),
+      ...(whileOptedIn && { whileOptedIn }),
     };
     const [sms] = await NotificationModel.create([{ ...base, channel: 'SMS', status: 'QUEUED', payload }], {
       session,

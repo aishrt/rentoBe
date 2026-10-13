@@ -3,7 +3,7 @@ import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
-import { nextNzHour, nzDate } from '../../lib/nz-time.js';
+import { nextNzHour, nzDate, toNzWallClock } from '../../lib/nz-time.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
@@ -13,6 +13,7 @@ import { UserModel } from '../users/user.model.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { ReviewModel, type Review, type ReviewDirection } from './review.model.js';
 import type { ModerationReviewView, ReviewInput, ReviewView } from './reviews.schemas.js';
+import { assertNotOwnRecord } from '../admin/own-record.js';
 
 /*
  * Two-way reviews (spec §16; plan §9 Days 21–22). After a completed trip, the Guest reviews the Host and
@@ -402,11 +403,20 @@ export async function requestReviews(bookingId: string): Promise<void> {
 /** GET /me/reviews: trips waiting for the user's review, the reviews they wrote, and those about them. */
 export async function myReviews(userId: string, now = new Date()) {
   const settings = await getPlatformSettings();
-  const since = new Date(now.getTime() - (settings.reviews.windowDays + 7) * DAY_MS);
+  // The window runs from when the trip was completed, which can be well after it ended (support completing
+  // it late); trips without that record fall back to their end, as reviewWindowCloses() does.
+  const since = new Date(now.getTime() - settings.reviews.windowDays * DAY_MS);
   const recent = await BookingModel.find({
-    $or: [{ guestId: userId }, { hostId: userId }],
+    $and: [
+      { $or: [{ guestId: userId }, { hostId: userId }] },
+      {
+        $or: [
+          { statusHistory: mongoose.trusted({ $elemMatch: { status: 'COMPLETED', at: { $gte: since } } }) },
+          { endAt: mongoose.trusted({ $gte: since }) },
+        ],
+      },
+    ],
     status: 'COMPLETED',
-    endAt: mongoose.trusted({ $gte: since }),
   })
     .sort({ endAt: -1 })
     .lean<BookingRecord[]>();
@@ -476,7 +486,8 @@ export async function memberReviews(memberId: string) {
       id: member._id.toString(),
       firstName: member.firstName,
       ...(member.avatarUrl && { avatarUrl: member.avatarUrl }),
-      joinedYear: member.createdAt.getFullYear(),
+      // The year in New Zealand: someone who joined on New Year's morning joined that year.
+      joinedYear: toNzWallClock(member.createdAt).year,
       verified: member.identityVerification?.status === 'APPROVED',
       asGuest: {
         rating: { avg: Math.round((guestRating?.avg ?? 0) * 100) / 100, count: guestRating?.count ?? 0 },
@@ -537,10 +548,24 @@ export async function moderateReview(
   if (!mongoose.isValidObjectId(reviewId)) throw new HttpError(404, 'NOT_FOUND', 'No such review.');
   const review = await ReviewModel.findById(reviewId).lean<ReviewRecord>();
   if (!review) throw new HttpError(404, 'NOT_FOUND', 'No such review.');
+  // A review by or about a support member is someone else's to moderate.
+  await assertNotOwnRecord(staffId, [review.authorId, review.subjectId]);
   const moderation = { state: action === 'CLEAR' ? 'CLEAR' : 'HIDDEN', reason, by: staffId, at: now };
   // Clearing a hidden review puts it back in line: it's published like any other once it's time.
   const status = action === 'HIDE' ? 'HIDDEN' : review.status === 'HIDDEN' ? 'AWAITING_REVEAL' : undefined;
-  await ReviewModel.updateOne({ _id: review._id }, { $set: { moderation, ...(status && { status }) } });
+  // Only as it was read: two moderators acting at once can't leave it hidden but marked clear, which no
+  // moderation list shows.
+  const updated = await ReviewModel.updateOne(
+    { _id: review._id, status: review.status, 'moderation.state': review.moderation.state },
+    { $set: { moderation, ...(status && { status }) } },
+  );
+  if (updated.matchedCount === 0) {
+    throw new HttpError(
+      409,
+      'REVIEW_CHANGED',
+      'Someone else has just moderated this review. Reload it to see what changed.',
+    );
+  }
   if (action === 'HIDE' && review.direction === 'GUEST_TO_HOST')
     await recountRatings(review.subjectId, review.vehicleId);
   if (action === 'CLEAR') await revealReviews(review.bookingId, now);

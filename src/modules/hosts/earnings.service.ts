@@ -5,14 +5,16 @@ import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
 import { keptFeeCommission } from '../bookings/policies.js';
 import { PaymentModel } from '../payments/payment.model.js';
-import { PayoutModel } from '../payouts/payout.model.js';
+import { PayoutModel, type Payout } from '../payouts/payout.model.js';
+import { gstIn, hostPartOf, reservedCents } from '../payouts/payouts.service.js';
 import { UserModel } from '../users/user.model.js';
 
 /*
  * The Host's earnings (spec §9, §23; plan §9 Days 16–19): today, this week, this month against last month,
  * lifetime, a monthly chart, each booking's breakdown and a GST-ready statement. Earnings count on the
- * trip's start date in NZ time, weeks run Monday to Sunday, and amounts are net of Host-funded refunds
- * and Host cancellation fees. A cancelled trip earns the Host's share of any kept fee.
+ * trip's start date in NZ time, weeks run Monday to Sunday, and amounts are net of Host-funded refunds (the
+ * Host's share of each, of the booking and its extra charges) and Host cancellation fees. A cancelled trip
+ * earns the Host's share of any kept fee.
  */
 
 type Id = Types.ObjectId;
@@ -43,44 +45,54 @@ export interface EarningsRow {
   netCents: number;
 }
 
-const gstIn = (cents: number, ratePct: number) => Math.round((cents * ratePct) / (100 + ratePct));
 const sumLines = (booking: BookingRecord, codes: string[], field: 'amountCents' | 'gstCents') =>
   booking.lineItems.filter((line) => codes.includes(line.code)).reduce((sum, line) => sum + line[field], 0);
 
+type PayoutPart = Pick<Payout, 'type' | 'extraChargeId' | 'commissionCents' | 'commissionGstCents'>;
+
 /**
- * One booking's earnings, every amount in NZD cents and GST included. An extra charge's commission is the one
- * its payout was made with; today's rate only covers a charge without a payout yet.
+ * One booking's earnings, every amount in NZD cents and GST included. Each part's commission and its GST are
+ * the ones its payout was made with (the trip's or the kept fee's, and each extra charge's), so the statement
+ * matches the payouts (plan §8.1, item 22); a part without a payout yet is worked out at today's rates, its GST
+ * rounded on its own as its payout's will be.
  */
 function rowFor(
   booking: BookingRecord,
   { all: hostRefunds, staff: hostStaffRefunds }: { all: number; staff: number },
-  extraChargeCommission: Map<string, number>,
+  payouts: PayoutPart[],
   settings: { commissionPct: number; gstPct: number },
 ): EarningsRow {
   const cancelled = booking.status === 'CANCELLED';
+  const part = (payout: PayoutPart | undefined, commission: number) => {
+    const cents = payout?.commissionCents ?? commission;
+    return { cents, gstCents: payout?.commissionGstCents ?? gstIn(cents, settings.gstPct) };
+  };
   const extras = booking.extraCharges.filter((charge) => charge.status === 'SUCCEEDED');
   const extrasCents = extras.reduce((sum, charge) => sum + charge.amountCents, 0);
-  const extrasCommission = extras.reduce(
-    (sum, charge) =>
-      sum +
-      (extraChargeCommission.get(charge._id!.toString()) ??
-        Math.round((charge.amountCents * settings.commissionPct) / 100)),
-    0,
+  const extraParts = extras.map((charge) =>
+    part(
+      payouts.find((payout) => payout.type === 'EXTRA_CHARGE' && payout.extraChargeId?.equals(charge._id!)),
+      Math.round((charge.amountCents * settings.commissionPct) / 100),
+    ),
   );
   const rental = cancelled ? 0 : sumLines(booking, RENTAL_LINES, 'amountCents');
   const delivery = cancelled ? 0 : sumLines(booking, DELIVERY_LINES, 'amountCents');
-  const tripCommission = cancelled
-    ? keptFeeCommission(booking)
-    : booking.price.subtotalCents + booking.price.deliveryCents - booking.price.hostPayoutCents;
-  const keptFee = cancelled ? (booking.hostShareCents ?? 0) + tripCommission : 0;
-  const commission = tripCommission + extrasCommission;
+  const trip = part(
+    payouts.find((payout) => payout.type === (cancelled ? 'CANCELLATION_FEE' : 'TRIP')),
+    cancelled
+      ? keptFeeCommission(booking)
+      : booking.price.subtotalCents + booking.price.deliveryCents - booking.price.hostPayoutCents,
+  );
+  const keptFee = cancelled ? (booking.hostShareCents ?? 0) + trip.cents : 0;
+  const commission = trip.cents + extraParts.reduce((sum, extra) => sum + extra.cents, 0);
+  const commissionGst = trip.gstCents + extraParts.reduce((sum, extra) => sum + extra.gstCents, 0);
   // Less any part an admin waived (plan §8.1, item 10).
   const hostFee = Math.max(
     0,
     (booking.hostCancellationFeeCents ?? 0) - (booking.hostCancellationFeeWaivedCents ?? 0),
   );
   // A cancelled booking's cancellation refund is already out of its kept fee; a Host-funded refund staff made
-  // after it still comes off the Host's payouts, so it counts here too.
+  // after it (of the booking or an extra charge) still comes off the Host's payouts, so it counts here too.
   const refunds = cancelled ? hostStaffRefunds : hostRefunds;
   return {
     ref: booking.ref,
@@ -96,7 +108,7 @@ function rowFor(
     extraChargesGstCents: gstIn(extrasCents, settings.gstPct),
     keptFeeCents: keptFee,
     commissionCents: commission,
-    commissionGstCents: gstIn(commission, settings.gstPct),
+    commissionGstCents: commissionGst,
     hostFundedRefundsCents: refunds,
     hostCancellationFeeCents: hostFee,
     netCents: rental + delivery + extrasCents + keptFee - commission - refunds - hostFee,
@@ -115,39 +127,34 @@ async function earningsRows(hostId: string, from?: Date, to?: Date): Promise<Ear
   })
     .sort({ startAt: -1 })
     .lean<BookingRecord[]>();
-  const payments = await PaymentModel.find({
-    bookingId: mongoose.trusted({ $in: bookings.map((booking) => booking._id) }),
-    type: 'BOOKING',
-  })
-    .select('bookingId refunds')
-    .lean();
-  const extraPayouts = await PayoutModel.find({
-    bookingId: mongoose.trusted({ $in: bookings.map((booking) => booking._id) }),
-    type: 'EXTRA_CHARGE',
-    status: mongoose.trusted({ $ne: 'CANCELLED' }),
-  })
-    .select('extraChargeId commissionCents')
-    .lean();
-  const extraChargeCommission = new Map(
-    extraPayouts.flatMap((payout) =>
-      payout.extraChargeId && payout.commissionCents !== undefined
-        ? [[payout.extraChargeId.toString(), payout.commissionCents] as const]
-        : [],
-    ),
-  );
+  const ids = mongoose.trusted({ $in: bookings.map((booking) => booking._id) });
+  // The booking's own payment and its extra charges' (plan §8.1, items 11 and 15).
+  const [payments, payouts] = await Promise.all([
+    PaymentModel.find({ bookingId: ids }).select('bookingId type refunds').lean(),
+    PayoutModel.find({ bookingId: ids, status: mongoose.trusted({ $ne: 'CANCELLED' }) })
+      .select('bookingId type extraChargeId commissionCents commissionGstCents')
+      .lean(),
+  ]);
   const rates = { commissionPct: settings.fees.hostCommissionPct, gstPct: settings.fees.gstRatePct };
   return bookings
     .map((booking) => {
       const hostFunded = payments
         .filter((payment) => payment.bookingId.equals(booking._id))
-        .flatMap((payment) => payment.refunds)
-        .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED');
+        .flatMap((payment) =>
+          payment.refunds
+            .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED')
+            .map((refund) => ({ refund, extraCharge: payment.type === 'EXTRA_CHARGE' })),
+        );
+      // What the Host pays back for each: their share of it.
       const sum = (refunds: typeof hostFunded) =>
-        refunds.reduce((total, refund) => total + refund.amountCents, 0);
+        refunds.reduce((total, { refund }) => total + hostPartOf(refund), 0);
       return rowFor(
         booking,
-        { all: sum(hostFunded), staff: sum(hostFunded.filter((refund) => refund.kind === 'STAFF')) },
-        extraChargeCommission,
+        {
+          all: sum(hostFunded),
+          staff: sum(hostFunded.filter(({ refund, extraCharge }) => extraCharge || refund.kind === 'STAFF')),
+        },
+        payouts.filter((payout) => payout.bookingId.equals(booking._id)),
         rates,
       );
     })
@@ -195,15 +202,13 @@ export async function hostEarnings(hostId: string, now = new Date()) {
     months.push({ month: monthKey(start), netCents: total(rows, start, end) });
   }
 
-  const upcoming = await PayoutModel.aggregate<{ total: number }>([
-    {
-      $match: {
-        hostId: new mongoose.Types.ObjectId(hostId),
-        status: { $in: ['SCHEDULED', 'HELD', 'FAILED'] },
-      },
-    },
-    { $group: { _id: null, total: { $sum: '$amountCents' } } },
-  ]);
+  // What they'll send: less the deductions already reserved for them, as the payouts list shows them.
+  const upcoming = await PayoutModel.find({
+    hostId,
+    status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }),
+  })
+    .select('amountCents deductions deductionsReservedAt')
+    .lean();
   const monthRows = rows.filter((row) => new Date(row.start) >= thisMonth && new Date(row.start) < nextMonth);
   // Lifetime runs to the end of this month, like the chart: a trip booked for next year isn't earned yet.
   const toDate = rows.filter((row) => new Date(row.start) < nextMonth);
@@ -215,7 +220,10 @@ export async function hostEarnings(hostId: string, now = new Date()) {
       monthCents: total(rows, thisMonth, nextMonth),
       previousMonthCents: total(rows, lastMonth, thisMonth),
       lifetimeCents: total(toDate, new Date(0), nextMonth),
-      upcomingPayoutsCents: upcoming[0]?.total ?? 0,
+      upcomingPayoutsCents: upcoming.reduce(
+        (sum, payout) => sum + payout.amountCents - reservedCents(payout),
+        0,
+      ),
       platformFeesMonthCents: monthRows.reduce((sum, row) => sum + row.commissionCents, 0),
       platformFeesLifetimeCents: toDate.reduce((sum, row) => sum + row.commissionCents, 0),
     },
@@ -255,9 +263,9 @@ const csvCell = (value: string) => (/[",\n]/.test(value) ? `"${value.replace(/"/
 
 /**
  * GET /host/earnings/statement: a CSV for the Host's records and tax return (spec §23), one row per
- * booking with rental, delivery, extra charges, platform commission, deductions and GST separately, and a
- * total row. For a GST-registered Host, the commission and its GST can be used as a tax invoice once the
- * accountant confirms its form (plan §8.1, item 22).
+ * booking with rental, delivery, extra charges, kept fees, platform commission and deductions, each with the
+ * GST in it, and a total row. For a GST-registered Host, the commission and its GST can be used as a tax
+ * invoice once the accountant confirms its form (plan §8.1, item 22).
  */
 export async function earningsStatement(
   hostId: string,
@@ -267,54 +275,43 @@ export async function earningsStatement(
   const host = await UserModel.findById(hostId).select('firstName lastName hostProfile').lean();
   if (!host?.hostProfile) throw new HttpError(404, 'NOT_A_HOST', "You haven't applied to host yet.");
   const rows = (await earningsRows(hostId, from, to)).reverse();
-  const header = [
-    'Trip start (NZ)',
-    'Booking',
-    'Car',
-    'Status',
-    'Rental',
-    'GST in rental',
-    'Delivery',
-    'GST in delivery',
-    'Extra charges',
-    'GST in extra charges',
-    'Kept cancellation fee',
-    'Platform commission',
-    'GST in commission',
-    'Host-funded refunds',
-    'Host cancellation fee',
-    'Net earnings',
+  const { gstRatePct } = (await getPlatformSettings()).fees;
+  // The GST in an amount the row has no GST of its own for, at the rate in settings (plan §5).
+  const gstOf = (key: keyof EarningsRow) => (row: EarningsRow) => gstIn(row[key] as number, gstRatePct);
+  const columns: [string, (row: EarningsRow) => number][] = [
+    ['Rental', (row) => row.rentalCents],
+    ['GST in rental', (row) => row.rentalGstCents],
+    ['Delivery', (row) => row.deliveryCents],
+    ['GST in delivery', (row) => row.deliveryGstCents],
+    ['Extra charges', (row) => row.extraChargesCents],
+    ['GST in extra charges', (row) => row.extraChargesGstCents],
+    ['Kept cancellation fee', (row) => row.keptFeeCents],
+    ['GST in kept cancellation fee', gstOf('keptFeeCents')],
+    ['Platform commission', (row) => row.commissionCents],
+    ['GST in commission', (row) => row.commissionGstCents],
+    ['Host-funded refunds', (row) => row.hostFundedRefundsCents],
+    ['GST in Host-funded refunds', gstOf('hostFundedRefundsCents')],
+    ['Host cancellation fee', (row) => row.hostCancellationFeeCents],
+    ['GST in Host cancellation fee', gstOf('hostCancellationFeeCents')],
+    ['Net earnings', (row) => row.netCents],
   ];
+  const header = ['Trip start (NZ)', 'Booking', 'Car', 'Status', ...columns.map(([title]) => title)];
   const nzDay = (iso: string) => {
     const { year, month, day } = toNzWallClock(new Date(iso));
     return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
   };
-  const money: (keyof EarningsRow)[] = [
-    'rentalCents',
-    'rentalGstCents',
-    'deliveryCents',
-    'deliveryGstCents',
-    'extraChargesCents',
-    'extraChargesGstCents',
-    'keptFeeCents',
-    'commissionCents',
-    'commissionGstCents',
-    'hostFundedRefundsCents',
-    'hostCancellationFeeCents',
-    'netCents',
-  ];
   const lines = rows.map((row) =>
     [
       nzDay(row.start),
       row.ref,
       row.vehicleTitle,
       row.status,
-      ...money.map((key) => dollars(row[key] as number)),
+      ...columns.map(([, cents]) => dollars(cents(row))),
     ]
       .map(csvCell)
       .join(','),
   );
-  const totals = money.map((key) => dollars(rows.reduce((sum, row) => sum + (row[key] as number), 0)));
+  const totals = columns.map(([, cents]) => dollars(rows.reduce((sum, row) => sum + cents(row), 0)));
   const preface = [
     `Rento Vroom earnings statement,${csvCell(`${host.firstName} ${host.lastName}`)}`,
     `Period,${label}`,

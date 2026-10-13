@@ -207,6 +207,11 @@ export interface Vehicle {
    * approve or reject the listing; listings that never changed them have none.
    */
   keyChanges?: KeyChange[];
+  /**
+   * Whether a live listing sent back for review by a key-detail change was on (ACTIVE) or switched off by its
+   * Host (INACTIVE): approval puts it back as it was (plan §3, §8.2). Kept, and cleared, with keyChanges.
+   */
+  keyReviewFrom?: 'ACTIVE' | 'INACTIVE';
   onboardingStep: number;
   location?: GeoPoint;
   suburb?: string;
@@ -372,6 +377,7 @@ const vehicleSchema = new Schema<Vehicle>(
       ],
       default: undefined,
     },
+    keyReviewFrom: { type: String, enum: ['ACTIVE', 'INACTIVE'] },
     onboardingStep: { type: Number, min: 1, max: 6, default: 1 },
     location: { type: pointSchema },
     suburb: { type: String, trim: true },
@@ -410,3 +416,7 @@ export const liveVehicleFilter = () => ({
   payoutsReady: mongoose.trusted({ $ne: false }),
   hostSuspended: mongoose.trusted({ $ne: true }),
 });
+
+/** liveVehicleFilter() for a car already loaded: whether Guests can see and book it. Keep the two in step. */
+export const isLiveVehicle = (vehicle: Pick<Vehicle, 'status' | 'payoutsReady' | 'hostSuspended'>) =>
+  vehicle.status === 'ACTIVE' && vehicle.payoutsReady !== false && vehicle.hostSuspended !== true;

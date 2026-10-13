@@ -285,6 +285,10 @@ export interface BookingCancelledProps extends TripBasics {
   hostShare?: string;
   /** Host: a Host cancellation fee taken from their next payout. */
   hostFee?: string;
+  /** Host: the trip's payout already went (a no-show after their check-in): what it was. */
+  tripPayoutSent?: string;
+  /** Host: what of that payout comes off their next one, beyond their share of the kept fee. */
+  hostOwes?: string;
   /** A request withdrawn before the Host answered: nothing was booked or charged. */
   withdrawn?: boolean;
   /** Guest: support cancelled a request, or a booking waiting for verification: the card's hold is released. */
@@ -347,6 +351,13 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
         <EmailText>
           You haven't been charged. The amount held on your card is released, and your bank usually shows it
           within a few days.
+        </EmailText>
+      )}
+      {props.audience === 'HOST' && props.tripPayoutSent && (
+        <EmailText>
+          Your payout for this trip, {props.tripPayoutSent}, was already sent. You keep your share of the fee
+          from it
+          {props.hostOwes ? `, and the rest, ${props.hostOwes}, comes off your next payout.` : '.'}
         </EmailText>
       )}
       {props.audience === 'HOST' && <EmailText>The dates are free again on your calendar.</EmailText>}

@@ -31,6 +31,7 @@ export function toPublicUser(user: UserDocument): PublicUser {
     email: user.email,
     firstName: user.firstName,
     lastName: user.lastName,
+    ...(user.avatarUrl && { avatarUrl: user.avatarUrl }),
     ...(user.dob && { dateOfBirth: nzDate(user.dob) }),
     nameLocked: nameLocked(user),
     roles: effectiveRoles(user),

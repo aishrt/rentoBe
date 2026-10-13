@@ -74,7 +74,8 @@ export function registerReviewPaths(registry: OpenAPIRegistry) {
     request: { params: z.object({ id: z.string() }), body: jsonBody(moderateReviewSchema) },
     responses: {
       200: jsonResponse('Moderated', reviewResponseSchema),
-      ...errorResponses(400, 401, 403, 404),
+      // 409: another moderator changed it first.
+      ...errorResponses(400, 401, 403, 404, 409),
     },
   });
 }

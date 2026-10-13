@@ -1,5 +1,5 @@
 import { env } from '../../env.js';
-import { unreadMessagesFor } from '../../modules/messages/messages.service.js';
+import { recordUnreadNotice, unreadMessagesFor } from '../../modules/messages/messages.service.js';
 import { notify } from '../../modules/notifications/notify.js';
 import { syncIdentity } from '../../modules/users/identity.service.js';
 import { oneClickUnsubscribeUrl, unsubscribeUrl } from '../../modules/users/notification-prefs.js';
@@ -10,15 +10,18 @@ const SNIPPET_LENGTH = 160;
 
 /**
  * `messages.unreadEmail` (plan §4.3): 10 minutes after a message, if the recipient still hasn't read the
- * conversation, they're emailed, and texted if they chose that in their notification preferences.
+ * conversation, they're emailed, and texted if they chose that in their notification preferences. One
+ * notice per streak of unread messages: after one, the next waits 12 hours unless they read it in between.
+ * Nothing goes once they've blocked the sender.
  */
 export async function unreadMessageEmailJob(
   { threadId, recipientId }: { threadId: string; recipientId: string },
   { log }: JobContext,
 ) {
-  const unread = await unreadMessagesFor(threadId, recipientId);
-  if (!unread) return;
-  const { booking, viewer, count, latest, since } = unread;
+  const now = new Date();
+  const unread = await unreadMessagesFor(threadId, recipientId, now);
+  if (!unread?.noticeSince || unread.blockedSender) return;
+  const { booking, viewer, count, latest, noticeSince } = unread;
   const senderId = viewer === 'GUEST' ? booking.hostId : booking.guestId;
   const [recipient, sender] = await Promise.all([
     UserModel.findById(recipientId).select('firstName notificationPrefs').lean(),
@@ -58,10 +61,13 @@ export async function unreadMessageEmailJob(
       sms: {
         body: `Rento Vroom: ${senderName} sent you a message about ${booking.ref}. Read it: ${url}`,
         whileUnread: { threadId },
+        // A text held for quiet hours isn't sent if they turn these off in the meantime.
+        whileOptedIn: 'unreadMessageSms',
       },
     }),
-    dedupeKey: `NEW_MESSAGE:${threadId}:${recipientId}:${since.getTime()}`,
+    dedupeKey: `NEW_MESSAGE:${threadId}:${recipientId}:${noticeSince.getTime()}`,
   });
+  await recordUnreadNotice(threadId, recipientId, now);
   log.info({ threadId, recipientId, count }, 'Unread message email sent');
 }
 

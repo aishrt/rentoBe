@@ -57,13 +57,24 @@ export interface StorageDriver {
   }): Promise<UploadTarget>;
   /**
    * Turns an upload's key into the value saved on the record: a public URL, or a private reference
-   * (`local:` or `s3:`, then the file's path). Refuses a file outside `folder`.
+   * (`local:` or `s3:`, then the file's path). Refuses a file outside `folder`. A public photo is stored in
+   * `widths` (a listing photo's PHOTO_WIDTHS unless given), and the URL is the widest copy.
    */
-  confirmUpload(input: { folder: string; isPrivate: boolean; ref: string }): Promise<string>;
+  confirmUpload(input: {
+    folder: string;
+    isPrivate: boolean;
+    ref: string;
+    widths?: readonly number[];
+  }): Promise<string>;
   /** Where a private file is fetched from: a short-lived S3 link, or null when this API serves it. */
   downloadUrl(path: string): Promise<string | null>;
   /** Deletes a private file past its retention period (plan §14). A file already gone is fine. */
   deletePrivate(path: string): Promise<void>;
+  /**
+   * Deletes a public photo, by the URL confirmUpload gave it and the widths it was stored in, e.g. a profile
+   * photo replaced or removed. A URL this driver didn't make, or a file already gone, is left alone.
+   */
+  deletePublic(input: { url: string; widths?: readonly number[] }): Promise<void>;
 }
 
 const unavailable = () =>
@@ -182,6 +193,17 @@ export function createLocalStorage(): StorageDriver {
     async deletePrivate(path) {
       await unlink(localFilePath(path)).catch(() => undefined);
     },
+
+    async deletePublic({ url }) {
+      const start = `${apiBase()}/api/v1/files/`;
+      const ref = url.startsWith(start) ? url.slice(start.length) : '';
+      if (!ref || ref.includes('..')) return;
+      try {
+        await unlink(localFilePath(ref));
+      } catch {
+        // Already gone, or not a file this driver keeps.
+      }
+    },
   };
 }
 
@@ -255,7 +277,7 @@ export function createS3Storage(config: {
       return { driver: 's3', method: 'POST', url, fields, key, maxBytes: MAX_UPLOAD_BYTES };
     },
 
-    async confirmUpload({ folder, isPrivate, ref }) {
+    async confirmUpload({ folder, isPrivate, ref, widths = PHOTO_WIDTHS }) {
       if (isPrivate) {
         const name = nameIn('private', folder, ref);
         if (!name) throw notOurs();
@@ -282,18 +304,26 @@ export function createS3Storage(config: {
       const name = nameIn('incoming', folder, ref);
       if (!name || name.endsWith('.pdf')) throw notOurs();
       const id = name.slice(0, name.indexOf('.'));
-      const variants = await photoVariants(await read(ref));
+      const variants = await photoVariants(await read(ref), widths);
       await Promise.all(
         variants.map(({ width, body }) =>
           put(`public/${folder}/${id}-${width}.webp`, body, 'image/webp', IMMUTABLE),
         ),
       );
       await remove(ref);
-      return `${publicUrl}/${folder}/${id}-${Math.max(...PHOTO_WIDTHS)}.webp`;
+      return `${publicUrl}/${folder}/${id}-${Math.max(...widths)}.webp`;
     },
 
     async deletePrivate(path) {
       await remove(`private/${path}`);
+    },
+
+    async deletePublic({ url, widths = PHOTO_WIDTHS }) {
+      // The URL is the widest copy, `<folder>/<uuid>-<width>.webp`; every width shares the rest.
+      const path = url.startsWith(`${publicUrl}/`) ? url.slice(publicUrl.length + 1) : '';
+      const base = /^((?:[\w-]+\/)+[0-9a-f-]{36})-\d+\.webp$/.exec(path)?.[1];
+      if (!base) return;
+      await Promise.all(widths.map((width) => remove(`public/${base}-${width}.webp`)));
     },
 
     downloadUrl(path) {

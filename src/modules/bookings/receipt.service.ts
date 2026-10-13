@@ -6,6 +6,7 @@ import { formatNzDate, formatNzDateTime, formatNzdExact } from '../../lib/format
 import { nzTripDays } from '../../lib/nz-time.js';
 import { emailTheme } from '../../emails/theme.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
+import { bookingPayment } from '../payments/booking-payment.js';
 import { PaymentModel } from '../payments/payment.model.js';
 import { UserModel } from '../users/user.model.js';
 import type { BookingDocument } from './booking.model.js';
@@ -33,34 +34,52 @@ export async function bookingReceipt(booking: BookingDocument, viewer: Viewer): 
       "The receipt is the guest's. What you earn from this trip is on your booking page.",
     );
   }
-  const payment = await PaymentModel.findOne({
-    bookingId: booking._id,
-    type: 'BOOKING',
-    status: mongoose.trusted({ $in: RECEIPT_STATUSES }),
-  })
-    .sort({ createdAt: -1 })
-    .lean();
+  // The payment that made the booking: a second one given back isn't its receipt.
+  const found = await bookingPayment(booking);
+  const payment =
+    found && (RECEIPT_STATUSES as readonly string[]).includes(found.status) ? found.toObject() : null;
   if (!payment) {
     throw new HttpError(409, 'NO_RECEIPT', 'The receipt is ready once the booking is paid for.');
   }
   const [guest, settings, chargePayments] = await Promise.all([
     UserModel.findById(booking.guestId).select('firstName lastName email').lean(),
     getPlatformSettings(),
-    PaymentModel.find({ bookingId: booking._id, type: 'EXTRA_CHARGE', status: 'SUCCEEDED' })
-      .select('extraChargeId method updatedAt')
+    PaymentModel.find({
+      bookingId: booking._id,
+      type: 'EXTRA_CHARGE',
+      status: mongoose.trusted({ $in: RECEIPT_STATUSES }),
+    })
+      .select('extraChargeId method updatedAt refunds')
       .lean(),
   ]);
-  // Charges after the trip (extra kilometres, or from a resolved case), each paid on its own.
+  // Charges after the trip (extra kilometres, or from a resolved case), each paid on its own, with any
+  // refunds made on them since (plan §8.1, item 18).
   const extraCharges = booking.extraCharges
     .filter((charge) => charge.status === 'SUCCEEDED')
     .map((charge) => {
       const paid = chargePayments.find((payment) => payment.extraChargeId?.equals(charge._id));
+      const refunds = paid?.refunds ?? [];
+      // A refund moves updatedAt on; the charge was paid before its first refund.
+      const paidAt = Math.min(
+        (paid?.updatedAt ?? booking.endAt).getTime(),
+        ...refunds.map((refund) => refund.createdAt.getTime()),
+      );
       return {
         description: charge.description,
         amountCents: charge.amountCents,
         gstCents: gstIn(charge.amountCents, settings.fees.gstRatePct),
-        paidAt: (paid?.updatedAt ?? booking.endAt).toISOString(),
+        paidAt: new Date(paidAt).toISOString(),
         paidWith: paid?.method ?? 'Card',
+        ...(refunds.length > 0 && {
+          refunds: refunds.map((refund) => ({
+            amountCents: refund.amountCents,
+            status: refund.status,
+            at: refund.createdAt.toISOString(),
+          })),
+          refundedCents: refunds
+            .filter((refund) => refund.status === 'SUCCEEDED')
+            .reduce((sum, refund) => sum + refund.amountCents, 0),
+        }),
       };
     });
   // Charged when the booking was confirmed: at checkout for Instant Book, or when the Host accepted.
@@ -230,6 +249,11 @@ export function receiptPdf(receipt: Receipt): Promise<Buffer> {
           )
           .fillColor(ink);
         doc.y += 6;
+        for (const refund of charge.refunds ?? []) {
+          const state =
+            refund.status === 'SUCCEEDED' ? '' : refund.status === 'PENDING' ? ' (on its way)' : ' (failed)';
+          row(`Refund, ${day(refund.at)}${state}`, formatNzdExact(-refund.amountCents), { color: muted });
+        }
       }
     }
 

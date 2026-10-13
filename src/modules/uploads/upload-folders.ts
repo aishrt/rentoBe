@@ -33,6 +33,14 @@ export function supportUploadFolder(userId: string) {
   return { folder: `support/${userId}`, isPrivate: true };
 }
 
+/**
+ * The folder of a member's profile photo, public like listing photos (plan §6.2: the other party sees it).
+ * It's their own, so nobody can set a photo someone else uploaded.
+ */
+export function profilePhotoFolder(userId: string) {
+  return { folder: `members/${userId}/photo`, isPrivate: false };
+}
+
 /** Checks each uploaded file belongs to the booking's folder, and turns it into what's saved. */
 export async function confirmBookingFiles(
   purpose: BookingUploadPurpose,

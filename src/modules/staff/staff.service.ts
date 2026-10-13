@@ -2,6 +2,7 @@ import mongoose, { type HydratedDocument, type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError } from '../../lib/http-error.js';
+import { disconnectUser } from '../../realtime/realtime.js';
 import { recordAudit } from '../audit/audit.service.js';
 import {
   hashPassword,
@@ -209,6 +210,8 @@ export async function removeSupport(adminId: string, userId: string, ip?: string
     { $pull: { roles: 'SUPPORT' }, $set: { permissions: [] }, $unset: { mfa: 1 } },
   );
   await SessionModel.deleteMany({ userId: user._id });
+  // Signed out at once (plan §6.2), open staff portal tabs included.
+  disconnectUser(user._id);
   await recordAudit({
     actorId: adminId,
     action: 'staff.remove',
@@ -272,6 +275,7 @@ export async function acceptStaffInvite(
       },
     );
     await SessionModel.deleteMany({ userId: existing._id });
+    disconnectUser(existing._id);
     await sendPasswordChangedEmail(existing);
     userId = existing._id;
   } else {

@@ -225,6 +225,8 @@ export interface SendEmailInput<Name extends EmailTemplateName> {
   replyTo?: string;
   /** A one-click unsubscribe link for non-transactional mail, sent as List-Unsubscribe (RFC 8058). */
   listUnsubscribe?: string;
+  /** Sends the email once however often it's retried, e.g. `notification:<id>` (see EmailMessage). */
+  idempotencyKey?: string;
 }
 
 /**
@@ -232,7 +234,7 @@ export interface SendEmailInput<Name extends EmailTemplateName> {
  * instead, `enqueue('email.send', …)`, which calls this with retries (plan §4.3).
  */
 export async function sendEmail<Name extends EmailTemplateName>(
-  { to, template, props, replyTo, listUnsubscribe }: SendEmailInput<Name>,
+  { to, template, props, replyTo, listUnsubscribe, idempotencyKey }: SendEmailInput<Name>,
   mailer: Mailer = getMailer(),
 ): Promise<SentEmail> {
   const email = await renderEmail(template, props);
@@ -240,6 +242,7 @@ export async function sendEmail<Name extends EmailTemplateName>(
     to,
     ...email,
     ...(replyTo && { replyTo }),
+    ...(idempotencyKey && { idempotencyKey }),
     ...(listUnsubscribe && {
       headers: {
         'List-Unsubscribe': `<${listUnsubscribe}>`,

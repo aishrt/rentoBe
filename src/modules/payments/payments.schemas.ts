@@ -93,12 +93,10 @@ export const paymentHistoryItemSchema = z
     at: z.iso.datetime(),
     refundedCents: z.number().int(),
     refunds: z.array(historyRefundSchema),
-    hasReceipt: z
-      .boolean()
-      .meta({
-        description:
-          'GET /bookings/{id}/receipt has a receipt for it (a paid extra charge is on its booking’s)',
-      }),
+    hasReceipt: z.boolean().meta({
+      description:
+        'GET /bookings/{id}/receipt has a receipt for it (a paid extra charge is on its booking’s)',
+    }),
   })
   .meta({ id: 'PaymentHistoryItem' });
 export type PaymentHistoryItem = z.infer<typeof paymentHistoryItemSchema>;
@@ -106,3 +104,8 @@ export type PaymentHistoryItem = z.infer<typeof paymentHistoryItemSchema>;
 export const paymentHistoryResponseSchema = z
   .object({ payments: z.array(paymentHistoryItemSchema).meta({ description: 'Newest first, up to 100' }) })
   .meta({ id: 'PaymentHistory' });
+
+/** Why staff cancel an extra charge that hasn't been paid, for the audit log (plan §8.1, item 11). */
+export const cancelExtraChargeSchema = z
+  .object({ reason: z.string().trim().min(3, { error: 'Say why' }).max(500) })
+  .meta({ id: 'CancelExtraChargeRequest' });

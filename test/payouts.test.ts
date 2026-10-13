@@ -475,7 +475,7 @@ describe('earnings', () => {
     expect(statement.headers['content-type']).toMatch(/text\/csv/);
     expect(statement.headers['content-disposition']).toContain(`rento-vroom-earnings-${month}.csv`);
     expect(statement.text).toContain(
-      `${booking.ref},2021 Toyota Corolla,CONFIRMED,267.00,34.83,0.00,0.00,0.00,0.00,0.00,53.40,6.97,0.00,0.00,213.60`,
+      `${booking.ref},2021 Toyota Corolla,CONFIRMED,267.00,34.83,0.00,0.00,0.00,0.00,0.00,0.00,53.40,6.97,0.00,0.00,0.00,0.00,213.60`,
     );
     expect(statement.text).toMatch(/Total,,,,267\.00/);
 
@@ -658,10 +658,11 @@ describe('Host-funded refunds', () => {
 
     expect(await runPayout(parts.payout.id)).toBe('paid');
     const paid = await PayoutModel.findById(parts.payout._id);
+    // The Host's share of the $50: $40, as their payout is 80 % of the rental (plan §8.1, item 15).
     expect(paid!.deductions).toEqual([
-      expect.objectContaining({ type: 'HOST_FUNDED_REFUND', stripeRefundId: 're_1', amountCents: 5000 }),
+      expect.objectContaining({ type: 'HOST_FUNDED_REFUND', stripeRefundId: 're_1', amountCents: 4000 }),
     ]);
-    expect(transfers[0]!.amount).toBe(21360 - 5000);
+    expect(transfers[0]!.amount).toBe(21360 - 4000);
   });
 
   it('made after the payout come off the next one as their own line, and the Host is told', async () => {
@@ -670,36 +671,40 @@ describe('Host-funded refunds', () => {
     expect(detail.body.tripPayoutSent).toBe(true);
 
     const refunded = await refund(parts.admin, parts.booking.ref);
-    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 5000 });
+    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 4000 });
     // Not a Host cancellation fee: those stay separate, and only those can be waived.
     expect(await feesOwed(parts.host._id)).toBe(0);
     expect(await refundsOwed(parts.host._id)).toEqual([
-      expect.objectContaining({ stripeRefundId: 're_1', amountCents: 5000, bookingId: parts.booking._id }),
+      expect.objectContaining({ stripeRefundId: 're_1', amountCents: 4000, bookingId: parts.booking._id }),
     ]);
     expect(
       await NotificationModel.countDocuments({ userId: parts.host._id, type: 'HOST_REFUND_RECOVERED' }),
     ).toBe(2);
     const audit = await AuditLogModel.findOne({ action: 'refund.issued', entityId: parts.booking.id });
-    expect(audit!.after).toMatchObject({ recoverFrom: 'NEXT_PAYOUT', hostRefund: { owedCents: 5000 } });
+    expect(audit!.after).toMatchObject({
+      recoverFrom: 'NEXT_PAYOUT',
+      hostCents: 4000,
+      hostRefund: { owedCents: 4000 },
+    });
 
     const host = browserAgent();
     await host.post('/api/v1/auth/login').send({ email: parts.host.email, password: PASSWORD });
     expect((await host.get('/api/v1/host/payouts')).body.account).toMatchObject({
       feesOwedCents: 0,
-      refundsOwedCents: 5000,
+      refundsOwedCents: 4000,
     });
 
     const next = await anotherTrip(parts);
     await UserModel.updateOne({ _id: parts.host._id }, { $set: { 'hostProfile.feesOwedCents': 1500 } });
     expect(await runPayout(next.payout.id)).toBe('paid');
-    expect(transfers.at(-1)!.amount).toBe(21360 - 1500 - 5000);
+    expect(transfers.at(-1)!.amount).toBe(21360 - 1500 - 4000);
     expect(await refundsOwed(parts.host._id)).toEqual([]);
     expect(await feesOwed(parts.host._id)).toBe(0);
 
     const payouts = (await host.get('/api/v1/host/payouts')).body.payouts;
     expect(payouts.find((payout: { id: string }) => payout.id === next.payout.id).deductions).toEqual([
       { type: 'HOST_CANCELLATION_FEE', amountCents: 1500 },
-      { type: 'HOST_FUNDED_REFUND', amountCents: 5000, bookingRef: parts.booking.ref },
+      { type: 'HOST_FUNDED_REFUND', amountCents: 4000, bookingRef: parts.booking.ref },
     ]);
     // The payout email has a row for each.
     const email = await NotificationModel.findOne({
@@ -711,7 +716,7 @@ describe('Host-funded refunds', () => {
     expect((email!.payload as { props: { rows: { label: string }[] } }).props.rows).toEqual(
       expect.arrayContaining([
         { label: 'Host cancellation fee', value: '−$15.00' },
-        { label: `Refund for ${parts.booking.ref}`, value: '−$50.00' },
+        { label: `Refund for ${parts.booking.ref}`, value: '−$40.00' },
       ]),
     );
   });
@@ -723,27 +728,27 @@ describe('Host-funded refunds', () => {
       .mockResolvedValueOnce({ id: 'trr_1' } as Stripe.Response<Stripe.TransferReversal>);
 
     const reversed = await refund(parts.admin, parts.booking.ref, { recoverFrom: 'REVERSE_TRANSFER' });
-    expect(reversed.body.hostRefund).toEqual({ recoveredFrom: 'REVERSE_TRANSFER', reversedCents: 5000 });
+    expect(reversed.body.hostRefund).toEqual({ recoveredFrom: 'REVERSE_TRANSFER', reversedCents: 4000 });
     expect(reversal).toHaveBeenCalledWith(
       'tr_1',
       expect.objectContaining({
-        amount: 5000,
+        amount: 4000,
         metadata: expect.objectContaining({ stripeRefundId: 're_1' }),
       }),
       { idempotencyKey: 'reversal-re_1' },
     );
     expect((await PayoutModel.findById(parts.payout._id))!.reversals).toEqual([
-      expect.objectContaining({ stripeReversalId: 'trr_1', amountCents: 5000, stripeRefundId: 're_1' }),
+      expect.objectContaining({ stripeReversalId: 'trr_1', amountCents: 4000, stripeRefundId: 're_1' }),
     ]);
     expect(await refundsOwed(parts.host._id)).toEqual([]);
 
     const host = browserAgent();
     await host.post('/api/v1/auth/login').send({ email: parts.host.email, password: PASSWORD });
     expect((await host.get(`/api/v1/bookings/${parts.booking.ref}`)).body.booking.payout).toMatchObject({
-      paidCents: 21360 - 5000,
-      refunds: [expect.objectContaining({ amountCents: 5000, fundedBy: 'HOST' })],
+      paidCents: 21360 - 4000,
+      refunds: [expect.objectContaining({ amountCents: 5000, fundedBy: 'HOST', hostCents: 4000 })],
     });
-    expect((await host.get('/api/v1/host/payouts')).body.payouts[0]).toMatchObject({ reversedCents: 5000 });
+    expect((await host.get('/api/v1/host/payouts')).body.payouts[0]).toMatchObject({ reversedCents: 4000 });
 
     reversal.mockRejectedValueOnce(
       new Stripe.errors.StripeInvalidRequestError({
@@ -757,11 +762,11 @@ describe('Host-funded refunds', () => {
     });
     expect(fallback.body.hostRefund).toEqual({
       recoveredFrom: 'NEXT_PAYOUT',
-      owedCents: 2000,
+      owedCents: 1600,
       note: expect.stringMatching(/Insufficient funds/),
     });
     expect(await refundsOwed(parts.host._id)).toEqual([
-      expect.objectContaining({ stripeRefundId: 're_2', amountCents: 2000 }),
+      expect.objectContaining({ stripeRefundId: 're_2', amountCents: 1600 }),
     ]);
     const audit = await AuditLogModel.findOne({ action: 'refund.issued', 'after.amountCents': 2000 });
     expect(audit!.after).toMatchObject({
@@ -778,7 +783,7 @@ describe('Host-funded refunds', () => {
     expect(await runPayout(next.payout.id)).toBe('paid');
     await refund(parts.admin, parts.booking.ref, { amountCents: 3000 });
     expect(await refundsOwed(parts.host._id)).toEqual([
-      expect.objectContaining({ stripeRefundId: 're_2', amountCents: 3000 }),
+      expect.objectContaining({ stripeRefundId: 're_2', amountCents: 2400 }),
     ]);
 
     for (const id of ['re_1', 're_2']) {
@@ -796,7 +801,7 @@ describe('Host-funded refunds', () => {
     expect(bodies).toEqual(
       expect.arrayContaining([
         expect.stringMatching(
-          /already paid for it \(\$50\.00 taken off a payout\): please return that to the Host/,
+          /already paid for it \(\$40\.00 taken off a payout\): please return that to the Host/,
         ),
         expect.stringMatching(/The Host funded it: it no longer comes off their next payout/),
       ]),

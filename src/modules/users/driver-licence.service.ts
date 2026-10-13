@@ -241,12 +241,47 @@ export async function saveDriverLicence(
   }
 
   const numberHash = licenceNumberHash(input.number);
-  const unchanged = user.driverLicence?.numberHash === numberHash;
   const identity = user.identityVerification;
+  const dobChanged = user.dob?.getTime() !== dob.getTime();
+  // Once a passed identity check has read a date of birth, a different one is corrected through a privacy
+  // request, as the name is (plan §11): it's checked against the ID there, not changed here.
+  if (
+    dobChanged &&
+    identity?.status === 'APPROVED' &&
+    identity.documentDobHash &&
+    identity.documentDobHash !== documentDobHash(nzDate(dob))
+  ) {
+    throw new HttpError(409, 'DOB_LOCKED', 'Your date of birth has to match your verified ID.', {
+      dob: 'This has to match your verified ID. If it’s wrong, ask us to correct it in Settings, under Your privacy, and we’ll check it against your ID.',
+    });
+  }
+  const previous = user.driverLicence;
+  const next = {
+    numberHash,
+    class: input.class,
+    country: input.class === 'OVERSEAS' ? input.country : 'New Zealand',
+    version: input.class !== 'OVERSEAS' ? input.version : undefined,
+    inEnglish: input.class === 'OVERSEAS' ? !input.notInEnglish : undefined,
+    englishProof: input.englishProof || undefined,
+  };
+  // The review stands only for exactly the details it reviewed: any change to the licence or the date of
+  // birth (each can decide whether the person may drive, plan §3) is checked again.
+  const unchanged = Boolean(
+    previous &&
+    !dobChanged &&
+    previous.numberHash === next.numberHash &&
+    previous.class === next.class &&
+    previous.country === next.country &&
+    (previous.version || undefined) === next.version &&
+    (previous.inEnglish ?? undefined) === next.inEnglish &&
+    (previous.englishProof || undefined) === next.englishProof &&
+    previous.issuedAt?.getTime() === issuedAt.getTime() &&
+    previous.expiry.getTime() === expiry.getTime(),
+  );
   // The date of birth is compared with the one the ID showed, when the check read one.
   if (identity?.documentDobHash) {
     identity.documentDobMatched = identity.documentDobHash === documentDobHash(nzDate(dob));
-  } else if (identity && user.dob?.getTime() !== dob.getTime()) {
+  } else if (identity && dobChanged) {
     // A new date of birth wasn't the one compared with the ID.
     identity.documentDobMatched = undefined;
   }
@@ -262,16 +297,21 @@ export async function saveDriverLicence(
     number: encrypt(input.number),
     numberHash,
     numberEnding: input.number.slice(-3),
-    ...(input.class !== 'OVERSEAS' && { version: input.version }),
-    ...(input.class === 'OVERSEAS' && { inEnglish: !input.notInEnglish }),
-    country: input.class === 'OVERSEAS' ? input.country : 'New Zealand',
-    class: input.class,
-    ...(input.englishProof && { englishProof: input.englishProof }),
+    ...(next.version !== undefined && { version: next.version }),
+    ...(next.inEnglish !== undefined && { inEnglish: next.inEnglish }),
+    country: next.country,
+    class: next.class,
+    ...(next.englishProof && { englishProof: next.englishProof }),
     issuedAt,
     expiry,
-    // Changed details are checked again (unless the ID confirmed them); unchanged ones keep their review.
+    // Unchanged details keep their review. Changed ones are checked again by support, unless the ID
+    // confirmed them; a licence support turned down goes back to them once it's corrected.
     status:
-      unchanged && user.driverLicence ? user.driverLicence.status : matchedById ? 'APPROVED' : 'PENDING',
+      unchanged && previous
+        ? previous.status
+        : matchedById && previous?.status !== 'REJECTED'
+          ? 'APPROVED'
+          : 'PENDING',
   };
 
   await user.save();

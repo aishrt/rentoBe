@@ -6,6 +6,7 @@ import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { decrypt, encrypt } from '../../lib/encryption.js';
 import { HttpError, forbidden, unauthenticated } from '../../lib/http-error.js';
+import { disconnectUser } from '../../realtime/realtime.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { MAX_MFA_DEVICES, UserModel, type UserDocument } from '../users/user.model.js';
 import { effectiveRoles, isStaff, toPublicUser, type PublicUser } from '../users/user.service.js';
@@ -225,6 +226,7 @@ export async function addMfaDevice(
 
   if (existing === 0) {
     await SessionModel.deleteMany({ userId: user._id, _id: mongoose.trusted({ $ne: auth.sessionId }) });
+    disconnectUser(user._id, { except: auth.sessionId });
   }
   await recordAudit({
     actorId: user._id,
@@ -335,6 +337,7 @@ export async function resetStaffMfa(adminId: string, staffId: string, ip?: strin
 
   await UserModel.updateOne({ _id: staff._id }, { $unset: { mfa: 1 } });
   await SessionModel.deleteMany({ userId: staff._id });
+  disconnectUser(staff._id);
   await recordAudit({
     actorId: adminId,
     action: 'mfa.reset',

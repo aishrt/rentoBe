@@ -12,6 +12,7 @@ import { UserModel } from '../users/user.model.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import type { adminReportSchema } from './admin-ops.schemas.js';
+import { assertNotOwnRecord } from './own-record.js';
 
 /*
  * The moderation queue (spec §18; plan §9 Days 20–22): what members reported, with what was reported, so
@@ -171,6 +172,7 @@ export async function resolveReport(
 ) {
   const report = mongoose.isValidObjectId(reportId) ? await ReportModel.findById(reportId) : null;
   if (!report) throw new HttpError(404, 'NOT_FOUND', 'No such report.');
+  await assertNotOwnRecord(staffId, [report.reporterId, report.subjectUserId]);
   if (report.status !== 'OPEN')
     throw new HttpError(409, 'ALREADY_HANDLED', 'This report has already been handled.');
   report.status = status;

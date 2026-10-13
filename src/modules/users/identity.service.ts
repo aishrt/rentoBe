@@ -171,6 +171,8 @@ export async function syncIdentity(
   let outcome: 'APPROVED' | 'REVIEW' | 'RETRY' | 'WAIT' = 'WAIT';
   // Passed with an ID that didn't confirm the licence: support checks the licence next (plan §8.2).
   let licenceToCheck = false;
+  // Passed, but support turned the licence down: it still needs sorting out before booking.
+  let licenceTurnedDown = false;
 
   if (session.status === 'verified') {
     let reason: string | undefined;
@@ -224,10 +226,15 @@ export async function syncIdentity(
       ...(dobHash && { documentDobHash: dobHash }),
       ...(reason ? { status: 'PENDING', reviewReason: reason } : { status: 'APPROVED', verifiedAt: now }),
     };
+    // The ID confirms a licence still waiting for a check; one support turned down stays as they decided.
     if (!reason && licenceMatches) {
-      await UserModel.updateOne({ _id: user._id }, { $set: { 'driverLicence.status': 'APPROVED' } });
+      await UserModel.updateOne(
+        { _id: user._id, 'driverLicence.status': 'PENDING' },
+        { $set: { 'driverLicence.status': 'APPROVED' } },
+      );
     }
     licenceToCheck = !reason && !licenceMatches && user.driverLicence?.status === 'PENDING';
+    licenceTurnedDown = !reason && user.driverLicence?.status === 'REJECTED';
   } else if (session.status === 'requires_input' && session.last_error?.code) {
     const code = session.last_error.code;
     if (REVIEW_CODES.has(code)) {
@@ -265,7 +272,9 @@ export async function syncIdentity(
           ? `Booking ${confirmed.join(', ')} is confirmed.`
           : licenceToCheck
             ? 'Our team is checking your driver licence next.'
-            : 'You’re all set to book.',
+            : licenceTurnedDown
+              ? 'Your driver licence still needs sorting out before you can book.'
+              : 'You’re all set to book.',
       link: '/account',
       email: {
         template: 'tripNotice',
@@ -278,7 +287,9 @@ export async function syncIdentity(
               ? `Your booking ${confirmed.join(', ')} is confirmed.`
               : licenceToCheck
                 ? 'Your ID didn’t confirm your driver licence, so our team will check your licence details by hand, usually within a few hours. A booking made meanwhile is held for you as a request, and your card isn’t charged until it’s approved.'
-                : 'You’re all set to book a car.',
+                : licenceTurnedDown
+                  ? 'We still couldn’t accept your driver licence details. Update them from your account, or contact support and we’ll help.'
+                  : 'You’re all set to book a car.',
           ],
           buttonLabel: 'Go to your account',
           url: accountUrl,

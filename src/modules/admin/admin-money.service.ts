@@ -2,6 +2,7 @@ import mongoose, { type Types } from 'mongoose';
 import type { z } from 'zod';
 import { JobModel } from '../../jobs/job.model.js';
 import { HttpError } from '../../lib/http-error.js';
+import { nzDayStart } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { BookingModel, type ExtraCharge } from '../bookings/booking.model.js';
 import { IncidentModel } from '../incidents/incident.model.js';
@@ -19,6 +20,7 @@ import type {
   payoutListQuerySchema,
   refundListQuerySchema,
 } from './admin-ops.schemas.js';
+import { assertNotOwnRecord } from './own-record.js';
 
 /*
  * Payments and payouts in the staff portal (spec §18; plan §8.1, §9 Days 19–23): every payment, failed
@@ -78,6 +80,7 @@ export async function paymentRows(payments: PaymentRecord[]): Promise<z.infer<ty
         amountCents: refund.amountCents,
         reason: refund.reason,
         fundedBy: refund.fundedBy,
+        ...(refund.hostCents !== undefined && { hostCents: refund.hostCents }),
         status: refund.status,
         ...(refund.failureReason && { failureReason: refund.failureReason }),
         at: refund.createdAt.toISOString(),
@@ -122,13 +125,27 @@ export async function payoutRows(payouts: PayoutRecord[]): Promise<z.infer<typeo
   });
 }
 
-/** GET /admin/payments: every payment, or the failed ones, the disputed ones, or those with a failed refund. */
+/**
+ * Payments that didn't go through (plan §8.1, item 6: every failure is recorded on the payment and shown to
+ * staff): those that failed, and those a card was declined for at checkout, which stay PENDING until the
+ * Guest pays with another card or the booking lapses (CANCELLED), keeping the reason. Paying after all
+ * clears the reason.
+ */
+export const failedPaymentFilter = () => ({
+  $or: [{ status: 'FAILED' }, { failureReason: mongoose.trusted({ $type: 'string', $ne: '' }) }],
+});
+
+/**
+ * GET /admin/payments: every payment, or the failed ones, the disputed ones, or those with a failed refund,
+ * optionally only those made since an NZ date.
+ */
 export async function listPayments(query: z.infer<typeof paymentListQuerySchema>) {
   const filter: Record<string, unknown> = {
     ...(query.status && { status: query.status }),
     ...(query.type && { type: query.type }),
+    ...(query.from && { createdAt: mongoose.trusted({ $gte: nzDayStart(query.from) }) }),
   };
-  if (query.view === 'failed') filter.status = 'FAILED';
+  if (query.view === 'failed') Object.assign(filter, failedPaymentFilter());
   if (query.view === 'disputed') filter.dispute = mongoose.trusted({ $exists: true });
   if (query.view === 'refunds-failed') filter['refunds.status'] = 'FAILED';
   const [payments, total] = await Promise.all([
@@ -273,6 +290,7 @@ export async function listRefunds(
         reason: refund.reason,
         ...(refund.kind && { kind: refund.kind }),
         fundedBy: refund.fundedBy,
+        ...(refund.hostCents !== undefined && { hostCents: refund.hostCents }),
         status: refund.status,
         ...(refund.failureReason && { failureReason: refund.failureReason }),
         ...(refund.issuedBy && {
@@ -414,6 +432,7 @@ async function onePayout(payoutId: Id) {
 /** POST /admin/payouts/{id}/hold: staff hold a payout that hasn't gone, until they release it. */
 export async function holdPayout(staffId: string, payoutId: string, reason: string, ip?: string) {
   const payout = await findPayout(payoutId);
+  await assertNotOwnRecord(staffId, [payout.hostId]);
   if (!['SCHEDULED', 'HELD', 'FAILED'].includes(payout.status)) {
     throw new HttpError(409, 'NOT_HOLDABLE', 'This payout has already been paid or cancelled.');
   }
@@ -439,6 +458,7 @@ export async function holdPayout(staffId: string, payoutId: string, reason: stri
  */
 export async function releasePayout(staffId: string, payoutId: string, ip?: string, now = new Date()) {
   const payout = await findPayout(payoutId);
+  await assertNotOwnRecord(staffId, [payout.hostId]);
   if (payout.status !== 'HELD') throw new HttpError(409, 'NOT_HELD', 'This payout isn’t on hold.');
   await PayoutModel.updateOne(
     { _id: payout._id, status: 'HELD' },
@@ -460,6 +480,7 @@ export async function releasePayout(staffId: string, payoutId: string, ip?: stri
 /** POST /admin/payouts/{id}/retry: a payout Stripe refused, sent again once the problem is fixed. */
 export async function retryPayout(staffId: string, payoutId: string, ip?: string, now = new Date()) {
   const payout = await findPayout(payoutId);
+  await assertNotOwnRecord(staffId, [payout.hostId]);
   if (payout.status !== 'FAILED')
     throw new HttpError(409, 'NOT_FAILED', 'Only a failed payout can be retried.');
   await PayoutModel.updateOne({ _id: payout._id, status: 'FAILED' }, { $set: { status: 'SCHEDULED' } });

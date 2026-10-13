@@ -1,5 +1,6 @@
 import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
+import { formatNzdExact } from '../../lib/format.js';
 import { HttpError } from '../../lib/http-error.js';
 import type { FileAttachment } from '../../lib/model-fields.js';
 import { randomRef } from '../../lib/refs.js';
@@ -34,6 +35,8 @@ import type {
   StaffIncidentUpdateInput,
   StaffNewIncidentInput,
 } from './incidents.schemas.js';
+import { STAFF_INCIDENTS_PAGE_SIZE } from './incidents.schemas.js';
+import { assertNotOwnRecord, isOwnRecord } from '../admin/own-record.js';
 
 /*
  * Damage and incident reporting (spec §15; plan §8.2, §9 Days 20–21). The booking's Guest or Host reports
@@ -88,6 +91,51 @@ const visibleTo = (event: IncidentEvent, role: Role) =>
 const caseVisibleTo = (incident: Pick<Incident, 'events'>, role: Role) =>
   role === 'STAFF' || incident.events.some((event) => visibleTo(event, role));
 
+/** Who sees the case now: both parties, one of them, or the team only. */
+function caseAudience(incident: Pick<Incident, 'events'>): IncidentEvent['visibility'] {
+  const guest = caseVisibleTo(incident, 'GUEST');
+  const host = caseVisibleTo(incident, 'HOST');
+  return guest && host ? 'BOTH' : guest ? 'GUEST' : host ? 'HOST' : 'INTERNAL';
+}
+
+/**
+ * Who sees a party's next update. The other party does when they see the case, except when support's
+ * latest update to this party was for them alone (a question asked only them): the answer stays between
+ * them and the team, as the question did. A case support opened with one side stays with that side.
+ */
+function replyVisibility(
+  incident: Pick<Incident, 'events'>,
+  booking: Pick<Booking, 'guestId' | 'hostId'>,
+  role: 'GUEST' | 'HOST',
+): IncidentEvent['visibility'] {
+  const fromSupport = incident.events.findLast(
+    (event) => roleIn(booking, event.actorId) === 'STAFF' && visibleTo(event, role),
+  );
+  if (fromSupport?.visibility === role) return role;
+  return caseVisibleTo(incident, role === 'GUEST' ? 'HOST' : 'GUEST') ? 'BOTH' : role;
+}
+
+/** Cases whose charges are covered by the protection plan beyond its excess (plan §3, Guest Agreement). */
+const EXCESS_CAPPED_TYPES: readonly Incident['type'][] = ['DAMAGE', 'ACCIDENT', 'THEFT'];
+
+/** Charges the case has added to the booking, except any cancelled. */
+const caseCharges = (incident: Pick<IncidentRecord, '_id'>, booking: Pick<Booking, 'extraCharges'>) =>
+  (booking.extraCharges ?? []).filter(
+    (charge) => charge.incidentId?.equals(incident._id) && charge.status !== 'CANCELLED',
+  );
+
+/**
+ * How much more a damage, accident or theft case can charge a Guest who booked a protection plan: the
+ * case's charges together stay within the plan's excess. Undefined when nothing but the charge limit
+ * applies.
+ */
+function chargeLimit(incident: Pick<IncidentRecord, '_id' | 'type'>, booking: Booking) {
+  const plan = booking.protectionPlan;
+  if (!plan || !EXCESS_CAPPED_TYPES.includes(incident.type)) return undefined;
+  const charged = caseCharges(incident, booking).reduce((sum, charge) => sum + charge.amountCents, 0);
+  return { plan, charged, remaining: Math.max(0, plan.excessCents - charged) };
+}
+
 /** The description a party sees when support opened the case without sharing its first note with them. */
 const NOT_SHARED_DESCRIPTION = 'Opened by Rento Vroom support.';
 
@@ -111,6 +159,7 @@ async function toView(
     ? (await UserModel.findById(incident.assignedTo).select('firstName').lean())?.firstName
     : undefined;
   const reporterRole = roleIn(booking, incident.reporterId);
+  const limit = role === 'STAFF' ? chargeLimit(incident, booking) : undefined;
   return {
     caseRef: incident.caseRef,
     bookingRef: booking.ref,
@@ -158,7 +207,21 @@ async function toView(
         };
       }),
     canReply: role === 'STAFF' || (OPEN_INCIDENT_STATUSES as readonly string[]).includes(incident.status),
-    ...(role === 'STAFF' && { nextStatuses: [...INCIDENT_TRANSITIONS[incident.status]] }),
+    ...(role !== 'STAFF' && {
+      sharedWithOtherParty: replyVisibility(incident, booking, role) === 'BOTH',
+    }),
+    ...(role === 'STAFF' && {
+      audience: caseAudience(incident),
+      nextStatuses: [...INCIDENT_TRANSITIONS[incident.status]],
+    }),
+    ...(role === 'STAFF' &&
+      booking.protectionPlan && {
+        protectionPlan: {
+          name: booking.protectionPlan.name,
+          excessCents: booking.protectionPlan.excessCents,
+        },
+      }),
+    ...(limit && { chargeLimitCents: limit.remaining }),
     extraCharges: booking.extraCharges
       .filter((charge) => charge.incidentId?.equals(incident._id))
       .map((charge) => ({
@@ -431,6 +494,7 @@ export async function openIncidentAsStaff(
       bookingRef: 'No booking has this reference',
     });
   }
+  await assertNotOwnRecord(staffId, [booking.guestId, booking.hostId]);
   const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
   const staff = new mongoose.Types.ObjectId(staffId);
   const incident = await createCase({
@@ -533,7 +597,10 @@ async function appendEvent(
   return updated;
 }
 
-/** POST /incidents/{ref}/events: the Guest or Host adds to an open case; both parties see it. */
+/**
+ * POST /incidents/{ref}/events: the Guest or Host adds to an open case. The other party sees it when they
+ * see the case, unless it answers something support asked this party alone (replyVisibility).
+ */
 export async function replyToIncident(
   actor: Actor,
   caseRef: string,
@@ -552,19 +619,27 @@ export async function replyToIncident(
     );
   }
   const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
+  // Back with support once the party support asked has answered (a reply from the other side doesn't).
+  const askedLast = incident.events.findLast((candidate) => candidate.status === 'AWAITING_RESPONSE');
+  const answersQuestion =
+    incident.status === 'AWAITING_RESPONSE' &&
+    (!askedLast || askedLast.visibility === 'INTERNAL' || visibleTo(askedLast, role));
   const event: IncidentEvent = {
     actorId: new mongoose.Types.ObjectId(actor.userId),
     action: 'COMMENT',
     ...(input.note && { note: input.note }),
     attachments,
-    visibility: 'BOTH',
+    visibility: replyVisibility(incident, booking, role),
+    ...(answersQuestion && { status: 'INVESTIGATING' as const }),
     createdAt: now,
   };
-  // Back with support once a party has answered what they were asked.
+  // Only while the case is as the party saw it: one support resolved or closed meanwhile isn't reopened.
   const updated = await appendEvent(
     incident._id,
     event,
-    incident.status === 'AWAITING_RESPONSE' ? { status: 'INVESTIGATING' } : {},
+    answersQuestion ? { status: 'INVESTIGATING' } : {},
+    [],
+    incident.status,
   );
   await tellParties(updated, booking, event, updated.events.length - 1, 'New update');
   const title = `${role === 'GUEST' ? 'The guest' : 'The host'} added to case ${incident.caseRef}`;
@@ -594,14 +669,17 @@ export async function replyToIncident(
   return toView(updated, booking, role, actor.userId);
 }
 
-/** GET /admin/incidents: the support team's cases, open ones first by default. */
-export async function listIncidentsForStaff(status?: IncidentStatus) {
-  const incidents = await IncidentModel.find(
-    status ? { status } : { status: mongoose.trusted({ $in: OPEN_INCIDENT_STATUSES }) },
-  )
-    .sort({ updatedAt: -1 })
-    .limit(200)
-    .lean<IncidentRecord[]>();
+/** GET /admin/incidents: the support team's cases, open ones by default, last updated first, a page at a time. */
+export async function listIncidentsForStaff({ status, page }: { status?: IncidentStatus; page: number }) {
+  const filter = status ? { status } : { status: mongoose.trusted({ $in: OPEN_INCIDENT_STATUSES }) };
+  const [incidents, total] = await Promise.all([
+    IncidentModel.find(filter)
+      .sort({ updatedAt: -1, _id: -1 })
+      .skip((page - 1) * STAFF_INCIDENTS_PAGE_SIZE)
+      .limit(STAFF_INCIDENTS_PAGE_SIZE)
+      .lean<IncidentRecord[]>(),
+    IncidentModel.countDocuments(filter),
+  ]);
   const bookings = await BookingModel.find({
     _id: mongoose.trusted({ $in: incidents.map((incident) => incident.bookingId) }),
   })
@@ -614,7 +692,7 @@ export async function listIncidentsForStaff(status?: IncidentStatus) {
   })
     .select('firstName')
     .lean();
-  return incidents.flatMap((incident) => {
+  const rows = incidents.flatMap((incident) => {
     const booking = bookings.find((candidate) => candidate._id.equals(incident.bookingId));
     if (!booking) return [];
     const assigned = staff.find((member) => incident.assignedTo && member._id.equals(incident.assignedTo));
@@ -627,6 +705,7 @@ export async function listIncidentsForStaff(status?: IncidentStatus) {
       },
     ];
   });
+  return { incidents: rows, total, page };
 }
 
 const isOpen = (status: IncidentStatus) => (OPEN_INCIDENT_STATUSES as readonly string[]).includes(status);
@@ -634,7 +713,8 @@ const statusWords = (status: IncidentStatus) => status.replace('_', ' ').toLower
 
 /**
  * POST /admin/incidents/{ref}/events: support posts an update for both parties, one of them or the team
- * only, changes the status or takes the case. The status moves only as INCIDENT_TRANSITIONS allows (409
+ * only (by default, whoever already sees the case), changes the status or takes the case (internal, with
+ * nothing else). The status moves only as INCIDENT_TRANSITIONS allows (409
  * otherwise). Resolving or closing the last open case on a booking releases its payouts; reopening a
  * resolved case holds the unpaid ones again.
  */
@@ -647,6 +727,7 @@ export async function updateIncidentAsStaff(
   now = new Date(),
 ): Promise<IncidentView> {
   const { incident, booking } = await findCase({ userId: staffId, roles }, caseRef);
+  await assertNotOwnRecord(staffId, [booking.guestId, booking.hostId]);
   const statusChanged = input.status && input.status !== incident.status;
   if (input.status && statusChanged && !INCIDENT_TRANSITIONS[incident.status].includes(input.status)) {
     throw new HttpError(
@@ -658,13 +739,18 @@ export async function updateIncidentAsStaff(
     );
   }
   const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
+  // Taking the case is the team's business, as when it's handed over (assignIncident): never shared, and
+  // nobody is told. Anything else goes to whoever already sees the case, unless staff choose otherwise.
+  const assignOnly = Boolean(input.assignToMe) && !statusChanged && !input.note && attachments.length === 0;
+  const visibility = assignOnly ? 'INTERNAL' : (input.visibility ?? caseAudience(incident));
   const event: IncidentEvent = {
     actorId: new mongoose.Types.ObjectId(staffId),
-    action: statusChanged ? 'STATUS' : input.assignToMe && !input.note ? 'ASSIGNED' : 'COMMENT',
+    action: statusChanged ? 'STATUS' : assignOnly ? 'ASSIGNED' : 'COMMENT',
     ...(input.note && { note: input.note }),
     attachments,
-    visibility: input.visibility,
+    visibility,
     ...(statusChanged && { status: input.status }),
+    ...(assignOnly && { assigneeId: new mongoose.Types.ObjectId(staffId) }),
     createdAt: now,
   };
   const updated = await appendEvent(
@@ -685,7 +771,7 @@ export async function updateIncidentAsStaff(
     before: { status: incident.status },
     after: {
       status: updated.status,
-      visibility: input.visibility,
+      visibility,
       ...(input.assignToMe && { assignedTo: staffId }),
     },
     ...(ip && { ip }),
@@ -701,7 +787,7 @@ export async function updateIncidentAsStaff(
     // Reopened: payouts not yet sent wait for the case again (plan §8.1, item 9).
     await holdBookingPayouts(booking._id, 'INCIDENT');
   }
-  if (input.visibility !== 'INTERNAL') {
+  if (visibility !== 'INTERNAL') {
     await tellParties(
       updated,
       booking,
@@ -743,10 +829,17 @@ export async function assignIncident(
   now = new Date(),
 ): Promise<IncidentView> {
   const { incident, booking } = await findCase({ userId: staffId, roles }, caseRef);
+  await assertNotOwnRecord(staffId, [booking.guestId, booking.hostId]);
   const assignee = input.userId ? await findActiveStaff(input.userId) : null;
   if (input.userId && !assignee) {
     throw new HttpError(409, 'NOT_STAFF', 'Choose someone on the support team.', {
       userId: 'Choose someone on the support team',
+    });
+  }
+  // Nor can it go to a support member who is the Guest or Host on it: they couldn't act on it.
+  if (assignee && (await isOwnRecord(assignee._id.toString(), [booking.guestId, booking.hostId]))) {
+    throw new HttpError(409, 'OWN_RECORD', 'Choose someone else: this case is about their own booking.', {
+      userId: 'This case is about their own booking',
     });
   }
   const unchanged = assignee ? incident.assignedTo?.equals(assignee._id) : !incident.assignedTo;
@@ -789,7 +882,8 @@ export async function assignIncident(
 /**
  * POST /admin/incidents/{ref}/charges: a resolved case adds an extra charge to the Guest (fuel, cleaning,
  * late return, damage, tolls or fines, where the Guest Agreement allows), charged to their saved card
- * (plan §8.1, item 11).
+ * (plan §8.1, item 11). On a damage, accident or theft case under a protection plan, the case's charges
+ * stay within the plan's excess (plan §3). The form's idempotency key makes a repeated submit add nothing.
  */
 export async function chargeFromIncident(
   staffId: string,
@@ -800,25 +894,115 @@ export async function chargeFromIncident(
   now = new Date(),
 ): Promise<IncidentView> {
   const { incident, booking } = await findCase({ userId: staffId, roles }, caseRef);
+  await assertNotOwnRecord(staffId, [booking.guestId, booking.hostId]);
+  const key = input.idempotencyKey;
+  // The same submit again (a double click, or a retry after a lost response): the charge is there already,
+  // and its entry on the case too, unless the first try stopped before writing it.
+  if (key && booking.extraCharges.some((charge) => charge.idempotencyKey === key)) {
+    return chargeRecorded(staffId, incident, booking, input, ip, now);
+  }
   if (incident.status !== 'RESOLVED') {
     throw new HttpError(409, 'NOT_RESOLVED', 'Resolve the case before adding a charge.');
   }
-  await addExtraCharge(booking._id, {
-    type: input.type as Booking['extraCharges'][number]['type'],
-    description: input.description,
-    amountCents: input.amountCents,
-    incidentId: incident._id,
-    addedBy: staffId,
-  });
+  const limit = chargeLimit(incident, booking);
+  if (limit && input.amountCents > limit.remaining) throw overExcess(limit);
+  let chargeId: string;
+  try {
+    chargeId = await addExtraCharge(booking._id, {
+      type: input.type as Booking['extraCharges'][number]['type'],
+      description: input.description,
+      amountCents: input.amountCents,
+      incidentId: incident._id,
+      addedBy: staffId,
+      ...(key && { idempotencyKey: key }),
+      // Checked again as it's added: another charge from the case may have gone in a moment ago.
+      ...(limit && { capCents: limit.plan.excessCents }),
+    });
+  } catch (error) {
+    // The same submit just added it, at the same moment.
+    if (error instanceof HttpError && error.code === 'ALREADY_CHARGED') {
+      return chargeRecorded(staffId, incident, booking, input, ip, now);
+    }
+    if (error instanceof HttpError && error.code === 'OVER_CAP') {
+      const fresh = (await BookingModel.findById(booking._id).lean<BookingRecord>()) ?? booking;
+      throw overExcess(chargeLimit(incident, fresh)!);
+    }
+    throw error;
+  }
+  return recordCharge(staffId, incident, booking, input, new mongoose.Types.ObjectId(chargeId), ip, now);
+}
+
+/** A charge the protection plan's excess has no room for (plan §8.1, item 11). */
+function overExcess(limit: NonNullable<ReturnType<typeof chargeLimit>>) {
+  const excess = formatNzdExact(limit.plan.excessCents);
+  return new HttpError(
+    409,
+    'OVER_EXCESS',
+    `The Guest’s ${limit.plan.name} limits what they pay for this case to its ${excess} excess${
+      limit.charged > 0 ? `, and ${formatNzdExact(limit.charged)} is charged already` : ''
+    }.`,
+    {
+      amountCents:
+        limit.remaining > 0
+          ? `Up to ${formatNzdExact(limit.remaining)}, within the protection plan’s ${excess} excess`
+          : `Nothing more: the protection plan’s ${excess} excess is charged already`,
+    },
+  );
+}
+
+const chargeNote = (input: IncidentChargeInput) =>
+  `A charge of $${(input.amountCents / 100).toFixed(2)} was added to the guest's booking: ${input.description}.`;
+
+/**
+ * A repeated submit: the case as it is, with the charge's entry on it. A first try that stopped after adding
+ * the charge left none, so it's written now (recordCharge writes it once, however many submits get here).
+ */
+async function chargeRecorded(
+  staffId: string,
+  incident: IncidentRecord,
+  booking: BookingRecord,
+  input: IncidentChargeInput,
+  ip: string | undefined,
+  now: Date,
+): Promise<IncidentView> {
+  const fresh = (await BookingModel.findById(booking._id).lean<BookingRecord>()) ?? booking;
+  const charge = fresh.extraCharges.find((candidate) => candidate.idempotencyKey === input.idempotencyKey);
+  return recordCharge(staffId, incident, fresh, input, charge!._id!, ip, now);
+}
+
+/**
+ * The charge's entry on the case, in the audit log, and told to whoever sees the case. Written once per
+ * charge: a submit that finds the entry there already (written by the same submit sent twice) leaves it.
+ */
+async function recordCharge(
+  staffId: string,
+  incident: IncidentRecord,
+  booking: BookingRecord,
+  input: IncidentChargeInput,
+  chargeId: Types.ObjectId,
+  ip: string | undefined,
+  now: Date,
+): Promise<IncidentView> {
   const event: IncidentEvent = {
     actorId: new mongoose.Types.ObjectId(staffId),
     action: 'CHARGE_ADDED',
-    note: `A charge of $${(input.amountCents / 100).toFixed(2)} was added to the guest's booking: ${input.description}.`,
+    note: chargeNote(input),
     attachments: [],
-    visibility: 'BOTH',
+    // On the case for whoever already sees it; the Guest hears of the charge itself with its receipt.
+    visibility: caseAudience(incident),
+    extraChargeId: chargeId,
     createdAt: now,
   };
-  const updated = await appendEvent(incident._id, event);
+  const updated = await IncidentModel.findOneAndUpdate(
+    { _id: incident._id, 'events.extraChargeId': mongoose.trusted({ $ne: chargeId }) },
+    { $push: { events: event } },
+    { new: true },
+  ).lean<IncidentRecord>();
+  if (!updated) {
+    const latest = (await IncidentModel.findById(incident._id).lean<IncidentRecord>()) ?? incident;
+    const fresh = (await BookingModel.findById(booking._id).lean<BookingRecord>()) ?? booking;
+    return toView(latest, fresh, 'STAFF', staffId);
+  }
   await recordAudit({
     actorId: staffId,
     action: 'incident.charge-added',

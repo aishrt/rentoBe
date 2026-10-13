@@ -99,9 +99,14 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
 
   // Trip records: messages, their photos, inspection photos and closed cases' evidence.
   const tripCutoff = new Date(now.getTime() - settings.retention.tripRecordsYears * 365 * DAY_MS);
+  // Bookings with a case still open wait for it, and are left out of the batch so they never fill it.
+  const heldByCases = await IncidentModel.distinct('bookingId', {
+    status: mongoose.trusted({ $in: OPEN_INCIDENT_STATUSES }),
+  });
   const oldBookings = await BookingModel.find({
     endAt: mongoose.trusted({ $lte: tripCutoff }),
     tripRecordsClearedAt: mongoose.trusted({ $exists: false }),
+    _id: mongoose.trusted({ $nin: heldByCases }),
   })
     .select('_id')
     .limit(BATCH)

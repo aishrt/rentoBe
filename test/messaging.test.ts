@@ -260,7 +260,7 @@ describe('booking messages', () => {
     expect(flagged!.riskFlags.map((flag) => flag.code)).toEqual(['REPEATED_REPORTS']);
   });
 
-  it('emails an unread message after 10 minutes, once per unread streak', async () => {
+  it('emails an unread message after 10 minutes, once for a burst of messages', async () => {
     const { booking, guestAgent, host } = await trip();
     await guestAgent.post(`/api/v1/threads/${booking.ref}/messages`).send({ body: 'First' });
     await guestAgent.post(`/api/v1/threads/${booking.ref}/messages`).send({ body: 'Second' });

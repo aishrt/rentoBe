@@ -73,6 +73,20 @@ export function addNzDays(instant: Date, days: number): Date {
   return fromNzWallClock(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), hour, minute);
 }
 
+/** Midnight at the start of an NZ day given as 2026-10-07. */
+export function nzDayStart(date: string): Date {
+  const [year, month, day] = date.split('-').map(Number) as [number, number, number];
+  return fromNzWallClock(year, month, day);
+}
+
+/**
+ * The end of an NZ day given as 2026-10-07, exclusive: the midnight the next day starts. A day is 23 or 25
+ * hours long when daylight saving starts or ends, so it's found on the calendar, not by adding 24 hours.
+ */
+export function nzDayEnd(date: string): Date {
+  return addNzDays(nzDayStart(date), 1);
+}
+
 const NZ_LOCAL_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 const WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
 

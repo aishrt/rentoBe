@@ -8,6 +8,10 @@ export const publicUserSchema = z
     email: z.email(),
     firstName: z.string(),
     lastName: z.string(),
+    avatarUrl: z.string().optional().meta({
+      description:
+        'Their profile photo (PUT /me/photo), which the other party on a booking sees; absent until added',
+    }),
     dateOfBirth: z.string().optional().meta({
       description: 'YYYY-MM-DD (NZ), from the driver licence details; absent until they are entered',
     }),

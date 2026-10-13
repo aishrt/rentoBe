@@ -6,13 +6,14 @@ import { forget } from '../../lib/memo.js';
 import { nzDate } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { notify } from '../notifications/notify.js';
-import { HOST_STATUSES, UserModel, type HostStatus } from '../users/user.model.js';
+import { UserModel } from '../users/user.model.js';
 import { toHostVehicleView } from '../vehicles/host-vehicles.service.js';
 import { listingChecklist, PHOTO_ANGLE_NAMES } from '../vehicles/listing-checklist.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import { VehicleModel, type VehicleDocument } from '../vehicles/vehicle.model.js';
 import { upcomingFor } from './admin-bookings.service.js';
-import type { vehicleListQuerySchema } from './admin-listings.schemas.js';
+import type { hostApplicationsQuerySchema, vehicleListQuerySchema } from './admin-listings.schemas.js';
+import { assertNotOwnRecord } from './own-record.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 
 /*
@@ -24,13 +25,24 @@ import { getPlatformSettings } from './platform-settings.service.js';
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
 const notFound = (what: string) => new HttpError(404, 'NOT_FOUND', `No such ${what}.`);
 
-/** GET /admin/host-applications, oldest first so nobody waits longest. */
-export async function listHostApplications(status: HostStatus = 'APPLIED') {
-  const settings = await getPlatformSettings();
-  const users = await UserModel.find({ 'hostProfile.status': status })
-    .sort({ 'hostProfile.appliedAt': 1 })
-    .limit(200)
-    .lean();
+const APPLICATIONS_PAGE_SIZE = 25;
+
+/**
+ * GET /admin/host-applications, a page at a time: those waiting oldest first, so nobody waits longest; those
+ * already decided newest first.
+ */
+export async function listHostApplications(query: z.infer<typeof hostApplicationsQuerySchema>) {
+  const filter = { 'hostProfile.status': query.status };
+  const order = query.status === 'APPLIED' ? 1 : -1;
+  const [settings, users, total] = await Promise.all([
+    getPlatformSettings(),
+    UserModel.find(filter)
+      .sort({ 'hostProfile.appliedAt': order, _id: order })
+      .skip((query.page - 1) * APPLICATIONS_PAGE_SIZE)
+      .limit(APPLICATIONS_PAGE_SIZE)
+      .lean(),
+    UserModel.countDocuments(filter),
+  ]);
   const counts = await VehicleModel.aggregate<{
     _id: mongoose.Types.ObjectId;
     total: number;
@@ -45,7 +57,7 @@ export async function listHostApplications(status: HostStatus = 'APPLIED') {
       },
     },
   ]);
-  return users.map((user) => {
+  const applications = users.map((user) => {
     const count = counts.find((row) => row._id.equals(user._id));
     const profile = user.hostProfile!;
     return {
@@ -67,15 +79,15 @@ export async function listHostApplications(status: HostStatus = 'APPLIED') {
       vehicles: { total: count?.total ?? 0, underReview: count?.underReview ?? 0 },
     };
   });
+  return { applications, total, page: query.page };
 }
-
-export const isHostStatus = (value: unknown): value is HostStatus =>
-  typeof value === 'string' && (HOST_STATUSES as readonly string[]).includes(value);
 
 /**
  * Approves or rejects a Host application. Approval needs a confirmed email (plan §6.1) and, while the
  * `identityForHosts` setting is on, a passed identity check (spec §22: Hosts verify their identity as
- * part of the application).
+ * part of the application). Only an application waiting for a decision can be rejected, and approved only
+ * then or after a rejection: rejecting an approved Host would leave their live cars in search with every
+ * booking refused.
  */
 export async function decideHostApplication(
   staffId: string,
@@ -87,6 +99,21 @@ export async function decideHostApplication(
   if (!mongoose.isValidObjectId(userId)) throw notFound('application');
   const user = await UserModel.findById(userId);
   if (!user?.hostProfile) throw notFound('application');
+  await assertNotOwnRecord(staffId, [user._id]);
+  const current = user.hostProfile.status;
+  if (approved ? current !== 'APPLIED' && current !== 'REJECTED' : current !== 'APPLIED') {
+    throw new HttpError(
+      409,
+      'NOT_APPLIED',
+      current === 'APPROVED'
+        ? approved
+          ? 'This Host is already approved.'
+          : 'This Host is already approved. To stop them hosting, suspend their account or their cars instead.'
+        : current === 'REJECTED'
+          ? 'This application has already been rejected.'
+          : 'This Host’s hosting is suspended, so the application can’t be decided here.',
+    );
+  }
   if (approved && !user.emailVerifiedAt) {
     throw new HttpError(409, 'EMAIL_NOT_VERIFIED', "The applicant hasn't confirmed their email address yet.");
   }
@@ -311,7 +338,8 @@ type ListingDecision = 'APPROVED' | 'CHANGES_REQUESTED' | 'REJECTED';
 /**
  * Approve, request changes to or reject a listing. Approving also approves its pending photos and
  * verifies its pending documents, and needs an approved Host. Payout setup is enforced once Stripe
- * Connect onboarding is built (plan §8.2, Days 17–18).
+ * Connect onboarding is built (plan §8.2, Days 17–18). A listing back for review over its key details
+ * goes back on or off as its Host had it, and the Host hears its changes were approved.
  */
 export async function decideListing(
   staffId: string,
@@ -321,12 +349,17 @@ export async function decideListing(
   ip?: string,
 ) {
   const vehicle = await findVehicle(id);
+  await assertNotOwnRecord(staffId, [vehicle.hostId]);
   const host = await UserModel.findById(vehicle.hostId).select(
     'firstName hostProfile.status hostProfile.payoutsEnabled',
   );
   const before = vehicle.status;
   const live = before === 'ACTIVE' || before === 'INACTIVE';
-  /** New photos and documents approved on a live listing, for the Host's email. */
+  // Back for review because its Host changed key details while it was live (plan §3): approval puts it back
+  // on or off as its Host had it, since a car its Host switched off stays hidden (plan §8.2).
+  const relisting =
+    before === 'UNDER_REVIEW' && (vehicle.keyReviewFrom !== undefined || Array.isArray(vehicle.keyChanges));
+  /** New photos, documents and key details approved on a live listing, for the Host's email. */
   const changesApproved: string[] = [];
 
   if (decision === 'APPROVED') {
@@ -350,8 +383,15 @@ export async function decideListing(
         changesApproved.push(`the ${documentName(document.type)}`);
       }
     }
+    if (relisting) {
+      for (const change of vehicle.keyChanges ?? []) {
+        changesApproved.push(`the new ${KEY_DETAIL_NAMES[change.field]}`);
+      }
+      if (changesApproved.length === 0) changesApproved.push('the changes to its details');
+    }
     if (before === 'UNDER_REVIEW') {
-      vehicle.status = 'ACTIVE';
+      // Listings sent back for review before it was kept whether they were on were all live.
+      vehicle.status = vehicle.keyReviewFrom ?? 'ACTIVE';
       // It goes live once the Host's payout setup is done (plan §8.2); until then it waits, approved.
       vehicle.payoutsReady = host.hostProfile.payoutsEnabled;
     }
@@ -362,13 +402,16 @@ export async function decideListing(
   }
   vehicle.reviewNotes = notes;
   // The key details changed on a live listing are settled by an approval or a rejection; a request for
-  // changes keeps them for the next look.
+  // changes keeps them, and whether it was on, for the next look.
   const keyChanges = vehicle.keyChanges?.map((change) => ({
     field: change.field,
     before: change.before,
     after: change.after,
   }));
-  if (decision !== 'CHANGES_REQUESTED') vehicle.set('keyChanges', undefined);
+  if (decision !== 'CHANGES_REQUESTED') {
+    vehicle.set('keyChanges', undefined);
+    vehicle.set('keyReviewFrom', undefined);
+  }
   await vehicle.save();
   forget('vehicles:featured');
 
@@ -381,12 +424,13 @@ export async function decideListing(
     after: { status: vehicle.status, notes },
     ip,
   });
-  // A live listing's approved changes (plan §7: "Listing changes approved or rejected"); a listing's first
-  // decision has its own email below.
-  if (live && host && changesApproved.length > 0) {
-    await notifyChangesApproved(vehicle, host.firstName, changesApproved);
+  // A live listing's approved changes, including key details that sent it back for review (plan §7: "Listing
+  // changes approved or rejected"); a listing's first decision, or changes sent back, has its own email below.
+  const changesDecided = live || (relisting && decision === 'APPROVED');
+  if (changesDecided && host && changesApproved.length > 0) {
+    await notifyChangesApproved(vehicle, host.firstName, changesApproved, relisting);
   }
-  if (!live && host) {
+  if (!changesDecided && host) {
     const title = vehicleTitle(vehicle);
     // Approved before payout setup: say so, and send the Host to finish it, not to a listing nobody can find.
     const waitingForPayouts = decision === 'APPROVED' && vehicle.payoutsReady === false;
@@ -428,6 +472,7 @@ export async function decidePhoto(
   ip?: string,
 ) {
   const vehicle = await findVehicle(id);
+  await assertNotOwnRecord(staffId, [vehicle.hostId]);
   const photo = vehicle.photos.find((candidate) => candidate._id?.toString() === photoId);
   if (!photo) throw notFound('photo');
   const wasPending = photo.status === 'PENDING';
@@ -486,11 +531,27 @@ const DOCUMENT_NAMES: Record<string, string> = {
 };
 const documentName = (type: string) => DOCUMENT_NAMES[type] ?? 'document';
 
+/** The key details that send a live listing back for review (plan §3), as the Host's email names them. */
+const KEY_DETAIL_NAMES: Record<NonNullable<VehicleDocument['keyChanges']>[number]['field'], string> = {
+  regoPlate: 'number plate',
+  vin: 'VIN',
+  chassisNo: 'chassis number',
+  make: 'make',
+  model: 'model',
+  year: 'year',
+};
+
 /**
- * New photos or documents on a live listing were approved (plan §7, "Listing changes approved"). One email a
- * day for a car, however many staff approve in one sitting.
+ * New photos, documents or key details on a live listing were approved (plan §7, "Listing changes approved").
+ * One email a day for a car, however many staff approve in one sitting, except key details: their review held
+ * the car back, so its end is always told.
  */
-async function notifyChangesApproved(vehicle: VehicleDocument, firstName: string, what: string[]) {
+async function notifyChangesApproved(
+  vehicle: VehicleDocument,
+  firstName: string,
+  what: string[],
+  keyDetails = false,
+) {
   const title = vehicleTitle(vehicle);
   const list = what.length === 1 ? what[0]! : `${what.slice(0, -1).join(', ')} and ${what.at(-1)!}`;
   await notify({
@@ -506,13 +567,15 @@ async function notifyChangesApproved(vehicle: VehicleDocument, firstName: string
         heading: `Your changes to the ${title} are approved`,
         paragraphs: [
           `We’ve approved ${list} for your ${title}.`,
-          'Guests see the update on your listing now.',
+          vehicle.status === 'INACTIVE'
+            ? 'It stays switched off, as you left it. Switch it on when you’re ready to take bookings.'
+            : 'Guests see the update on your listing now.',
         ],
         buttonLabel: 'View your car',
         url: `${siteUrl()}/host/vehicles/${vehicle.id}`,
       },
     },
-    dedupeKey: `LISTING_CHANGES_APPROVED:${vehicle.id}:${nzDate(new Date())}`,
+    dedupeKey: `LISTING_CHANGES_APPROVED:${vehicle.id}:${keyDetails ? `KEY:${vehicle.updatedAt.getTime()}` : nzDate(new Date())}`,
   });
 }
 
@@ -524,6 +587,7 @@ export async function decideDocument(
   ip?: string,
 ) {
   const vehicle = await findVehicle(id);
+  await assertNotOwnRecord(staffId, [vehicle.hostId]);
   const document = vehicle.documents.find((candidate) => candidate._id?.toString() === documentId);
   if (!document) throw notFound('document');
   const wasPending = document.status === 'PENDING';

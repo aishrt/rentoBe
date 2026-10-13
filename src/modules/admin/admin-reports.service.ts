@@ -1,13 +1,12 @@
 import mongoose, { type Types } from 'mongoose';
 import type { z } from 'zod';
 import { HttpError } from '../../lib/http-error.js';
-import { NZ_TIME_ZONE, nzDate } from '../../lib/nz-time.js';
+import { NZ_TIME_ZONE, nzDate, nzDayEnd, nzDayStart } from '../../lib/nz-time.js';
 import { BookingModel } from '../bookings/booking.model.js';
 import { PaymentModel, type Refund } from '../payments/payment.model.js';
 import { PayoutModel } from '../payouts/payout.model.js';
 import { UserModel } from '../users/user.model.js';
 import type { exportQuerySchema, platformReportSchema } from './admin-ops.schemas.js';
-import { nzDayStart } from './admin-bookings.service.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 
 /*
@@ -51,14 +50,18 @@ export interface ReportRange {
   end: Date;
 }
 
-/** A range of NZ days, checked. */
+/**
+ * A range of NZ days, checked. It ends at the midnight starting the day after `to`, found on the calendar: the
+ * days daylight saving starts and ends are 23 and 25 hours long.
+ */
 export function reportRange(from: string, to: string): ReportRange {
   const start = nzDayStart(from);
-  const end = new Date(nzDayStart(to).getTime() + DAY_MS);
+  const end = nzDayEnd(to);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
     throw new HttpError(400, 'VALIDATION_ERROR', 'The end date must be on or after the start date.');
   }
-  if (end.getTime() - start.getTime() > MAX_RANGE_DAYS * DAY_MS) {
+  // Counted in calendar days, both ends included.
+  if ((Date.parse(to) - Date.parse(from)) / DAY_MS + 1 > MAX_RANGE_DAYS) {
     throw new HttpError(400, 'VALIDATION_ERROR', `Choose a range of up to ${MAX_RANGE_DAYS} days.`);
   }
   return { from, to, start, end };
@@ -174,6 +177,16 @@ async function extraCharges(range: ReportRange, commissionPct: number) {
   }));
 }
 
+/**
+ * What the platform pays of a refund: all of one it funds, and of a Host-funded one the part beyond the
+ * Host's share, its own commission (plan §8.1, item 15). Host-funded refunds made before the Host's share
+ * was recorded were the Host's in full.
+ */
+const platformPartOf = (refund: { amountCents: number; fundedBy: string; hostCents?: number }) =>
+  refund.fundedBy === 'PLATFORM'
+    ? refund.amountCents
+    : refund.amountCents - (refund.hostCents ?? refund.amountCents);
+
 /** Refunds sent in the range (failed ones aside), who funded each, and whether it gives back counted money. */
 async function refundsSent(range: ReportRange) {
   const payments = await PaymentModel.find({
@@ -196,7 +209,7 @@ async function refundsSent(range: ReportRange) {
       .map((refund) => ({
         day: nzDate(refund.createdAt),
         amountCents: refund.amountCents,
-        platformFunded: refund.fundedBy === 'PLATFORM',
+        platformCents: platformPartOf(refund),
         givenBack: givesBackCounted(payment.type, status, refund),
       }));
   });
@@ -274,7 +287,7 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
   for (const refund of refunds) {
     const day = on(refund.day);
     day.refundsCents += refund.amountCents;
-    if (refund.platformFunded) day.platformRefundsCents += refund.amountCents;
+    day.platformRefundsCents += refund.platformCents;
     if (refund.givenBack) day.givenBackCents += refund.amountCents;
   }
   for (const day of days.values()) {
@@ -294,16 +307,16 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
 }
 
 /**
- * The money in a range as the reports count it, for the overview (spec §18): what Guests paid for trips,
- * extra charges and kept fees, less the refunds of that money (a cancellation's own refund is already out of
- * the fee kept, and a late payment's was never counted), and the platform's fees.
+ * Booking revenue (spec §18): what Guests paid for trips, extra charges and kept fees, less the refunds of that
+ * money (a cancellation's own refund is already out of the fee kept, and a late payment's was never counted).
  */
+const bookingRevenue = (sum: DayFigures) =>
+  sum.tripsCents + sum.extraChargesCents + sum.keptFeesCents - sum.givenBackCents;
+
+/** The money in a range as the reports count it, for the overview: booking revenue and the platform's fees. */
 export async function rangeMoney(range: ReportRange) {
   const sum = sumOf((await dailyFigures(range)).map(([, figures]) => figures));
-  return {
-    bookingRevenueCents: sum.tripsCents + sum.extraChargesCents + sum.keptFeesCents - sum.givenBackCents,
-    platformFeesCents: sum.platformFeesCents,
-  };
+  return { bookingRevenueCents: bookingRevenue(sum), platformFeesCents: sum.platformFeesCents };
 }
 
 /** GET /admin/reports/summary: the figures for a range. */
@@ -348,6 +361,7 @@ export async function platformReport(
     },
     money: {
       grossBookingsCents: sum.tripsCents,
+      bookingRevenueCents: bookingRevenue(sum),
       refundsCents: sum.refundsCents,
       platformFeesCents: sum.platformFeesCents,
       hostPayoutsPaidCents: payouts[0]?.total ?? 0,
@@ -500,12 +514,27 @@ async function refundsCsv(range: ReportRange): Promise<Csv> {
     )
     .sort((a, b) => a.refund.createdAt.getTime() - b.refund.createdAt.getTime());
   return {
-    header: ['Date', 'Booking', 'Amount', 'Funded by', 'Status', 'Reason', 'Stripe refund', 'Failure'],
+    header: [
+      'Date',
+      'Booking',
+      'Amount',
+      'Funded by',
+      'Host pays',
+      'Status',
+      'Reason',
+      'Stripe refund',
+      'Failure',
+    ],
     rows: rows.map(({ payment, refund }) => [
       day(refund.createdAt),
       ref(payment.bookingId),
       dollars(refund.amountCents),
       refund.fundedBy,
+      // What the Host pays back of a staff refund. A cancellation's own refund is settled by its policy (the
+      // Host's payout is replaced), and a failed one cost nobody anything.
+      refund.kind === 'CANCELLATION' || refund.status === 'FAILED'
+        ? ''
+        : dollars(refund.amountCents - platformPartOf(refund)),
       refund.status,
       text(refund.reason),
       refund.stripeRefundId ?? '',
@@ -689,10 +718,13 @@ const EXPORTS = {
   revenue: revenueCsv,
 } satisfies Record<z.infer<typeof exportQuerySchema>['type'], (range: ReportRange) => Promise<Csv>>;
 
-/** GET /admin/reports/export: one report as a CSV file. */
+/**
+ * GET /admin/reports/export: one report as a CSV file. It starts with a byte order mark, so Excel on Windows
+ * reads it as UTF-8 and shows macrons (Ōtautahi, Māori names) as they are.
+ */
 export async function exportReport(query: z.infer<typeof exportQuerySchema>) {
   const range = reportRange(query.from, query.to);
   const { header, rows } = await EXPORTS[query.type](range);
   const csv = [header.join(','), ...rows.map((row) => row.join(','))].join('\r\n');
-  return { filename: `rento-vroom-${query.type}-${query.from}-to-${query.to}.csv`, csv: `${csv}\r\n` };
+  return { filename: `rento-vroom-${query.type}-${query.from}-to-${query.to}.csv`, csv: `\uFEFF${csv}\r\n` };
 }

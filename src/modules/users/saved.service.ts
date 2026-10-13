@@ -5,7 +5,7 @@ import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import type { PlatformSettings } from '../admin/platform-settings.schemas.js';
 import { unavailableVehicleIds } from '../availability/availability.service.js';
 import { hostGstStatus, toVehicleCard, type SearchDates } from '../search/search.service.js';
-import { VehicleModel, liveVehicleFilter, type Vehicle } from '../vehicles/vehicle.model.js';
+import { VehicleModel, liveVehicleFilter, isLiveVehicle, type Vehicle } from '../vehicles/vehicle.model.js';
 import type { LastSearchInput, SavedCar, SavedCarsResponse } from './saved.schemas.js';
 import { UserModel, type LastSearch } from './user.model.js';
 
@@ -115,7 +115,7 @@ export async function listSavedCars(userId: string, now = new Date()): Promise<S
   const cars = ids.flatMap((id): SavedCar[] => {
     const vehicle = byId.get(id.toString());
     if (!vehicle) return [];
-    const listed = vehicle.status === 'ACTIVE';
+    const listed = isLiveVehicle(vehicle);
     const available =
       dates && listed ? !taken.has(id.toString()) && fitsTrip(vehicle, dates, settings, now) : null;
     const card = toVehicleCard(vehicle, {

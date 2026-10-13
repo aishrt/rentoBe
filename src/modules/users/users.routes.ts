@@ -3,7 +3,7 @@ import { unauthenticated } from '../../lib/http-error.js';
 import { parseNzDateTime } from '../../lib/nz-time.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
-import { accountChangeRateLimit, codeCheckRateLimit } from '../../middleware/rate-limit.js';
+import { accountChangeRateLimit, codeCheckRateLimit, uploadRateLimit } from '../../middleware/rate-limit.js';
 import { codeSchema, mfaVerifySchema } from '../auth/auth.schemas.js';
 import {
   addMfaDevice,
@@ -16,6 +16,7 @@ import {
   acceptAgreementsSchema,
   changeEmailSchema,
   changePasswordSchema,
+  profilePhotoSchema,
   updateMeSchema,
 } from './account.schemas.js';
 import { acceptLatestAgreements, changePassword, requestEmailChange, updateName } from './account.service.js';
@@ -39,6 +40,7 @@ import {
 } from './notification-prefs.js';
 import { privacyRequestSchema } from './privacy.schemas.js';
 import { accountClosure, requestPrivacy } from './privacy.service.js';
+import { removeProfilePhoto, setProfilePhoto } from './profile-photo.service.js';
 import { lastSearchSchema } from './saved.schemas.js';
 import {
   listFavourites,
@@ -67,6 +69,16 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
   router.patch('/', ...limit(accountChangeRateLimit), async (req, res) => {
     const input = validate(updateMeSchema, req.body);
     res.json({ user: await updateName(req.auth!.userId, input, req.ip) });
+  });
+
+  // The profile photo (spec §8, plan §6.2): uploaded first with POST /uploads/signature (PROFILE_PHOTO).
+  router.put('/photo', ...limit(uploadRateLimit), async (req, res) => {
+    const { key } = validate(profilePhotoSchema, req.body);
+    res.json({ user: await setProfilePhoto(req.auth!.userId, key) });
+  });
+
+  router.delete('/photo', ...limit(uploadRateLimit), async (req, res) => {
+    res.json({ user: await removeProfilePhoto(req.auth!.userId) });
   });
 
   // Signs out every other device; this one stays signed in.

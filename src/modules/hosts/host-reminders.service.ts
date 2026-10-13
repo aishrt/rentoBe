@@ -229,7 +229,8 @@ export async function hostTodo(hostId: string, now = new Date()): Promise<TodoIt
         kind: 'RUC',
         title: `${title}: Road User Charges running out`,
         detail: `The licence runs to ${vehicle.rucValidToKm.toLocaleString('en-NZ')} km; the car was last at ${odometer.toLocaleString('en-NZ')} km.`,
-        link: `/host/vehicles/${vehicle._id.toString()}/1`,
+        // The RUC licence is recorded with the car's documents (onboarding step 2).
+        link: `/host/vehicles/${vehicle._id.toString()}/2`,
         urgent: vehicle.rucValidToKm <= odometer,
       });
     }

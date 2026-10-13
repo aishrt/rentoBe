@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { createAdapter } from '@socket.io/mongo-adapter';
 import cookieParser from 'cookie-parser';
-import mongoose from 'mongoose';
+import mongoose, { type Types } from 'mongoose';
 import { Server, type DefaultEventsMap, type Socket } from 'socket.io';
 import { env } from '../env.js';
 import { logger } from '../integrations/logger.js';
@@ -14,6 +14,14 @@ import { SessionModel } from '../modules/auth/session.model.js';
 /** Where the adapter passes events between backend tasks; MongoDB deletes them after an hour. */
 const EVENTS_COLLECTION = 'socketEvents';
 const EVENTS_TTL_SECONDS = 60 * 60;
+
+/**
+ * How often an open connection checks it's still signed in: its session still exists and hasn't run out.
+ * Signing out closes connections straight away (disconnectSessions()); this catches anything that didn't,
+ * within minutes. The access token's own 15 minutes aren't checked: while the session lasts, the website
+ * would only renew it and connect again.
+ */
+export const SESSION_RECHECK_MS = 5 * 60 * 1000;
 
 interface SocketData {
   auth: AuthContext;
@@ -28,12 +36,18 @@ type CookieRequest = IncomingMessage & { cookies?: Record<string, unknown> };
 /** The room holding every open tab and device of one user. */
 export const userRoom = (userId: string) => `user:${userId}`;
 
+/** The room holding the open tabs of one signed-in session (one browser or device), closed when it ends. */
+export const sessionRoom = (sessionId: string) => `session:${sessionId}`;
+
 /**
  * Socket.IO on the backend's own HTTP server (plan §4.4). The MongoDB adapter passes events between
  * backend tasks through a MongoDB change stream, so an event emitted on one task reaches a user
  * connected to another.
  */
-export async function createRealtimeServer(httpServer: HttpServer): Promise<RealtimeServer> {
+export async function createRealtimeServer(
+  httpServer: HttpServer,
+  { recheckMs = SESSION_RECHECK_MS }: { recheckMs?: number } = {},
+): Promise<RealtimeServer> {
   const db = mongoose.connection.db;
   if (!db) throw new Error('Connect to MongoDB before starting Socket.IO');
   const events = db.collection(EVENTS_COLLECTION);
@@ -53,10 +67,30 @@ export async function createRealtimeServer(httpServer: HttpServer): Promise<Real
   io.engine.use(cookieParser() as Parameters<typeof io.engine.use>[0]);
   io.use(authenticate);
   io.on('connection', (socket) => {
-    void socket.join(userRoom(socket.data.auth.userId));
+    void socket.join([userRoom(socket.data.auth.userId), sessionRoom(socket.data.auth.sessionId)]);
+    const recheck = setInterval(() => void closeIfSignedOut(socket), recheckMs);
+    recheck.unref();
+    socket.on('disconnect', () => clearInterval(recheck));
   });
 
   return io;
+}
+
+/**
+ * Closes a connection whose session has ended: deleted, or past its expiry before MongoDB's TTL monitor
+ * removes it. The website can't connect again without signing in (plan §6.1).
+ */
+async function closeIfSignedOut(socket: RealtimeSocket) {
+  try {
+    const live = await SessionModel.exists({
+      _id: socket.data.auth.sessionId,
+      expiresAt: mongoose.trusted({ $gt: new Date() }),
+    });
+    if (!live) socket.disconnect(true);
+  } catch (error) {
+    // The next check tries again.
+    logger.warn({ err: error }, 'Could not re-check a Socket.IO connection’s session');
+  }
 }
 
 /**
@@ -87,8 +121,11 @@ async function authenticate(socket: RealtimeSocket, next: (error?: Error) => voi
 let current: RealtimeServer | undefined;
 
 /** Starts the app's Socket.IO server; emitToUser() then sends through it. */
-export async function startRealtime(httpServer: HttpServer): Promise<RealtimeServer> {
-  current = await createRealtimeServer(httpServer);
+export async function startRealtime(
+  httpServer: HttpServer,
+  options?: Parameters<typeof createRealtimeServer>[1],
+): Promise<RealtimeServer> {
+  current = await createRealtimeServer(httpServer, options);
   return current;
 }
 
@@ -102,9 +139,21 @@ export function emitToUser(userId: string, event: string, ...args: unknown[]): v
 }
 
 /**
- * Closes every open tab and device of one user, on every backend task. A suspended or closed account's
- * sessions are already deleted, so they can't connect again (plan §8.2).
+ * Closes every open tab and device of one user, on every backend task, except those of the session in
+ * `except` (the device that changed the password, say). Call it once their sessions are deleted, so they
+ * can't connect again: a suspended or closed account (plan §8.2), a password reset, support removed.
  */
-export function disconnectUser(userId: string): void {
-  current?.in(userRoom(userId)).disconnectSockets(true);
+export function disconnectUser(userId: Types.ObjectId | string, { except }: { except?: string } = {}): void {
+  const room = current?.in(userRoom(userId.toString()));
+  (except ? room?.except(sessionRoom(except)) : room)?.disconnectSockets(true);
+}
+
+/**
+ * Closes the open tabs of these sessions, on every backend task, once they're deleted (signed out), so a
+ * signed-out browser stops receiving messages and notifications at once (plan §6.1, §6.2). Does nothing
+ * where Socket.IO isn't running.
+ */
+export function disconnectSessions(sessionIds: (Types.ObjectId | string)[]): void {
+  if (sessionIds.length === 0) return;
+  current?.in(sessionIds.map((id) => sessionRoom(id.toString()))).disconnectSockets(true);
 }

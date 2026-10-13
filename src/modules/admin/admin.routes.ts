@@ -23,6 +23,9 @@ import { recordAudit } from '../audit/audit.service.js';
 import { resetStaffMfa } from '../auth/mfa.service.js';
 import { AvailabilityBlockModel } from '../availability/availability-block.model.js';
 import { createTestPayment, getTestPayment } from '../payments/test-payment.service.js';
+import { cancelExtraCharge } from '../payments/extra-charges.service.js';
+import { cancelExtraChargeSchema } from '../payments/payments.schemas.js';
+import { adminBookingDetail } from './admin-bookings.service.js';
 import { staffInviteInputSchema } from '../staff/staff.schemas.js';
 import { inviteSupport, listStaff, removeSupport, revokeInvite } from '../staff/staff.service.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -38,6 +41,7 @@ import {
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import {
   documentDecisionSchema,
+  hostApplicationsQuerySchema,
   photoDecisionSchema,
   requiredNotesSchema,
   reviewNotesSchema,
@@ -49,13 +53,12 @@ import {
   decideListing,
   decidePhoto,
   getVehicleForReview,
-  isHostStatus,
   listHostApplications,
   listReviewQueue,
   listVehicles,
 } from './admin-listings.service.js';
 import { adminOpsRouter } from './admin-ops.routes.js';
-import { getAdminOverview } from './admin.service.js';
+import { assertNotOwnRecord, isOwnRecord, OWN_RECORD_MESSAGE } from './own-record.js';
 import { platformSettingsUpdateSchema } from './platform-settings.schemas.js';
 import { getPlatformSettingsForAdmin, updatePlatformSettings } from './platform-settings.service.js';
 import { reviewIdentity } from './admin-verification.service.js';
@@ -65,10 +68,10 @@ import {
   reviewLicence,
   verificationQueue,
 } from './verification-queue.service.js';
-import { INCIDENT_STATUSES, type IncidentStatus } from '../incidents/incident.model.js';
 import {
   incidentAssigneeSchema,
   incidentChargeSchema,
+  staffIncidentListQuerySchema,
   staffIncidentUpdateSchema,
   staffNewIncidentSchema,
 } from '../incidents/incidents.schemas.js';
@@ -108,10 +111,6 @@ const NEEDS_REFUNDS_PERMISSION =
 export function adminRouter() {
   const router = Router();
   router.use(requireAuth, requireActiveAccount, requireRole('ADMIN', 'SUPPORT'), auditStaffWrites);
-
-  router.get('/overview', async (_req, res) => {
-    res.json(await getAdminOverview());
-  });
 
   // The staff (plan §6.2): the one admin, set by ADMIN_EMAIL, and the support team, who join only by
   // accepting the admin's invitation.
@@ -163,8 +162,7 @@ export function adminRouter() {
 
   // Host applications (plan §9, Days 8–11).
   router.get('/host-applications', async (req, res) => {
-    const status = isHostStatus(req.query.status) ? req.query.status : 'APPLIED';
-    res.json({ applications: await listHostApplications(status) });
+    res.json(await listHostApplications(validate(hostApplicationsQuerySchema, req.query)));
   });
 
   router.post('/host-applications/:userId/approve', async (req, res) => {
@@ -253,6 +251,7 @@ export function adminRouter() {
       { userId: req.auth!.userId, roles: req.auth!.roles },
       String(req.params.id),
     );
+    await assertNotOwnRecord(req.auth!.userId, [booking.guestId, booking.hostId]);
     const preview = await adminCancellationPreview(booking, reason);
     if (preview.refundCents > 0 && !(await hasPermission(req.auth!.userId, 'REFUNDS'))) {
       throw new HttpError(403, 'FORBIDDEN', NEEDS_REFUNDS_PERMISSION);
@@ -269,12 +268,32 @@ export function adminRouter() {
       String(req.params.id),
     );
     const preview = await adminCancellationPreview(booking, reason);
+    // Their own trip or car is for another team member to cancel (plan §6.2).
+    if (await isOwnRecord(req.auth!.userId, [booking.guestId, booking.hostId])) {
+      res.json({ ...preview, allowed: false, message: OWN_RECORD_MESSAGE });
+      return;
+    }
     if (preview.allowed && preview.refundCents > 0 && !(await hasPermission(req.auth!.userId, 'REFUNDS'))) {
       res.json({ ...preview, allowed: false, message: `${preview.message} ${NEEDS_REFUNDS_PERMISSION}` });
       return;
     }
     res.json(preview);
   });
+
+  // An extra charge that hasn't been paid, cancelled by staff with the refunds permission: a mistake, or one
+  // written off after its retries (plan §8.1, items 6 and 11). The reason goes to the audit log.
+  router.post(
+    '/bookings/:id/extra-charges/:chargeId/cancel',
+    requirePermission('REFUNDS'),
+    async (req, res) => {
+      const { reason } = validate(cancelExtraChargeSchema, req.body);
+      const actor = { userId: req.auth!.userId, roles: req.auth!.roles };
+      const { booking } = await findBookingFor(actor, String(req.params.id));
+      await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
+      await cancelExtraCharge(actor.userId, booking._id, String(req.params.chargeId), reason, req.ip);
+      res.json(await adminBookingDetail(actor, booking.id));
+    },
+  );
 
   // A trip whose check-out is missing 24 h after the return: support completes it with the Host's
   // odometer and fuel reading and any photos, which become the check-out record (plan §8.2).
@@ -284,6 +303,7 @@ export function adminRouter() {
       { userId: req.auth!.userId, roles: req.auth!.roles },
       String(req.params.id),
     );
+    await assertNotOwnRecord(req.auth!.userId, [booking.guestId, booking.hostId]);
     await submitInspection(booking, 'STAFF', req.auth!.userId, { ...input, stage: 'CHECK_OUT' });
     const { booking: fresh } = await findBookingFor(
       { userId: req.auth!.userId, roles: req.auth!.roles },
@@ -294,9 +314,7 @@ export function adminRouter() {
 
   // Incidents and disputes (spec §15): the support team's cases.
   router.get('/incidents', async (req, res) => {
-    const status = INCIDENT_STATUSES.find((value) => value === req.query.status) as
-      IncidentStatus | undefined;
-    res.json({ incidents: await listIncidentsForStaff(status) });
+    res.json(await listIncidentsForStaff(validate(staffIncidentListQuerySchema, req.query)));
   });
 
   // Support opens a case themselves, outside the damage-report window (plan §3).

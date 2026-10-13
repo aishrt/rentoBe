@@ -33,6 +33,7 @@ import {
   type ThreadRecord,
 } from './thread-core.js';
 import { ThreadModel, type ThreadDocument } from './thread.model.js';
+import { assertNotOwnRecord } from '../admin/own-record.js';
 
 /*
  * Messaging (spec §13, plan §9 Days 17–19): one thread per booking between its Guest and Host, live
@@ -45,8 +46,42 @@ import { ThreadModel, type ThreadDocument } from './thread.model.js';
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** A message unread this long is emailed to its recipient (plan §4.3, `messages.unreadEmail`). */
 export const UNREAD_EMAIL_DELAY_MS = 10 * 60 * 1000;
+/** After an unread-message notice, the next waits this long, unless the conversation is read in between. */
+export const UNREAD_NOTICE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 
 type Id = Types.ObjectId;
+
+/**
+ * Which unread-message notice a message at `at` belongs to, named by when its streak started: when the
+ * recipient last read the conversation or, once they've had a notice since, that notice. Messages in one
+ * streak share a notice, so a burst sends one; a message 12 hours or more after the last notice starts a
+ * new streak and sends another. null when it's within those 12 hours: no new notice.
+ */
+export function unreadNoticeSince(
+  thread: Pick<ThreadRecord, 'reads' | 'unreadNotices'>,
+  recipientId: Id | string,
+  at: Date,
+): Date | null {
+  const read = readAtFor(thread, recipientId) ?? new Date(0);
+  // Threads from before these notices were recorded have no list (lean reads skip the schema's default).
+  const noticed = thread.unreadNotices?.find((notice) => notice.userId.equals(recipientId))?.at;
+  if (!noticed || noticed <= read) return read;
+  return at.getTime() - noticed.getTime() < UNREAD_NOTICE_COOLDOWN_MS ? null : noticed;
+}
+
+/** Records that the recipient was just sent an unread-message notice, which starts the 12-hour wait. */
+export async function recordUnreadNotice(threadId: string, recipientId: string, at: Date): Promise<void> {
+  const updated = await ThreadModel.updateOne(
+    { _id: threadId, 'unreadNotices.userId': recipientId },
+    { $max: { 'unreadNotices.$.at': at } },
+  );
+  if (updated.matchedCount === 0) {
+    await ThreadModel.updateOne(
+      { _id: threadId, 'unreadNotices.userId': mongoose.trusted({ $ne: recipientId }) },
+      { $push: { unreadNotices: { userId: recipientId, at } } },
+    );
+  }
+}
 
 const ENDED = ['CANCELLED', 'DECLINED', 'EXPIRED'];
 
@@ -324,17 +359,20 @@ export async function sendMessage(
     // Writing a message means they've read the conversation so far.
     await markRead(thread, actor.userId, created!.createdAt, session);
     const fresh = await ThreadModel.findById(thread._id).session(session).lean<ThreadRecord>();
-    const since = readAtFor(fresh!, recipientId)?.getTime() ?? 0;
-    await enqueue(
-      'messages.unreadEmail',
-      { threadId: thread.id, recipientId: recipientId.toString() },
-      {
-        runAt: new Date(created!.createdAt.getTime() + UNREAD_EMAIL_DELAY_MS),
-        uniqueKey: `unread-email:${thread.id}:${recipientId.toString()}:${since}`,
-        refId: booking.id,
-        session,
-      },
-    );
+    // One notice per streak of unread messages: the first message of a streak queues it.
+    const since = unreadNoticeSince(fresh!, recipientId, created!.createdAt);
+    if (since) {
+      await enqueue(
+        'messages.unreadEmail',
+        { threadId: thread.id, recipientId: recipientId.toString() },
+        {
+          runAt: new Date(created!.createdAt.getTime() + UNREAD_EMAIL_DELAY_MS),
+          uniqueKey: `unread-email:${thread.id}:${recipientId.toString()}:${since.getTime()}`,
+          refId: booking.id,
+          session,
+        },
+      );
+    }
     const record = created!.toObject() as MessageRecord;
     afterCommit(session, () => emitMessage(booking.toObject() as BookingRecord, record));
     return record;
@@ -353,9 +391,11 @@ export async function readThread(actor: Actor, ref: string, now = new Date()): P
 
 /**
  * `messages.unreadEmail` (plan §4.3): 10 minutes after a message, the recipient is emailed (and texted,
- * if they asked) when the conversation is still unread. Returns the unread messages it reported.
+ * if they asked) when the conversation is still unread. Returns the unread messages it reports, which
+ * notice they belong to (`noticeSince`, null within 12 hours of the last one), and whether the recipient
+ * has blocked the sender since.
  */
-export async function unreadMessagesFor(threadId: string, recipientId: string) {
+export async function unreadMessagesFor(threadId: string, recipientId: string, now = new Date()) {
   const thread = await ThreadModel.findById(threadId).lean<ThreadRecord>();
   if (!thread) return null;
   const booking = await BookingModel.findById(thread.bookingId).lean<BookingRecord>();
@@ -372,8 +412,18 @@ export async function unreadMessagesFor(threadId: string, recipientId: string) {
     .lean<MessageRecord[]>();
   if (unread.length === 0) return null;
   const viewer: Viewer = booking.guestId.equals(recipientId) ? 'GUEST' : 'HOST';
+  const senderId = viewer === 'GUEST' ? booking.hostId : booking.guestId;
+  const recipient = await UserModel.findById(recipientId).select('blockedUserIds').lean();
   const latest = toMessageView(unread.at(-1)!, booking, viewer, recipientId);
-  return { booking, viewer, count: unread.length, latest, since };
+  return {
+    booking,
+    viewer,
+    count: unread.length,
+    latest,
+    noticeSince: unreadNoticeSince(thread, recipientId, now),
+    // Accounts made before blocking existed have no list (lean reads skip the schema's default).
+    blockedSender: recipient?.blockedUserIds?.some((id) => id.equals(senderId)) ?? false,
+  };
 }
 
 /**
@@ -396,7 +446,24 @@ export async function openThreadForStaff(
 
   let allowed = false;
   if (kind === 'INCIDENT') {
-    allowed = Boolean(await IncidentModel.exists({ caseRef: key.toUpperCase(), bookingId: booking._id }));
+    const incident = await IncidentModel.findOne({ caseRef: key.toUpperCase(), bookingId: booking._id })
+      .select('reporterId events.visibility')
+      .lean();
+    // A case staff opened for the team only is no reason to read the messages: it has to come from the
+    // Guest or Host, or have been shared with at least one of them.
+    if (
+      incident &&
+      !booking.guestId.equals(incident.reporterId) &&
+      !booking.hostId.equals(incident.reporterId) &&
+      !incident.events?.some((event) => event.visibility !== 'INTERNAL')
+    ) {
+      throw new HttpError(
+        403,
+        'NO_CONTEXT',
+        'This case is visible to the team only, so it doesn’t open the messages. Share an update with the guest or host first.',
+      );
+    }
+    allowed = Boolean(incident);
   } else if (kind === 'TICKET') {
     allowed = Boolean(await SupportTicketModel.exists({ ref: key.toUpperCase(), bookingId: booking._id }));
   } else if (kind === 'REPORT' && mongoose.isValidObjectId(key)) {
@@ -428,10 +495,13 @@ export async function openThreadForStaff(
   const now = new Date();
   const settings = await getPlatformSettings();
   const [summary] = await toSummaries([thread.toObject() as ThreadRecord], booking.hostId.toString(), now);
-  const messages = await MessageModel.find({ threadId: thread._id })
-    .sort({ createdAt: 1 })
-    .limit(1000)
-    .lean<MessageRecord[]>();
+  // The newest 1,000, shown oldest first.
+  const messages = (
+    await MessageModel.find({ threadId: thread._id })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(1000)
+      .lean<MessageRecord[]>()
+  ).reverse();
   const [guest, host] = await Promise.all([
     UserModel.findById(booking.guestId).select('firstName').lean(),
     UserModel.findById(booking.hostId).select('firstName').lean(),
@@ -478,6 +548,8 @@ export async function removeMessage(staffId: string, messageId: string, reason: 
   const thread = await ThreadModel.findById(message.threadId).select('bookingId').lean();
   const booking = thread && (await BookingModel.findById(thread.bookingId).lean<BookingRecord>());
   if (!booking) throw new HttpError(404, 'NOT_FOUND', 'No such message.');
+  // A conversation a support member is part of is someone else's to moderate.
+  await assertNotOwnRecord(staffId, [booking.guestId, booking.hostId]);
 
   const hiddenAt = new Date();
   const removed = await MessageModel.findOneAndUpdate(

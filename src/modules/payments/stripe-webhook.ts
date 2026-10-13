@@ -125,7 +125,17 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<boolean> {
     });
     return true;
   } catch (error) {
-    if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) return false;
+    if (isRepeatedEvent(error)) return false;
     throw error;
   }
+}
+
+/**
+ * A repeat: the event's id is already saved. Any other duplicate key (from what the handler wrote) is a
+ * failure like any other, so the event isn't saved and Stripe sends it again.
+ */
+function isRepeatedEvent(error: unknown): boolean {
+  if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 11000) return false;
+  const key = (error.keyPattern ?? error.keyValue ?? {}) as Record<string, unknown>;
+  return 'eventId' in key;
 }

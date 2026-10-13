@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { errorResponses, jsonResponse, signedIn } from '../../openapi/shared.js';
 import {
   earningsResponseSchema,
+  hostPayoutsQuerySchema,
   hostPayoutsResponseSchema,
   statementQuerySchema,
   linkResponseSchema,
@@ -19,9 +20,10 @@ export function registerPayoutPaths(registry: OpenAPIRegistry) {
     tags: ['Hosting'],
     summary: 'The Host’s payout setup and payouts',
     description:
-      'Upcoming, held and paid payouts, newest first, with the commission and its GST, deductions, and when a paid one should reach the bank.',
+      'Payouts still to be sent (scheduled, held or delayed), soonest first, then paid ones, newest first, a page at a time (cursor), with the commission and its GST, deductions, and when each should reach the bank.',
     security: signedIn,
-    responses: { 200: jsonResponse('Payouts', hostPayoutsResponseSchema), ...errorResponses(401) },
+    request: { query: hostPayoutsQuerySchema },
+    responses: { 200: jsonResponse('Payouts', hostPayoutsResponseSchema), ...errorResponses(400, 401, 404) },
   });
 
   registry.registerPath({

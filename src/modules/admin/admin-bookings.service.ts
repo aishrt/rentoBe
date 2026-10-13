@@ -5,7 +5,7 @@ import { env } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
 import { formatNzDateTime, formatNzdExact } from '../../lib/format.js';
-import { fromNzWallClock } from '../../lib/nz-time.js';
+import { nzDayEnd, nzDayStart } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditLogModel } from '../audit/audit-log.model.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
@@ -23,6 +23,8 @@ import { postSystemMessage } from '../messages/thread-core.js';
 import { notify } from '../notifications/notify.js';
 import { PaymentModel, type Payment } from '../payments/payment.model.js';
 import {
+  hostRefundTerms,
+  hostShareOfRefund,
   recoverHostRefund,
   releaseHeldPayouts,
   reversePayoutTransfer,
@@ -40,8 +42,9 @@ import type {
   adminStatusEditSchema,
   bookingListQuerySchema,
 } from './admin-ops.schemas.js';
-import { bookingRows } from './admin-users.service.js';
+import { bookingRows, personSearchFilter } from './admin-users.service.js';
 import { paymentRows, payoutRows } from './admin-money.service.js';
+import { assertNotOwnRecord } from './own-record.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 
 /*
@@ -57,13 +60,10 @@ const PAGE_SIZE = 25;
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** The start of an NZ day given as 2026-10-07. */
-export function nzDayStart(date: string): Date {
-  const [year, month, day] = date.split('-').map(Number) as [number, number, number];
-  return fromNzWallClock(year, month, day);
-}
-
-/** GET /admin/bookings: by reference, a Guest's or Host's name or email, status and trip dates. */
+/**
+ * GET /admin/bookings: by reference, a Guest's or Host's name, email or mobile (each word matching, as the
+ * user search does), the car, status and trip dates.
+ */
 export async function listBookings(query: z.infer<typeof bookingListQuerySchema>) {
   const filter: Record<string, unknown> = {
     status: query.status ?? mongoose.trusted({ $ne: 'PAYMENT_PENDING' }),
@@ -72,25 +72,20 @@ export async function listBookings(query: z.infer<typeof bookingListQuerySchema>
     if (/^RV-[A-Z0-9]{6}$/i.test(query.q)) {
       filter.ref = query.q.toUpperCase();
     } else {
-      const pattern = new RegExp(escape(query.q), 'i');
-      const people = await UserModel.find({
-        $or: [{ firstName: pattern }, { lastName: pattern }, { email: pattern }],
-      })
-        .select('_id')
-        .limit(200)
-        .lean();
+      const people = await UserModel.find(personSearchFilter(query.q)).select('_id').limit(200).lean();
       const ids = people.map((person) => person._id);
+      const words = query.q.split(/\s+/).filter(Boolean).slice(0, 5);
       filter.$or = [
         { guestId: mongoose.trusted({ $in: ids }) },
         { hostId: mongoose.trusted({ $in: ids }) },
-        { 'vehicleSnapshot.title': pattern },
+        { $and: words.map((word) => ({ 'vehicleSnapshot.title': new RegExp(escape(word), 'i') })) },
       ];
     }
   }
   if (query.from || query.to) {
     filter.startAt = mongoose.trusted({
       ...(query.from && { $gte: nzDayStart(query.from) }),
-      ...(query.to && { $lt: new Date(nzDayStart(query.to).getTime() + 24 * 60 * 60 * 1000) }),
+      ...(query.to && { $lt: nzDayEnd(query.to) }),
     });
   }
   const [bookings, total] = await Promise.all([
@@ -171,6 +166,7 @@ export async function adminBookingDetail(
     })),
     tickets: tickets.map((ticket) => ({ ref: ticket.ref, subject: ticket.subject, status: ticket.status })),
     refundableCents: paid ? Math.max(0, paid.amountCents - refunded) : 0,
+    ...(paid && { hostFunding: await hostRefundTerms(booking, paid) }),
     // A Host-funded refund then comes off the Host's next payout or the transfer (plan §8.1, item 15).
     tripPayoutSent: !(await tripPayoutPending(booking._id)),
     refundableCharges: await refundableCharges(booking, payments),
@@ -197,6 +193,7 @@ async function refundableCharges(
       type: charge.type,
       description: charge.description,
       refundableCents: left,
+      hostFunding: await hostRefundTerms(booking, payment),
       payoutSent: !(await tripPayoutPending(booking._id, payment.extraChargeId)),
     });
   }
@@ -244,6 +241,7 @@ export async function editBookingStatus(
   now = new Date(),
 ) {
   const { booking } = await findBookingFor(actor, refOrId);
+  await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
   const allowed = input.to === 'ACTIVE' ? 'CONFIRMED' : 'ACTIVE';
   if (booking.status !== allowed) {
     throw new HttpError(
@@ -303,8 +301,10 @@ export async function editBookingStatus(
 
 /**
  * POST /admin/bookings/{id}/refunds: a refund to the Guest's card, with the refunds permission (plan §6.2).
- * A Host-funded refund comes off the trip's payout while it's still to be sent. Once it's sent, it comes off
- * the Host's next payout, or staff can choose to reverse the Stripe transfer instead (plan §8.1, item 15).
+ * A Host-funded refund covers only rental (and delivery, or an extra charge) the Host was paid for, and the
+ * Host pays back their share of it: the platform covers its commission. That share comes off the trip's
+ * payout while it's still to be sent. Once it's sent, it comes off the Host's next payout, or staff can
+ * choose to reverse the Stripe transfer instead (plan §8.1, item 15).
  */
 export async function adminRefund(
   actor: Actor,
@@ -314,6 +314,7 @@ export async function adminRefund(
   now = new Date(),
 ) {
   const { booking } = await findBookingFor(actor, refOrId);
+  await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
   // The booking's own payment, or one of its extra charges (plan §8.1, item 11).
   const payment = input.paymentId
     ? await PaymentModel.findOne({
@@ -324,17 +325,30 @@ export async function adminRefund(
     : await paidPayment(booking._id);
   if (!payment) throw new HttpError(409, 'NOT_PAID', 'This booking has no payment to refund.');
   const extraChargeId = payment.type === 'EXTRA_CHARGE' ? payment.extraChargeId : undefined;
+  const terms = input.fundedBy === 'HOST' ? await hostRefundTerms(booking, payment) : undefined;
+  if (terms && input.amountCents > terms.maxCents) {
+    const message =
+      terms.maxCents > 0
+        ? `The Host can fund only ${extraChargeId ? 'the extra charge' : 'rental and delivery'} they were paid for: up to ${formatNzdExact(terms.maxCents)} here. Refund the rest as funded by Rento Vroom.`
+        : 'Nothing the Host was paid for is left to refund here. Refund it as funded by Rento Vroom.';
+    throw new HttpError(400, 'VALIDATION_ERROR', message, { amountCents: message });
+  }
   const refund = await refundIntent(
     payment,
     input.amountCents,
     `refund-${payment.id}-admin-${new mongoose.Types.ObjectId().toString()}`,
   );
   const hostFunded = input.fundedBy === 'HOST' && refund.status !== 'FAILED';
+  // The Host's share of it: the platform covers its commission (plan §8.1, item 15).
+  const hostCents = terms ? hostShareOfRefund(terms, refund.amountCents) : 0;
   const recoverFrom = input.recoverFrom ?? 'NEXT_PAYOUT';
   // Reversing the transfer is a Stripe call, so it's made before the refund is recorded.
   const reversal =
-    hostFunded && recoverFrom === 'REVERSE_TRANSFER' && !(await tripPayoutPending(booking._id, extraChargeId))
-      ? await reversePayoutTransfer(booking, refund, extraChargeId)
+    hostFunded &&
+    hostCents > 0 &&
+    recoverFrom === 'REVERSE_TRANSFER' &&
+    !(await tripPayoutPending(booking._id, extraChargeId))
+      ? await reversePayoutTransfer(booking, { ...refund, hostCents }, extraChargeId)
       : undefined;
   let hostRefund: HostRefundRecovery | undefined;
   await withTransaction(async (session) => {
@@ -346,6 +360,7 @@ export async function adminRefund(
       kind: 'STAFF',
       issuedBy: new mongoose.Types.ObjectId(actor.userId),
       fundedBy: input.fundedBy,
+      ...(input.fundedBy === 'HOST' && { hostCents }),
       stripeRefundId: refund.stripeRefundId,
       status: refund.status,
       ...(refund.failureReason && { failureReason: refund.failureReason }),
@@ -354,8 +369,15 @@ export async function adminRefund(
     fresh.status = statusAfterRefunds(fresh);
     await fresh.save({ session });
     // A refund Stripe refused at once never reached the Guest: the Host owes nothing for it.
-    if (hostFunded && refund.status !== 'FAILED') {
-      hostRefund = await recoverHostRefund(booking, refund, reversal, session, now, extraChargeId);
+    if (hostFunded && hostCents > 0) {
+      hostRefund = await recoverHostRefund(
+        booking,
+        { ...refund, hostCents },
+        reversal,
+        session,
+        now,
+        extraChargeId,
+      );
     }
     // A refund Stripe refused at once alerted staff instead (refundIntent); the Guest hears once it goes.
     if (refund.status === 'FAILED') return;
@@ -398,6 +420,7 @@ export async function adminRefund(
     after: {
       amountCents: refund.amountCents,
       fundedBy: input.fundedBy,
+      ...(input.fundedBy === 'HOST' && { hostCents }),
       reason: input.reason,
       status: refund.status,
       // How a Host-funded refund is recovered, as staff chose and as it happened (plan §8.1, item 15).
@@ -445,6 +468,7 @@ async function findVehicle(id: string) {
  */
 export async function suspendVehicle(staffId: string, vehicleId: string, reason: string, ip?: string) {
   const vehicle = await findVehicle(vehicleId);
+  await assertNotOwnRecord(staffId, [vehicle.hostId]);
   if (!['ACTIVE', 'INACTIVE'].includes(vehicle.status)) {
     throw new HttpError(409, 'NOT_SUSPENDABLE', 'Only a live or deactivated car can be suspended.');
   }
@@ -491,6 +515,7 @@ export async function suspendVehicle(staffId: string, vehicleId: string, reason:
 /** POST /admin/vehicles/{id}/unsuspend: back to how it was before the suspension. */
 export async function unsuspendVehicle(staffId: string, vehicleId: string, ip?: string) {
   const vehicle = await findVehicle(vehicleId);
+  await assertNotOwnRecord(staffId, [vehicle.hostId]);
   if (vehicle.status !== 'SUSPENDED') throw new HttpError(409, 'NOT_SUSPENDED', 'This car isn’t suspended.');
   const last = await AuditLogModel.findOne({
     entity: 'vehicle',

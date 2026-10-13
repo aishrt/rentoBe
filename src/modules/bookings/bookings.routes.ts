@@ -15,6 +15,7 @@ import {
   listBookings,
 } from './booking.service.js';
 import {
+  BOOKINGS_PAGE_SIZE,
   bookingsQuerySchema,
   cancelBookingSchema,
   createBookingSchema,
@@ -48,9 +49,17 @@ export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: tr
     res.status(201).json({ booking: await bookingView(booking, 'GUEST') });
   });
 
+  // A page at a time, so a long history is still all there (plan §9, Days 16–19).
   router.get('/', async (req, res) => {
-    const { role, group } = validate(bookingsQuerySchema, req.query);
-    res.json({ bookings: await listBookings(req.auth!.userId, role, group) });
+    const { role, group, page } = validate(bookingsQuerySchema, req.query);
+    const rows = await listBookings(req.auth!.userId, role, group, new Date(), {
+      skip: (page - 1) * BOOKINGS_PAGE_SIZE,
+      limit: BOOKINGS_PAGE_SIZE + 1,
+    });
+    res.json({
+      bookings: rows.slice(0, BOOKINGS_PAGE_SIZE),
+      ...(rows.length > BOOKINGS_PAGE_SIZE && { nextPage: page + 1 }),
+    });
   });
 
   router.get('/:id', async (req, res) => {

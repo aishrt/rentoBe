@@ -16,7 +16,7 @@ export function createResendMailer({ apiKey, from, replyTo, client }: ResendMail
   return {
     provider: 'resend',
     async send(message) {
-      const { data, error } = await resend.emails.send({
+      const email = {
         from,
         to: message.to,
         subject: message.subject,
@@ -24,7 +24,11 @@ export function createResendMailer({ apiKey, from, replyTo, client }: ResendMail
         text: message.text,
         ...((message.replyTo ?? replyTo) && { replyTo: message.replyTo ?? replyTo }),
         ...(message.headers && { headers: message.headers }),
-      });
+      };
+      // Sent as the Idempotency-Key header: a retry with the same key isn't sent again.
+      const { data, error } = message.idempotencyKey
+        ? await resend.emails.send(email, { idempotencyKey: message.idempotencyKey })
+        : await resend.emails.send(email);
       if (error || !data) {
         throw new MailerError(`Resend did not accept the email: ${error?.message ?? 'empty response'}`);
       }

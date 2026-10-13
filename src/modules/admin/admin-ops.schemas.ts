@@ -24,6 +24,10 @@ import { VEHICLE_STATUSES } from '../vehicles/vehicle.model.js';
 
 const iso = z.iso.datetime();
 const cents = z.number().int();
+
+const HOST_SHARE =
+  'A Host-funded refund: the Host’s share of it, which they pay back (plan §8.1, item 15). Rento Vroom covers the rest, its commission. Older Host-funded refunds have none: the Host paid all of them.';
+/** The furthest page a list goes to; a narrower search or dates reach the rest. */
 const page = z.coerce.number().int().min(1).max(500).default(1);
 const reason = z.string().trim().min(3, { error: 'Say why' }).max(500);
 
@@ -46,9 +50,13 @@ export const adminDashboardSchema = z
       activeHosts: z.number().int(),
       activeVehicles: z.number().int(),
       upcomingBookings: z.number().int(),
-      bookingRevenueCents: cents.meta({ description: 'Paid for bookings made in the range, less refunds' }),
+      bookingRevenueCents: cents.meta({
+        description:
+          'Paid for trips starting in the range, extra charges paid and cancellation fees kept in it, less the refunds of that money (the report’s money.bookingRevenueCents)',
+      }),
       platformFeesCents: cents.meta({
-        description: 'Service fees and commission on bookings made in the range',
+        description:
+          'Service fees and commission on trips starting in the range, the platform’s share of cancellation fees kept and the commission on extra charges (the report’s fees.totalCents)',
       }),
       hostPayoutsCents: cents.meta({ description: 'Paid to Hosts in the range' }),
       cancellations: z.number().int(),
@@ -67,7 +75,10 @@ export const adminDashboardSchema = z
       reports: z.number().int(),
       heldReviews: z.number().int(),
       riskFlags: z.number().int(),
-      failedPayments: z.number().int(),
+      failedPayments: z.number().int().meta({
+        description:
+          'Payments that didn’t go through in the last 30 NZ days, today included: GET /admin/payments?view=failed with `from` 29 days before today',
+      }),
       heldPayouts: z.number().int(),
       failedJobs: z.number().int(),
     }),
@@ -209,15 +220,13 @@ export const waiveFeeSchema = z
 // Bookings ---------------------------------------------------------------------------------------------------
 
 export const bookingListQuerySchema = z.object({
-  q: z
-    .string()
-    .trim()
-    .max(100)
-    .optional()
-    .meta({ description: 'Booking reference, guest or host name or email' }),
+  q: z.string().trim().max(100).optional().meta({
+    description:
+      'Booking reference; or words each in the Guest’s or Host’s name, email or mobile, or in the car',
+  }),
   status: z.enum(BOOKING_STATUSES).optional(),
   from: z.iso.date().optional().meta({ description: 'Trips starting on or after this NZ date' }),
-  to: z.iso.date().optional(),
+  to: z.iso.date().optional().meta({ description: 'Trips starting on or before this NZ date' }),
   page,
 });
 
@@ -234,6 +243,19 @@ export const adminStatusEditSchema = z
   })
   .meta({ id: 'AdminStatusEditRequest' });
 
+/**
+ * What a Host-funded refund of a payment can be (plan §8.1, item 15). The Host pays back their share of it:
+ * round(amount × payoutCents ÷ baseCents), never more than hostLeftCents; the platform covers its commission.
+ */
+const hostRefundTermsSchema = z.object({
+  maxCents: cents.meta({
+    description: 'The most a Host-funded refund can be: the rental and delivery (or the extra charge) left',
+  }),
+  baseCents: cents.meta({ description: 'What the Host’s payout was worked out from' }),
+  payoutCents: cents.meta({ description: 'The Host’s payout from it, before deductions' }),
+  hostLeftCents: cents.meta({ description: 'The Host’s share not refunded yet' }),
+});
+
 export const adminRefundSchema = z
   .object({
     paymentId: z
@@ -248,7 +270,7 @@ export const adminRefundSchema = z
     reason,
     fundedBy: z.enum(['PLATFORM', 'HOST']).meta({
       description:
-        'PLATFORM: a goodwill refund. HOST: rental the Host would otherwise get (plan §8.1, item 15).',
+        'PLATFORM: a goodwill refund. HOST: rental the Host would otherwise get (plan §8.1, item 15): up to hostFunding.maxCents, and the Host pays back their share of it (the platform covers its commission).',
     }),
     recoverFrom: z.enum(['NEXT_PAYOUT', 'REVERSE_TRANSFER']).optional().meta({
       description:
@@ -275,6 +297,7 @@ export const adminPaymentSchema = z
         amountCents: cents,
         reason: z.string(),
         fundedBy: z.enum(['PLATFORM', 'HOST']),
+        hostCents: cents.optional().meta({ description: HOST_SHARE }),
         status: z.enum(['PENDING', 'SUCCEEDED', 'FAILED']),
         failureReason: z.string().optional(),
         at: iso,
@@ -290,7 +313,11 @@ export const adminPaymentSchema = z
 export const paymentListQuerySchema = z.object({
   status: z.enum(PAYMENT_STATUSES).optional(),
   type: z.enum(PAYMENT_TYPES).optional(),
-  view: z.enum(['all', 'failed', 'disputed', 'refunds-failed']).default('all'),
+  view: z.enum(['all', 'failed', 'disputed', 'refunds-failed']).default('all').meta({
+    description:
+      'failed: payments that didn’t go through, including cards declined at checkout (PENDING, then CANCELLED, with a failureReason)',
+  }),
+  from: z.iso.date().optional().meta({ description: 'Only payments made on or after this NZ date' }),
   page,
 });
 
@@ -348,6 +375,7 @@ export const adminRefundRowSchema = z
         'A cancellation’s own refund, a payment that arrived after its booking ended, or one staff issued. Older refunds have none.',
     }),
     fundedBy: z.enum(REFUND_FUNDERS),
+    hostCents: cents.optional().meta({ description: HOST_SHARE }),
     status: z.enum(REFUND_STATUSES),
     failureReason: z.string().optional(),
     issuedBy: z
@@ -444,6 +472,9 @@ export const adminBookingDetailSchema = z
     ),
     tickets: z.array(z.object({ ref: z.string(), subject: z.string(), status: z.enum(TICKET_STATUSES) })),
     refundableCents: cents.meta({ description: 'What can still be refunded on the booking’s payment' }),
+    hostFunding: hostRefundTermsSchema
+      .optional()
+      .meta({ description: 'A Host-funded refund of the booking’s payment: how much, and the Host’s share' }),
     tripPayoutSent: z.boolean().optional().meta({
       description:
         'The trip’s payout was sent (or is being sent, or the booking ended without one), so a Host-funded refund comes off the Host’s next payout or is taken back from the transfer',
@@ -455,6 +486,7 @@ export const adminBookingDetailSchema = z
           type: z.enum(EXTRA_CHARGE_TYPES),
           description: z.string(),
           refundableCents: cents,
+          hostFunding: hostRefundTermsSchema,
           payoutSent: z.boolean().meta({
             description:
               'The Host’s share of the charge was paid, so a Host-funded refund is taken back another way',
@@ -884,6 +916,10 @@ export const platformReportSchema = z
     }),
     money: z.object({
       grossBookingsCents: cents.meta({ description: 'Paid for trips starting in the range, GST included' }),
+      bookingRevenueCents: cents.meta({
+        description:
+          'Trips, extra charges and cancellation fees kept, less the refunds of that money (gst.givenBack’s refunds): the overview’s booking revenue',
+      }),
       refundsCents: cents.meta({ description: 'Sent to Guests in the range' }),
       platformFeesCents: cents.meta({
         description:
@@ -929,6 +965,9 @@ export const auditQuerySchema = z.object({
   entity: z.string().max(40).optional(),
   entityId: z.string().max(100).optional(),
   action: z.string().max(80).optional(),
+  // The log is kept for years (plan §14): dates reach entries further back than the pages do.
+  from: z.iso.date().optional().meta({ description: 'Entries on or after this NZ date' }),
+  to: z.iso.date().optional().meta({ description: 'Entries on or before this NZ date' }),
   page,
 });
 

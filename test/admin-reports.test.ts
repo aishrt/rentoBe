@@ -110,6 +110,8 @@ describe('the GST summary and platform fees', () => {
     const { report } = summary.body;
     expect(report.money).toEqual({
       grossBookingsCents: 33870,
+      // The trip, the extra charge and the fee kept, less the goodwill refund: the overview's figure.
+      bookingRevenueCents: 33870 + 4600 + 11500 - 2300,
       // The goodwill refund, the cancellation's refund and the late payment's.
       refundsCents: 58540,
       platformFeesCents: 14430,

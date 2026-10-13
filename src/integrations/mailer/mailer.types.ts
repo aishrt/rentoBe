@@ -6,6 +6,11 @@ export interface EmailMessage {
   replyTo?: string;
   /** Extra headers, e.g. List-Unsubscribe on non-transactional mail (plan §7, deliverability). */
   headers?: Record<string, string>;
+  /**
+   * The same key sends the email once, however often it's retried, e.g. `notification:<id>`. Providers
+   * that support it (Resend, for 24 hours) use it; the others ignore it.
+   */
+  idempotencyKey?: string;
 }
 
 export interface SentEmail {

@@ -1,7 +1,6 @@
 import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
-import { INCIDENT_STATUSES } from './incident.model.js';
 import {
   incidentAssigneeSchema,
   incidentAssigneesResponseSchema,
@@ -10,6 +9,8 @@ import {
   incidentResponseSchema,
   incidentsResponseSchema,
   newIncidentSchema,
+  staffIncidentListQuerySchema,
+  staffIncidentsResponseSchema,
   staffIncidentUpdateSchema,
   staffNewIncidentSchema,
 } from './incidents.schemas.js';
@@ -55,6 +56,8 @@ export function registerIncidentPaths(registry: OpenAPIRegistry) {
     path: '/incidents/{ref}/events',
     tags: ['Incidents'],
     summary: 'Add an update or evidence to an open case',
+    description:
+      'Shared with the other party when they see the case, unless it answers something support asked this party alone (the case’s `sharedWithOtherParty`). 409 CASE_CLOSED on a resolved or closed case; 409 CASE_CHANGED when support changed its status meanwhile.',
     security: signedIn,
     request: { params: refParams, body: jsonBody(incidentReplySchema) },
     responses: {
@@ -68,9 +71,10 @@ export function registerIncidentPaths(registry: OpenAPIRegistry) {
     path: '/admin/incidents',
     tags: ['Admin'],
     summary: 'Staff: cases, open ones by default',
+    description: 'Last updated first, 50 a page.',
     security: signedIn,
-    request: { query: z.object({ status: z.enum(INCIDENT_STATUSES).optional() }) },
-    responses: { 200: jsonResponse('Cases', incidentsResponseSchema), ...errorResponses(401, 403) },
+    request: { query: staffIncidentListQuerySchema },
+    responses: { 200: jsonResponse('Cases', staffIncidentsResponseSchema), ...errorResponses(400, 401, 403) },
   });
 
   registry.registerPath({
@@ -117,7 +121,7 @@ export function registerIncidentPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: post an update, change the status or take the case',
     description:
-      'Updates go to both parties, one of them, or the team only (INTERNAL). The status moves only to one of the case’s `nextStatuses`: nothing goes back to OPEN, a resolved case can be reopened (INVESTIGATING or AWAITING_RESPONSE), and a closed one is final (409 INVALID_STATUS_CHANGE; 409 CASE_CHANGED when someone else changed the status meanwhile). Resolving or closing the last open case on a booking releases its payouts; reopening a case holds the unpaid ones again.',
+      'Updates go to both parties, one of them, or the team only (INTERNAL); by default, to whoever already sees the case (`audience`). Taking the case with nothing else is always INTERNAL, and nobody is told. The status moves only to one of the case’s `nextStatuses`: nothing goes back to OPEN, a resolved case can be reopened (INVESTIGATING or AWAITING_RESPONSE), and a closed one is final (409 INVALID_STATUS_CHANGE; 409 CASE_CHANGED when someone else changed the status meanwhile). Resolving or closing the last open case on a booking releases its payouts; reopening a case holds the unpaid ones again.',
     security: signedIn,
     request: { params: refParams, body: jsonBody(staffIncidentUpdateSchema) },
     responses: {
@@ -146,7 +150,8 @@ export function registerIncidentPaths(registry: OpenAPIRegistry) {
     path: '/admin/incidents/{ref}/charges',
     tags: ['Admin'],
     summary: 'Staff: charge the guest from a resolved case',
-    description: 'Charged to the Guest’s saved card; the Host’s share is paid out as its own payout.',
+    description:
+      'Charged to the Guest’s saved card; the Host’s share is paid out as its own payout. On a damage, accident or theft case under a protection plan, the case’s charges stay within the plan’s excess (409 OVER_EXCESS above `chargeLimitCents`). The same `idempotencyKey` sent again adds no second charge and answers with the case as it is.',
     security: signedIn,
     request: { params: refParams, body: jsonBody(incidentChargeSchema) },
     responses: {

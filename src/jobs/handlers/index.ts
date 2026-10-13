@@ -6,6 +6,7 @@ import {
   paymentReceiptJob,
   paymentRiskCheckJob,
   refundUnwantedJob,
+  syncRefundsJob,
 } from './booking-jobs.js';
 import { sendEmailJob } from './email-send.js';
 import { refreshExchangeRatesJob } from './exchange-rates.js';
@@ -46,6 +47,7 @@ export const jobHandlers = {
   'booking.expireRequest': expireRequestJob,
   'payment.receipt': paymentReceiptJob,
   'payment.refundUnwanted': refundUnwantedJob,
+  'payment.syncRefunds': syncRefundsJob,
   'availability.expandRecurring': expandRecurringJob,
   'messages.unreadEmail': unreadMessageEmailJob,
   'reminder.pickup': pickupReminderJob,

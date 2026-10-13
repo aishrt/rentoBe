@@ -41,3 +41,14 @@ export const acceptAgreementsSchema = z
       .max(AGREEMENT_TYPES.length),
   })
   .meta({ id: 'AcceptAgreementsRequest' });
+
+/** PUT /me/photo: the profile photo just uploaded (plan §6.2: the other party sees it). */
+export const profilePhotoSchema = z
+  .object({
+    key: z
+      .string({ error: 'Upload a photo first' })
+      .min(1, 'Upload a photo first')
+      .max(300)
+      .meta({ description: 'From POST /uploads/signature (purpose PROFILE_PHOTO), once the photo is sent' }),
+  })
+  .meta({ id: 'ProfilePhotoRequest' });

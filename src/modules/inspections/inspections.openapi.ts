@@ -31,7 +31,7 @@ export function registerInspectionPaths(registry: OpenAPIRegistry) {
     tags: ['Handover'],
     summary: 'Record the check-in or check-out',
     description:
-      'Photos of every required angle (uploaded first with POST /uploads/signature, purpose INSPECTION_PHOTO), the odometer, the fuel or battery level and damage pins. Check-in opens 2 hours before the start and starts the trip; check-out completes it. The Guest must have confirmed their email before check-in. The other party is asked to confirm.',
+      'Photos of every required angle (uploaded first with POST /uploads/signature, purpose INSPECTION_PHOTO), the odometer, the fuel or battery level and damage pins. Check-in opens 2 hours before the start and starts the trip; check-out completes it, also on a trip support marked as started without a check-in (no extra kilometres are then worked out). The Guest must have confirmed their email before check-in. The other party is asked to confirm.',
     security: signedIn,
     request: { params: bookingParams, body: jsonBody(inspectionInputSchema) },
     responses: {

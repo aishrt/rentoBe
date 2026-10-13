@@ -51,12 +51,22 @@ export async function checkFailedPayments(guestId: Types.ObjectId, session: Clie
   }
 }
 
-/** A new booking: more than the daily number from one Guest raises BOOKING_VELOCITY. */
+/**
+ * A new booking: more than the daily number from one Guest raises BOOKING_VELOCITY. Checkouts that ended
+ * without being paid don't count: one replaced when the Guest changed the dates or options, or one left
+ * unpaid until its hold ran out.
+ */
 export async function checkBookingVelocity(guestId: Types.ObjectId, now = new Date()) {
   const settings = await getPlatformSettings();
   const count = await BookingModel.countDocuments({
     guestId,
     createdAt: mongoose.trusted({ $gte: new Date(now.getTime() - DAY_MS) }),
+    $nor: [
+      {
+        status: mongoose.trusted({ $in: ['EXPIRED', 'CANCELLED'] }),
+        'statusHistory.status': mongoose.trusted({ $nin: ['PENDING', 'CONFIRMED'] }),
+      },
+    ],
   });
   if (count > settings.risk.bookingsPerDay) {
     await raiseRiskFlag(guestId, 'BOOKING_VELOCITY', `${count} bookings started in 24 hours`, { now });

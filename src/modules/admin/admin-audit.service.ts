@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import type { z } from 'zod';
 import { HttpError } from '../../lib/http-error.js';
-import { nzDate } from '../../lib/nz-time.js';
+import { addNzDays, nzDate, nzDayEnd, nzDayStart } from '../../lib/nz-time.js';
 import { JobModel } from '../../jobs/job.model.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditLogModel } from '../audit/audit-log.model.js';
@@ -15,7 +15,7 @@ import { SupportTicketModel } from '../support/support-ticket.model.js';
 import { UserModel } from '../users/user.model.js';
 import { VehicleModel, liveVehicleFilter } from '../vehicles/vehicle.model.js';
 import type { adminDashboardSchema, auditQuerySchema, jobQuerySchema } from './admin-ops.schemas.js';
-import { nzDayStart } from './admin-bookings.service.js';
+import { failedPaymentFilter } from './admin-money.service.js';
 import { rangeMoney, reportRange } from './admin-reports.service.js';
 import { identityReviewFilter, licenceReviewFilter } from './verification-queue.service.js';
 
@@ -25,15 +25,18 @@ import { identityReviewFilter, licenceReviewFilter } from './verification-queue.
  */
 
 const PAGE_SIZE = 50;
-const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The NZ date `days` calendar days from another, whatever the daylight saving changes in between. */
+const nzDaysFrom = (date: string, days: number) => nzDate(addNzDays(nzDayStart(date), days));
 
 /** GET /admin/dashboard: figures for a range of NZ days (the last 30 by default), and the work waiting. */
 export async function adminDashboard(
   query: { from?: string; to?: string },
   now = new Date(),
 ): Promise<z.infer<typeof adminDashboardSchema>> {
-  const to = query.to ?? nzDate(now);
-  const from = query.from ?? nzDate(new Date(nzDayStart(to).getTime() - 29 * DAY_MS));
+  const today = nzDate(now);
+  const to = query.to ?? today;
+  const from = query.from ?? nzDaysFrom(to, -29);
   const range = reportRange(from, to);
   const inRange = { $gte: range.start, $lt: range.end };
   const open = mongoose.trusted({ $in: [...OPEN_INCIDENT_STATUSES] });
@@ -73,9 +76,10 @@ export async function adminDashboard(
     UserModel.countDocuments({
       riskFlags: mongoose.trusted({ $elemMatch: { clearedAt: { $exists: false } } }),
     }),
+    // The last 30 NZ days, as the queue's link to the failed payments since then lists them.
     PaymentModel.countDocuments({
-      status: 'FAILED',
-      createdAt: mongoose.trusted({ $gte: new Date(now.getTime() - 30 * DAY_MS) }),
+      ...failedPaymentFilter(),
+      createdAt: mongoose.trusted({ $gte: nzDayStart(nzDaysFrom(today, -29)) }),
     }),
     PayoutModel.countDocuments({ status: mongoose.trusted({ $in: ['HELD', 'FAILED'] }) }),
     JobModel.countDocuments({ status: 'FAILED' }),
@@ -145,13 +149,22 @@ export async function adminDashboard(
   };
 }
 
-/** GET /admin/audit: the audit log, newest first, by who, what record or which action. */
+/**
+ * GET /admin/audit: the audit log, newest first, by who, what record, which action and NZ dates. It's kept for
+ * years (plan §14), so dates reach entries older than the last page does.
+ */
 export async function auditLog(query: z.infer<typeof auditQuerySchema>) {
   const filter: Record<string, unknown> = {
     ...(query.actor && { actorId: new mongoose.Types.ObjectId(query.actor) }),
     ...(query.entity && { entity: query.entity }),
     ...(query.entityId && { entityId: query.entityId }),
     ...(query.action && { action: query.action }),
+    ...((query.from || query.to) && {
+      createdAt: mongoose.trusted({
+        ...(query.from && { $gte: nzDayStart(query.from) }),
+        ...(query.to && { $lt: nzDayEnd(query.to) }),
+      }),
+    }),
   };
   const [entries, total] = await Promise.all([
     AuditLogModel.find(filter)

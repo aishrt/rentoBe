@@ -437,6 +437,8 @@ export async function patchVehicle(
     ['UNDER_REVIEW', 'CHANGES_REQUESTED'].includes(vehicle.status) && Array.isArray(vehicle.keyChanges);
   if ((LIVE.includes(vehicle.status) || keyReview) && changedKeys.length > 0) {
     if (LIVE.includes(vehicle.status)) {
+      // Approval puts it back as it was: a car its Host switched off stays hidden (plan §8.2).
+      vehicle.keyReviewFrom = vehicle.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
       vehicle.status = 'UNDER_REVIEW';
       vehicle.reviewNotes = undefined;
     }

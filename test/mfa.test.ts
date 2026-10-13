@@ -79,7 +79,7 @@ describe('turning on two-factor sign-in', () => {
     // The other browser only had the password, so it's signed out; this one stays.
     expect(await SessionModel.countDocuments({ userId: staff._id })).toBe(1);
     expect((await other.post('/api/v1/auth/refresh')).status).toBe(401);
-    expect((await agent.get('/api/v1/admin/overview')).status).toBe(200);
+    expect((await agent.get('/api/v1/admin/dashboard')).status).toBe(200);
 
     const status = await agent.get('/api/v1/me/mfa');
     expect(status.body).toEqual({
@@ -231,7 +231,7 @@ describe('staff sign-in with the authenticator app', () => {
       .send({ challenge: response.body.challenge, code: await staffCode() });
     expect(done.status).toBe(200);
     expect(done.body.user).toMatchObject({ email: 'aroha@example.co.nz', mfaEnabled: true });
-    expect((await agent.get('/api/v1/admin/overview')).status).toBe(200);
+    expect((await agent.get('/api/v1/admin/dashboard')).status).toBe(200);
   });
 
   it('accepts each code once', async () => {

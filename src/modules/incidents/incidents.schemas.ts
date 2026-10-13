@@ -83,8 +83,9 @@ export const staffIncidentUpdateSchema = z
   .object({
     note: z.string().trim().max(5000).default(''),
     attachments: z.array(attachmentInputSchema).max(10).default([]),
-    visibility: z.enum(EVENT_VISIBILITIES).default('BOTH').meta({
-      description: 'BOTH parties, only the GUEST or HOST, or INTERNAL to support staff',
+    visibility: z.enum(EVENT_VISIBILITIES).optional().meta({
+      description:
+        'BOTH parties, only the GUEST or HOST, or INTERNAL to support staff. Without it, whoever already sees the case (the case’s `audience`). Taking the case with nothing else (assignToMe alone) is always INTERNAL, and nobody is told',
     }),
     status: z.enum(INCIDENT_STATUSES).optional(),
     assignToMe: z.boolean().optional(),
@@ -118,7 +119,14 @@ export const incidentChargeSchema = z
   .object({
     type: z.enum(EXTRA_CHARGE_TYPES.filter((type) => type !== 'EXTRA_KM') as [string, ...string[]]),
     description: z.string().trim().min(3).max(200),
-    amountCents: z.number().int().min(1, { error: 'Enter an amount' }).max(1_000_000),
+    amountCents: z.number().int().min(1, { error: 'Enter an amount' }).max(1_000_000).meta({
+      description:
+        'On a damage, accident or theft case under a protection plan, the case’s charges together stay within the plan’s excess (`chargeLimitCents`; 409 OVER_EXCESS above it)',
+    }),
+    idempotencyKey: z.string().trim().min(8).max(100).optional().meta({
+      description:
+        'A new value (such as a UUID) for each charge the form submits: the same one sent again adds no second charge',
+    }),
   })
   .meta({ id: 'IncidentChargeRequest' });
 export type IncidentChargeInput = z.infer<typeof incidentChargeSchema>;
@@ -164,9 +172,25 @@ export const incidentViewSchema = incidentSummarySchema
       .array(incidentEventViewSchema)
       .meta({ description: 'Oldest first; only those the viewer may see' }),
     canReply: z.boolean(),
+    sharedWithOtherParty: z.boolean().optional().meta({
+      description:
+        'Guest and Host only: whether the viewer’s next update is shared with the other party. It is when the other party sees the case, unless support’s latest update to the viewer was for them alone (such as a question asked only them): the answer stays between the viewer and support',
+    }),
+    audience: z.enum(EVENT_VISIBILITIES).optional().meta({
+      description:
+        'Staff only: who sees the case now: BOTH parties, only the GUEST or the HOST, or INTERNAL to the team. An update goes to them unless staff choose otherwise',
+    }),
     nextStatuses: z.array(z.enum(INCIDENT_STATUSES)).optional().meta({
       description:
         'Staff only: the statuses the case can move to now. A resolved case can be reopened; a closed one is final',
+    }),
+    protectionPlan: z
+      .object({ name: z.string(), excessCents: z.number().int() })
+      .optional()
+      .meta({ description: 'Staff only: the protection plan the Guest booked, when they took one' }),
+    chargeLimitCents: z.number().int().optional().meta({
+      description:
+        'Staff only, on a damage, accident or theft case under a protection plan: how much more the case can charge the Guest, so its charges stay within the plan’s excess (plan §3)',
     }),
     extraCharges: z
       .array(
@@ -188,6 +212,16 @@ export const incidentResponseSchema = z
 export const incidentsResponseSchema = z
   .object({ incidents: z.array(incidentSummarySchema) })
   .meta({ id: 'Incidents' });
+
+/** The staff list: open cases by default, or one status, a page at a time. */
+export const STAFF_INCIDENTS_PAGE_SIZE = 50;
+export const staffIncidentListQuerySchema = z.object({
+  status: z.enum(INCIDENT_STATUSES).optional(),
+  page: z.coerce.number().int().min(1).max(500).default(1),
+});
+export const staffIncidentsResponseSchema = incidentsResponseSchema
+  .extend({ total: z.number().int(), page: z.number().int() })
+  .meta({ id: 'StaffIncidents' });
 
 /** Who a case can be handed to: the admin and the active support team. */
 export const incidentAssigneesResponseSchema = z

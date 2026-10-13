@@ -4,22 +4,31 @@ import { BookingModel } from '../../modules/bookings/booking.model.js';
 import { unreadMessagesFor } from '../../modules/messages/messages.service.js';
 import { NotificationModel } from '../../modules/notifications/notification.model.js';
 import type { EmailContent, SmsPayload } from '../../modules/notifications/notify.js';
-import { UserModel } from '../../modules/users/user.model.js';
+import { UserModel, type NotificationPrefs } from '../../modules/users/user.model.js';
 import type { JobContext } from './index.js';
 
 /**
  * Why a text is no longer worth sending, if it isn't: it waited for the end of quiet hours (plan §7), and in
- * the meantime the booking moved on, the time it was about passed, or the message it announces was read.
+ * the meantime the person turned that kind of text off, the booking moved on, the time it was about passed,
+ * or the message it announces was read or its sender blocked.
  */
-async function outdatedReason(payload: SmsPayload, userId: string, now = new Date()): Promise<string | null> {
+async function outdatedReason(
+  payload: SmsPayload,
+  userId: string,
+  prefs: Partial<NotificationPrefs> | undefined,
+  now = new Date(),
+): Promise<string | null> {
+  if (payload.whileOptedIn && prefs?.[payload.whileOptedIn] !== true) return 'Turned off in their settings';
   if (payload.expiresAt && new Date(payload.expiresAt) <= now) return 'Too late to be useful';
   if (payload.whileBooking) {
     const booking = await BookingModel.findById(payload.whileBooking.id).select('status').lean();
     if (!booking || !payload.whileBooking.statuses.includes(booking.status))
       return 'The booking has moved on';
   }
-  if (payload.whileUnread && !(await unreadMessagesFor(payload.whileUnread.threadId, userId))) {
-    return 'The message has been read';
+  if (payload.whileUnread) {
+    const unread = await unreadMessagesFor(payload.whileUnread.threadId, userId, now);
+    if (!unread) return 'The message has been read';
+    if (unread.blockedSender) return 'They blocked the sender';
   }
   return null;
 }
@@ -39,7 +48,7 @@ export async function sendNotificationJob(
     await NotificationModel.updateOne({ _id: notification._id }, { $set: { status: 'FAILED', error } });
   };
   const user = await UserModel.findById(notification.userId)
-    .select('email phone phoneVerifiedAt closedAt')
+    .select('email phone phoneVerifiedAt closedAt notificationPrefs')
     .lean();
   if (!user || user.closedAt) return fail('The account is closed');
 
@@ -49,12 +58,14 @@ export async function sendNotificationJob(
       const sent = await sendEmail({
         to: user.email,
         ...(notification.payload as EmailContent),
+        // A retry after the provider took the email (but before it was marked sent) isn't sent twice.
+        idempotencyKey: `notification:${notification.id}`,
       } as Parameters<typeof sendEmail>[0]);
       providerRef = sent.id;
     } else if (notification.channel === 'SMS') {
       if (!user.phone || !user.phoneVerifiedAt) return fail('No verified mobile number');
       const payload = notification.payload as SmsPayload;
-      const outdated = await outdatedReason(payload, notification.userId.toString());
+      const outdated = await outdatedReason(payload, notification.userId.toString(), user.notificationPrefs);
       if (outdated) {
         await NotificationModel.updateOne(
           { _id: notification._id, status: 'QUEUED' },

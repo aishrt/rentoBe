@@ -475,6 +475,8 @@ describe('Booking an Instant Book car', () => {
     );
     const context = { log: { warn: vi.fn() } } as unknown as JobContext;
 
+    // The job does what Stripe says the payment is, not what it's recorded as.
+    intentStatus = 'succeeded';
     await refundUnwantedJob({ paymentId: payment!.id }, context);
     // A retry finds it refunded and does nothing more.
     await refundUnwantedJob({ paymentId: payment!.id }, context);

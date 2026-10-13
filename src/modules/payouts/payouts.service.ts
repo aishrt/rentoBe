@@ -6,6 +6,7 @@ import { CHARGE_CURRENCY, stripe } from '../../integrations/stripe.js';
 import { logger } from '../../integrations/logger.js';
 import { enqueue } from '../../jobs/queue.js';
 import { formatNzDate, formatNzdExact } from '../../lib/format.js';
+import { HttpError } from '../../lib/http-error.js';
 import { nzDate } from '../../lib/nz-time.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
@@ -13,7 +14,7 @@ import { keptFeeCommission } from '../bookings/policies.js';
 import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.model.js';
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { notify } from '../notifications/notify.js';
-import { PaymentModel } from '../payments/payment.model.js';
+import { PaymentModel, type Payment, type Refund } from '../payments/payment.model.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import { UserModel, type RefundOwed } from '../users/user.model.js';
 import {
@@ -46,7 +47,88 @@ const DEFAULT_BANK_DAYS = 4;
 
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
 /** GST included in an amount (15 %, plan §5): 3/23 of it. */
-const gstIn = (cents: number, ratePct: number) => Math.round((cents * ratePct) / (100 + ratePct));
+export const gstIn = (cents: number, ratePct: number) => Math.round((cents * ratePct) / (100 + ratePct));
+
+/**
+ * What the Host pays back for a refund they fund (plan §8.1, item 15): their share of it, as worked out when
+ * it was made. A refund recorded before shares were kept has none: the Host paid all of it.
+ */
+export const hostPartOf = (refund: Pick<Refund, 'amountCents' | 'hostCents'>) =>
+  refund.hostCents ?? refund.amountCents;
+
+/** What a Host-funded refund of one payment can cover, and the Host's payout it comes out of. */
+export interface HostRefundTerms {
+  /** The most a Host-funded refund of the payment can be now. */
+  maxCents: number;
+  /** What the Host's payout was worked out from: the rental and delivery, the kept rental or the extra charge. */
+  baseCents: number;
+  /** The Host's payout from it, before deductions. */
+  payoutCents: number;
+  /** The Host's share not refunded yet. */
+  hostLeftCents: number;
+}
+
+/**
+ * A Host-funded refund is "a policy refund of rental the Host would otherwise receive" (plan §8.1, item 15),
+ * so it can cover only what the Host's payout came from: the booking's rental and delivery (on a cancelled
+ * booking, the kept rental the Host has a share of), or an extra charge. Not the service fee or protection.
+ */
+export async function hostRefundTerms(
+  booking: Pick<
+    BookingRecord,
+    '_id' | 'status' | 'price' | 'startAt' | 'cancellationTerms' | 'hostShareCents'
+  >,
+  payment: Pick<Payment, 'type' | 'extraChargeId' | 'amountCents' | 'refunds'>,
+  session?: ClientSession,
+): Promise<HostRefundTerms> {
+  let baseCents = 0;
+  let payoutCents = 0;
+  if (payment.type === 'EXTRA_CHARGE') {
+    // The charge's own payout, with the commission it was made with (plan §8.1, item 11).
+    const payout = await PayoutModel.findOne({
+      bookingId: booking._id,
+      type: 'EXTRA_CHARGE',
+      extraChargeId: payment.extraChargeId,
+      status: mongoose.trusted({ $ne: 'CANCELLED' }),
+    })
+      .select('commissionCents')
+      .session(session ?? null)
+      .lean();
+    const commission =
+      payout?.commissionCents ??
+      Math.round((payment.amountCents * (await getPlatformSettings()).fees.hostCommissionPct) / 100);
+    baseCents = payment.amountCents;
+    payoutCents = payment.amountCents - commission;
+  } else if (booking.status === 'CANCELLED') {
+    payoutCents = booking.hostShareCents ?? 0;
+    baseCents = payoutCents + keptFeeCommission(booking);
+  } else if (booking.status !== 'DECLINED' && booking.status !== 'EXPIRED') {
+    baseCents = booking.price.subtotalCents + booking.price.deliveryCents;
+    payoutCents = booking.price.hostPayoutCents;
+  }
+  const live = payment.refunds.filter((refund) => refund.status !== 'FAILED');
+  // A cancellation's own refund was settled by the policy (the kept fee), not out of the Host's payout.
+  const hostFunded = live.filter((refund) => refund.fundedBy === 'HOST' && refund.kind !== 'CANCELLATION');
+  const sum = (refunds: typeof live, part: (refund: Refund) => number) =>
+    refunds.reduce((total, refund) => total + part(refund), 0);
+  const refundable = payment.amountCents - sum(live, (refund) => refund.amountCents);
+  return {
+    maxCents: Math.max(0, Math.min(baseCents - sum(hostFunded, (refund) => refund.amountCents), refundable)),
+    baseCents,
+    payoutCents,
+    hostLeftCents: Math.max(0, payoutCents - sum(hostFunded, hostPartOf)),
+  };
+}
+
+/**
+ * The Host's share of a refund they fund (plan §8.1, item 15): the part of it their payout came from, so the
+ * platform covers its commission, and never more than their share not refunded yet.
+ */
+export function hostShareOfRefund(terms: HostRefundTerms, amountCents: number): number {
+  if (terms.baseCents <= 0) return 0;
+  const share = Math.round((amountCents * terms.payoutCents) / terms.baseCents);
+  return Math.max(0, Math.min(terms.hostLeftCents, share));
+}
 
 export async function queueTransfer(
   payout: Pick<PayoutRecord, '_id' | 'bookingId'>,
@@ -94,10 +176,50 @@ export async function scheduleTripPayout(booking: BookingRecord, session: Client
   return payout!;
 }
 
+/** What a paid payout was worth to the Host before its deductions (those settled what they owed elsewhere). */
+const paidGross = (payout: Pick<PayoutRecord, 'amountCents' | 'deductions'>) =>
+  payout.amountCents + (payout.deductions ?? []).reduce((sum, deduction) => sum + deduction.amountCents, 0);
+
+/** The key a paid trip payout's overpayment is owed under, as its own line on the Host's next payout. */
+const overpaidKey = (payoutId: Id | string) => `trip-payout-${payoutId.toString()}`;
+
+/**
+ * Where a booking's TRIP payout stands as the booking is cancelled (plan §8.1, items 15 and 16). NONE: there
+ * is none (or it's cancelled); UNPAID: it's cancelled and replaced by the Host's share of any kept fee;
+ * IN_FLIGHT: its deductions are reserved and its transfer is being made, so the cancellation waits a minute;
+ * PAID: it went before the cancellation (a Guest no-show after the Host's check-in), so the Host keeps only their
+ * share of the kept fee and owes the rest off their next payout (owedCents), or is paid the difference
+ * (topUpCents).
+ */
+export async function tripPayoutOnCancel(
+  bookingId: Id,
+  hostShareCents: number,
+  session?: ClientSession,
+): Promise<
+  | { state: 'NONE' | 'UNPAID' | 'IN_FLIGHT' }
+  | { state: 'PAID'; paidCents: number; owedCents: number; topUpCents: number }
+> {
+  const trip = await PayoutModel.findOne({ bookingId, type: 'TRIP' })
+    .session(session ?? null)
+    .lean<PayoutRecord>();
+  if (!trip || trip.status === 'CANCELLED') return { state: 'NONE' };
+  if (trip.status === 'SCHEDULED' && trip.deductionsReservedAt) return { state: 'IN_FLIGHT' };
+  if (trip.status !== 'PAID') return { state: 'UNPAID' };
+  const paidCents = paidGross(trip);
+  return {
+    state: 'PAID',
+    paidCents,
+    owedCents: Math.max(0, paidCents - hostShareCents),
+    topUpCents: Math.max(0, hostShareCents - paidCents),
+  };
+}
+
 /**
  * A booking ended: an unpaid TRIP payout is cancelled, and the Host's share of a kept Guest cancellation
  * fee (no-shows included) becomes a CANCELLATION_FEE payout, paid when the trip's would have been
- * (plan §4.2, §8.1 item 16).
+ * (plan §4.2, §8.1 item 16). A TRIP payout already paid (a Guest no-show after the Host's check-in) isn't paid
+ * again: the Host keeps their share of the kept fee from it, and owes the rest off their next payout, shown as
+ * a line on it, or is paid the difference when their share is the bigger (plan §8.1, item 15).
  */
 export async function replaceTripPayout(booking: BookingRecord, session: ClientSession, now = new Date()) {
   const cancelled = await PayoutModel.findOneAndUpdate(
@@ -105,15 +227,30 @@ export async function replaceTripPayout(booking: BookingRecord, session: ClientS
     { $set: { status: 'CANCELLED', deductions: [] }, $unset: { holdReason: 1, deductionsReservedAt: 1 } },
     { new: false, session },
   ).lean<PayoutRecord>();
-  if (cancelled) await giveBackDeductions(cancelled, session);
-  const share = booking.hostShareCents ?? 0;
+  if (cancelled) {
+    await giveBackDeductions(cancelled, session);
+    await oweOwnRefunds(cancelled, session);
+  }
+  let share = booking.hostShareCents ?? 0;
+  const settled = cancelled ? null : await tripPayoutOnCancel(booking._id, share, session);
+  if (settled?.state === 'PAID') {
+    const trip = await PayoutModel.findOne({ bookingId: booking._id, type: 'TRIP' })
+      .select('_id')
+      .session(session)
+      .lean();
+    if (settled.owedCents > 0) {
+      await addRefundOwed(booking.hostId, booking._id, overpaidKey(trip!._id), settled.owedCents, session);
+    }
+    share = settled.topUpCents;
+  }
   if (share <= 0) return;
   if (await PayoutModel.exists({ bookingId: booking._id, type: 'CANCELLATION_FEE' }).session(session)) return;
   const settings = await getPlatformSettings();
   const scheduledFor = new Date(
     Math.max(booking.startAt.getTime() + PAYOUT_AFTER_START_HOURS * HOUR_MS, now.getTime()),
   );
-  const commission = keptFeeCommission(booking);
+  // A top-up after a paid trip payout carries its part of the commission.
+  const commission = Math.round((keptFeeCommission(booking) * share) / Math.max(1, booking.hostShareCents ?? share));
   const [payout] = await PayoutModel.create(
     [
       {
@@ -268,6 +405,8 @@ async function deductionsFor(
       .lean();
     for (const refund of payments.flatMap((payment) => payment.refunds)) {
       if (refund.fundedBy !== 'HOST' || refund.status === 'FAILED') continue;
+      // The Host's share of it: the platform covers its commission.
+      const owed = hostPartOf(refund);
       const before = left;
       take(
         {
@@ -275,9 +414,9 @@ async function deductionsFor(
           bookingId: booking._id,
           ...(refund.stripeRefundId && { stripeRefundId: refund.stripeRefundId }),
         },
-        refund.amountCents,
+        owed,
       );
-      const uncovered = refund.amountCents - (before - left);
+      const uncovered = owed - (before - left);
       if (uncovered > 0 && refund.stripeRefundId) {
         carryOver.push({
           bookingId: booking._id,
@@ -423,27 +562,66 @@ async function giveBackDeductions(payout: PayoutRecord, session: ClientSession) 
       }),
     }).session(session);
     if (failed) continue;
-    const back = await UserModel.updateOne(
-      { _id: payout.hostId, 'hostProfile.refundsOwed.stripeRefundId': deduction.stripeRefundId },
-      { $inc: { 'hostProfile.refundsOwed.$.amountCents': deduction.amountCents } },
-      { session },
+    await addRefundOwed(
+      payout.hostId,
+      deduction.bookingId,
+      deduction.stripeRefundId,
+      deduction.amountCents,
+      session,
     );
-    if (back.matchedCount === 0) {
-      await UserModel.updateOne(
-        { _id: payout.hostId },
-        {
-          $push: {
-            'hostProfile.refundsOwed': {
-              bookingId: deduction.bookingId,
-              stripeRefundId: deduction.stripeRefundId,
-              amountCents: deduction.amountCents,
-              createdAt: new Date(),
-            },
-          },
-        },
-        { session },
-      );
-    }
+  }
+}
+
+/** Adds to what the Host owes for a refund, on its own line (plan §8.1, item 15). */
+async function addRefundOwed(
+  hostId: Id,
+  bookingId: Id,
+  stripeRefundId: string,
+  amountCents: number,
+  session: ClientSession,
+) {
+  const back = await UserModel.updateOne(
+    { _id: hostId, 'hostProfile.refundsOwed.stripeRefundId': stripeRefundId },
+    { $inc: { 'hostProfile.refundsOwed.$.amountCents': amountCents } },
+    { session },
+  );
+  if (back.matchedCount > 0) return;
+  await UserModel.updateOne(
+    { _id: hostId },
+    {
+      $push: {
+        'hostProfile.refundsOwed': { bookingId, stripeRefundId, amountCents, createdAt: new Date() },
+      },
+    },
+    { session },
+  );
+}
+
+/**
+ * A trip's payout cancelled before it was sent: the Host-funded refunds on the booking that were to come off
+ * it are owed instead, and come off the Host's next payout (plan §8.1, item 15). Unreserved, it was to take the
+ * Host's whole share of each; reserved, what its deductions took (any rest is owed already). Pass the payout as
+ * it was before it was cancelled.
+ */
+async function oweOwnRefunds(payout: PayoutRecord, session: ClientSession) {
+  if (payout.type !== 'TRIP') return;
+  const payments = await PaymentModel.find({ bookingId: payout.bookingId, type: 'BOOKING' })
+    .session(session)
+    .lean();
+  for (const refund of payments.flatMap((payment) => payment.refunds)) {
+    if (refund.fundedBy !== 'HOST' || refund.status === 'FAILED' || refund.kind === 'CANCELLATION') continue;
+    if (!refund.stripeRefundId) continue;
+    const owed = payout.deductionsReservedAt
+      ? payout.deductions
+          .filter(
+            (deduction) =>
+              !deduction.owed &&
+              deduction.type === 'HOST_FUNDED_REFUND' &&
+              deduction.stripeRefundId === refund.stripeRefundId,
+          )
+          .reduce((sum, deduction) => sum + deduction.amountCents, 0)
+      : hostPartOf(refund);
+    if (owed > 0) await addRefundOwed(payout.hostId, payout.bookingId, refund.stripeRefundId, owed, session);
   }
 }
 
@@ -468,7 +646,10 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
         { $set: { status: 'CANCELLED', deductions: [] }, $unset: { deductionsReservedAt: 1 } },
         { new: false, session },
       ).lean<PayoutRecord>();
-      if (cancelled) await giveBackDeductions(cancelled, session);
+      if (cancelled) {
+        await giveBackDeductions(cancelled, session);
+        await oweOwnRefunds(cancelled, session);
+      }
     });
     return 'skipped';
   }
@@ -530,13 +711,15 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
         error instanceof Stripe.errors.StripeError &&
         error.statusCode !== undefined &&
         error.statusCode < 500;
-      await PayoutModel.updateOne(
-        { _id: payout._id },
+      // A run at the same moment may have sent it meanwhile: a paid payout stays paid.
+      const failed = await PayoutModel.updateOne(
+        { _id: payout._id, status: mongoose.trusted({ $nin: ['PAID', 'CANCELLED'] }) },
         {
           $set: { status: 'FAILED', failureReason: reason.slice(0, 300) },
           ...(refused && { $inc: { transferAttempts: 1 } }),
         },
       );
+      if (failed.matchedCount === 0) return 'skipped';
       await alertStaff({
         type: 'PAYOUT_FAILED',
         title: `A payout to ${host?.firstName ?? 'a host'} failed`,
@@ -549,6 +732,11 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
   }
 
   const paid = await withTransaction(async (session) => {
+    const before = await PayoutModel.findById(payout._id).select('status').session(session).lean();
+    // Cancelled while its transfer was being made (its booking was cancelled that moment): the transfer went
+    // out all the same, so it's recorded as paid, without the deductions its cancellation gave back, and what it
+    // sent comes off the Host's next payout, so they're never paid twice (plan §8.1, items 15 and 16).
+    const cancelledMeanwhile = before?.status === 'CANCELLED';
     const updated = await PayoutModel.findOneAndUpdate(
       { _id: payout._id, status: mongoose.trusted({ $ne: 'PAID' }) },
       {
@@ -556,7 +744,7 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
           status: 'PAID',
           paidAt: now,
           amountCents: Math.max(0, amount),
-          deductions,
+          deductions: cancelledMeanwhile ? [] : deductions,
           ...(transferId && { stripeTransferId: transferId }),
         },
         $unset: { holdReason: 1, failureReason: 1 },
@@ -565,6 +753,22 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
     );
     // What the Host owed was already taken off their balance when the deductions were reserved.
     if (!updated) return null;
+    if (cancelledMeanwhile) {
+      if (amount > 0) {
+        await addRefundOwed(payout.hostId, booking._id, overpaidKey(payout._id), amount, session);
+      }
+      await alertStaff(
+        {
+          type: 'PAYOUT_SENT_AFTER_CANCEL',
+          title: `A cancelled payout for ${booking.ref} was sent`,
+          body: `the ${formatNzdExact(Math.max(0, amount))} payout for booking ${booking.ref} was being transferred to ${host?.firstName ?? 'the host'} as it was cancelled, and the transfer went through. It now comes off their next payout. Check it if they contact us.`,
+          link: `/admin/bookings/${booking.ref}`,
+          dedupeKey: `PAYOUT_SENT_AFTER_CANCEL:${payout.id}`,
+        },
+        { session },
+      );
+      return updated;
+    }
     await notifyPaid(
       updated.toObject() as PayoutRecord,
       booking,
@@ -734,13 +938,43 @@ export async function releaseHeldPayouts(
   return held.length;
 }
 
-/** A Host's payouts for the earnings page: upcoming first, then paid, newest first. */
-export async function listHostPayouts(hostId: string) {
+/** Paid payouts on each page of the Host's list. */
+export const PAID_PAYOUTS_PAGE = 12;
+
+/**
+ * A Host's payouts for the earnings page (plan §8.1, item 19): those still to be sent, soonest first, then the
+ * paid ones, newest first, a page at a time. With `cursor` (the last paid payout shown), only the next page of
+ * paid ones. A payout not sent yet shows what it sends: less the deductions already reserved for it.
+ */
+export async function listHostPayouts(hostId: string, cursor?: string) {
   const host = await UserModel.findById(hostId).select('hostProfile').lean();
-  const payouts = await PayoutModel.find({ hostId, status: mongoose.trusted({ $ne: 'CANCELLED' }) })
-    .sort({ scheduledFor: -1 })
-    .limit(200)
-    .lean<PayoutRecord[]>();
+  const after = cursor
+    ? await PayoutModel.findOne({ _id: cursor, hostId, status: 'PAID' }).select('paidAt').lean()
+    : null;
+  if (cursor && !after?.paidAt) throw new HttpError(404, 'NOT_FOUND', 'We couldn’t find those payouts.');
+  const [upcoming, paidPage, paidCount] = await Promise.all([
+    cursor
+      ? []
+      : PayoutModel.find({ hostId, status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }) })
+          .sort({ scheduledFor: 1, _id: 1 })
+          .lean<PayoutRecord[]>(),
+    PayoutModel.find({
+      hostId,
+      status: 'PAID',
+      ...(after?.paidAt && {
+        $or: [
+          { paidAt: mongoose.trusted({ $lt: after.paidAt }) },
+          { paidAt: after.paidAt, _id: mongoose.trusted({ $lt: after._id }) },
+        ],
+      }),
+    })
+      .sort({ paidAt: -1, _id: -1 })
+      .limit(PAID_PAYOUTS_PAGE + 1)
+      .lean<PayoutRecord[]>(),
+    PayoutModel.countDocuments({ hostId, status: 'PAID' }),
+  ]);
+  const paid = paidPage.slice(0, PAID_PAYOUTS_PAGE);
+  const payouts = [...upcoming, ...paid];
   // The payouts' bookings, and those their deductions name.
   const bookings = await BookingModel.find({
     _id: mongoose.trusted({
@@ -753,7 +987,7 @@ export async function listHostPayouts(hostId: string) {
     .select('ref vehicleSnapshot.title startAt endAt')
     .lean();
   const refOf = (id: Id | undefined) => id && bookings.find((candidate) => candidate._id.equals(id))?.ref;
-  return payouts.map((payout) => {
+  const rows = payouts.map((payout) => {
     const booking = bookings.find((candidate) => candidate._id.equals(payout.bookingId));
     const reversed = (payout.reversals ?? []).reduce((sum, reversal) => sum + reversal.amountCents, 0);
     return {
@@ -761,7 +995,8 @@ export async function listHostPayouts(hostId: string) {
       type: payout.type,
       status: payout.status,
       ...(payout.holdReason && { holdReason: payout.holdReason }),
-      amountCents: payout.amountCents,
+      // A paid payout's amount is what was sent, after its deductions.
+      amountCents: payout.status === 'PAID' ? payout.amountCents : payout.amountCents - reservedCents(payout),
       ...(payout.grossCents !== undefined && { grossCents: payout.grossCents }),
       ...(payout.commissionCents !== undefined && { commissionCents: payout.commissionCents }),
       ...(payout.commissionGstCents !== undefined && { commissionGstCents: payout.commissionGstCents }),
@@ -793,7 +1028,19 @@ export async function listHostPayouts(hostId: string) {
       },
     };
   });
+  const last = paid.at(-1);
+  return {
+    payouts: rows,
+    paidCount,
+    ...(paidPage.length > PAID_PAYOUTS_PAGE && last && { nextCursor: last._id.toString() }),
+  };
 }
+
+/** The deductions already taken for a payout still to be sent (reserved before its transfer). */
+export const reservedCents = (payout: Pick<Payout, 'deductions' | 'deductionsReservedAt'>) =>
+  payout.deductionsReservedAt
+    ? (payout.deductions ?? []).reduce((sum, deduction) => sum + deduction.amountCents, 0)
+    : 0;
 
 /** The booking's trip payout while a Host-funded refund can still come off it: not sent, nor reserved for sending. */
 const pendingTripPayout = (bookingId: Id, extraChargeId?: Id) => ({
@@ -817,13 +1064,13 @@ export type TransferReversal =
   | { reversed: false; reason: string };
 
 /**
- * Takes a Host-funded refund back from the booking's paid payout by reversing its Stripe transfer, when
- * staff choose to (plan §8.1, item 15): never more than what's left of the transfer. It's a Stripe call, so
- * it's made before the refund's transaction, which records it (recoverHostRefund).
+ * Takes the Host's share of a refund they fund back from the booking's paid payout by reversing its Stripe
+ * transfer, when staff choose to (plan §8.1, item 15): never more than what's left of the transfer. It's a
+ * Stripe call, so it's made before the refund's transaction, which records it (recoverHostRefund).
  */
 export async function reversePayoutTransfer(
   booking: BookingRecord,
-  refund: { amountCents: number; stripeRefundId: string },
+  refund: { hostCents: number; stripeRefundId: string },
   extraChargeId?: Id,
 ): Promise<TransferReversal> {
   const payout = await PayoutModel.findOne({
@@ -842,7 +1089,7 @@ export async function reversePayoutTransfer(
   const left =
     payout.amountCents - (payout.reversals ?? []).reduce((sum, reversal) => sum + reversal.amountCents, 0);
   if (left <= 0) return { reversed: false, reason: 'its transfer has already been taken back in full' };
-  const amount = Math.min(refund.amountCents, left);
+  const amount = Math.min(refund.hostCents, left);
   try {
     const reversal = await stripe().transfers.createReversal(
       payout.stripeTransferId,
@@ -879,14 +1126,14 @@ export interface HostRefundRecovery {
 }
 
 /**
- * Records how a Host-funded refund is recovered (plan §8.1, item 15), inside the refund's transaction: off the
- * booking's own payout while it's still to be sent; otherwise taken back from the transfer (when staff chose
- * it and Stripe agreed) and the rest owed, to come off the Host's next payout as its own line. The Host is
- * told.
+ * Records how a Host-funded refund is recovered (plan §8.1, item 15), inside the refund's transaction: the
+ * Host's share of it (`hostCents`) comes off the booking's own payout while it's still to be sent; otherwise
+ * it's taken back from the transfer (when staff chose it and Stripe agreed) and the rest owed, to come off the
+ * Host's next payout as its own line. The Host is told.
  */
 export async function recoverHostRefund(
   booking: BookingRecord,
-  refund: { amountCents: number; stripeRefundId: string },
+  refund: { amountCents: number; hostCents: number; stripeRefundId: string },
   reversal: TransferReversal | undefined,
   session: ClientSession,
   now = new Date(),
@@ -921,7 +1168,7 @@ export async function recoverHostRefund(
       { session },
     );
   }
-  const owed = refund.amountCents - reversed;
+  const owed = refund.hostCents - reversed;
   if (owed > 0) {
     await UserModel.updateOne(
       {
@@ -956,7 +1203,7 @@ export async function recoverHostRefund(
 /** Tells the Host a refund they fund was taken back from their payout, or comes off their next one. */
 async function notifyRefundRecovered(
   booking: BookingRecord,
-  refund: { amountCents: number; stripeRefundId: string },
+  refund: { amountCents: number; hostCents: number; stripeRefundId: string },
   reversedCents: number,
   owedCents: number,
   session: ClientSession,
@@ -964,6 +1211,10 @@ async function notifyRefundRecovered(
 ) {
   const host = await UserModel.findById(booking.hostId).select('firstName').session(session).lean();
   const amount = formatNzdExact(refund.amountCents);
+  // The Host pays their share of it: the platform covers its commission (plan §8.1, item 15).
+  const partly = refund.hostCents < refund.amountCents;
+  const share = formatNzdExact(refund.hostCents);
+  const subject = partly ? `${share} of a ${amount} refund` : `A ${amount} refund`;
   const reversed = formatNzdExact(reversedCents);
   const owed = formatNzdExact(owedCents);
   const how = [
@@ -978,8 +1229,8 @@ async function notifyRefundRecovered(
       type: 'HOST_REFUND_RECOVERED',
       title:
         owedCents > 0
-          ? `A ${amount} refund for ${booking.ref} comes off your next payout`
-          : `A ${amount} refund for ${booking.ref} was taken back from your payout`,
+          ? `${subject} for ${booking.ref} comes off your next payout`
+          : `${subject} for ${booking.ref} was taken back from your payout`,
       body: how.join(' '),
       link: '/host/earnings',
       email: {
@@ -989,12 +1240,16 @@ async function notifyRefundRecovered(
           heading: `A refund for booking ${booking.ref}`,
           paragraphs: [
             `We’ve refunded the guest ${amount} for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}. It’s a refund of ${extraCharge ? 'an extra charge' : 'rental'} you were paid, so it’s funded by you as the Host.`,
+            ...(partly
+              ? [`You pay your share of it, ${share}: Rento Vroom covers its commission on the rest.`]
+              : []),
             ...how,
             'If you have questions about it, reply to this email.',
           ],
           rows: [
             { label: 'Booking', value: booking.ref },
             { label: 'Refund', value: amount },
+            ...(partly ? [{ label: 'Your share', value: share }] : []),
             ...(reversedCents > 0 ? [{ label: 'Taken back from your payout', value: `−${reversed}` }] : []),
             ...(owedCents > 0 ? [{ label: 'Off your next payout', value: `−${owed}` }] : []),
           ],

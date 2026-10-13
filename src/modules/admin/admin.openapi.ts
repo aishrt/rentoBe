@@ -2,7 +2,6 @@ import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { testPaymentSchema, testPaymentStatusSchema } from '../payments/payments.schemas.js';
-import { adminOverviewSchema } from './admin.schemas.js';
 import { platformSettingsResponseSchema, platformSettingsUpdateSchema } from './platform-settings.schemas.js';
 import {
   licenceNumberSchema,
@@ -30,7 +29,7 @@ export function registerAdminPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: approve or reject a driver licence checked by hand',
     description:
-      'Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`). Rejecting releases them with their card authorisations. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check.',
+      'Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`). Rejecting releases them with their card authorisations. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check; 403 OWN_RECORD for a support member’s own licence.',
     security: signedIn,
     request: { params: z.object({ id: z.string() }), body: jsonBody(licenceReviewSchema) },
     responses: {
@@ -51,19 +50,6 @@ export function registerAdminPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The number', licenceNumberSchema),
       ...errorResponses(401, 403, 404),
-    },
-  });
-
-  registry.registerPath({
-    method: 'get',
-    path: '/admin/overview',
-    tags: ['Admin'],
-    summary: 'KPI figures for the staff portal',
-    description: 'Admin and Support only.',
-    security: signedIn,
-    responses: {
-      200: jsonResponse('The overview figures', adminOverviewSchema),
-      ...errorResponses(401, 403),
     },
   });
 

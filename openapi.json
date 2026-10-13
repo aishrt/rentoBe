@@ -58,6 +58,10 @@
           "lastName": {
             "type": "string"
           },
+          "avatarUrl": {
+            "type": "string",
+            "description": "Their profile photo (PUT /me/photo), which the other party on a booking sees; absent until added"
+          },
           "dateOfBirth": {
             "type": "string",
             "description": "YYYY-MM-DD (NZ), from the driver licence details; absent until they are entered"
@@ -268,6 +272,20 @@
             "maxLength": 50
           }
         }
+      },
+      "ProfilePhotoRequest": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "From POST /uploads/signature (purpose PROFILE_PHOTO), once the photo is sent"
+          }
+        },
+        "required": [
+          "key"
+        ]
       },
       "AcceptAgreementsRequest": {
         "type": "object",
@@ -1137,70 +1155,6 @@
         },
         "required": [
           "number"
-        ]
-      },
-      "AdminOverview": {
-        "type": "object",
-        "properties": {
-          "metrics": {
-            "type": "object",
-            "properties": {
-              "totalUsers": {
-                "type": "integer"
-              },
-              "activeHosts": {
-                "type": "integer"
-              },
-              "staffMembers": {
-                "type": "integer"
-              },
-              "suspendedUsers": {
-                "type": "integer"
-              },
-              "activeVehicles": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "upcomingBookings": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "bookingRevenueCents": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "pendingVerifications": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "totalUsers",
-              "activeHosts",
-              "staffMembers",
-              "suspendedUsers",
-              "activeVehicles",
-              "upcomingBookings",
-              "bookingRevenueCents",
-              "pendingVerifications"
-            ]
-          },
-          "generatedAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "metrics",
-          "generatedAt"
         ]
       },
       "PlatformSettingsResponse": {
@@ -7588,7 +7542,7 @@
           },
           "key": {
             "type": "string",
-            "description": "Attach the file to the car, booking or support ticket with this once it is sent"
+            "description": "Attach the file to the car, booking or support ticket, or set it as your profile photo, with this once it is sent"
           },
           "maxBytes": {
             "type": "integer"
@@ -7614,9 +7568,10 @@
               "MESSAGE_PHOTO",
               "INSPECTION_PHOTO",
               "INCIDENT_FILE",
-              "SUPPORT_FILE"
+              "SUPPORT_FILE",
+              "PROFILE_PHOTO"
             ],
-            "description": "SUPPORT_FILE: a photo or PDF for one of your support tickets, needing no car or booking"
+            "description": "SUPPORT_FILE: a photo or PDF for one of your support tickets; PROFILE_PHOTO: a photo of you, set with PUT /me/photo. Neither needs a car or booking."
           },
           "vehicleId": {
             "type": "string",
@@ -8059,10 +8014,18 @@
             "items": {
               "$ref": "#/components/schemas/HostApplication"
             }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
           }
         },
         "required": [
-          "applications"
+          "applications",
+          "total",
+          "page"
         ]
       },
       "HostApplication": {
@@ -9150,6 +9113,43 @@
               "refunds"
             ]
           },
+          "terms": {
+            "type": "object",
+            "properties": {
+              "fuelPolicy": {
+                "type": "string",
+                "enum": [
+                  "SAME_LEVEL",
+                  "FULL"
+                ]
+              },
+              "unlimitedKm": {
+                "type": "boolean"
+              },
+              "kmAllowancePerDay": {
+                "type": "integer",
+                "description": "Left out when kilometres are unlimited"
+              },
+              "allowanceKm": {
+                "type": "integer",
+                "description": "The whole trip’s allowance: the daily allowance times the trip’s days"
+              },
+              "extraKmCents": {
+                "type": "integer",
+                "description": "For each kilometre over the allowance"
+              },
+              "electric": {
+                "type": "boolean",
+                "description": "An electric car: its fuel policy is about battery charge"
+              }
+            },
+            "required": [
+              "fuelPolicy",
+              "unlimitedKm",
+              "extraKmCents",
+              "electric"
+            ]
+          },
           "lineItems": {
             "type": "array",
             "items": {
@@ -9165,8 +9165,13 @@
               "hostPayoutCents": {
                 "type": "integer"
               },
-              "platformFeeCents": {
-                "type": "integer"
+              "commissionCents": {
+                "type": "integer",
+                "description": "The platform’s commission on the rental and delivery, as the trip’s payout was made with it"
+              },
+              "commissionGstCents": {
+                "type": "integer",
+                "description": "The GST included in the commission"
               },
               "status": {
                 "type": "string",
@@ -9226,6 +9231,14 @@
                         "HOST"
                       ],
                       "description": "HOST: it comes off the Host’s payout (plan §8.1, item 15)"
+                    },
+                    "hostCents": {
+                      "type": "integer",
+                      "description": "HOST: what the Host pays back for it, their share; Rento Vroom covers its commission"
+                    },
+                    "extraCharge": {
+                      "type": "boolean",
+                      "description": "A refund of one of the booking’s extra charges"
                     }
                   },
                   "required": [
@@ -9234,12 +9247,13 @@
                     "fundedBy"
                   ]
                 },
-                "description": "Refunds made to the Guest on the booking, oldest first"
+                "description": "Refunds made to the Guest on the booking and its extra charges, oldest first"
               }
             },
             "required": [
               "hostPayoutCents",
-              "platformFeeCents"
+              "commissionCents",
+              "commissionGstCents"
             ],
             "description": "The Host’s view: what they earn and when it’s paid"
           },
@@ -9397,6 +9411,15 @@
               "refundCents": {
                 "type": "integer"
               },
+              "refundStatus": {
+                "type": "string",
+                "enum": [
+                  "PENDING",
+                  "SUCCEEDED",
+                  "FAILED"
+                ],
+                "description": "Where the refund stands, once one was made: PENDING (on its way), SUCCEEDED, or FAILED (support returns it another way)"
+              },
               "feeCents": {
                 "type": "integer"
               },
@@ -9411,6 +9434,43 @@
               "at",
               "by"
             ]
+          },
+          "expiry": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "PAYMENT_TIMEOUT",
+                  "CHECKOUT_ABANDONED",
+                  "HOST_NO_ANSWER",
+                  "VERIFICATION_EXPIRED",
+                  "VERIFICATION_REJECTED",
+                  "DATES_TAKEN",
+                  "CAR_UNAVAILABLE"
+                ]
+              },
+              "paymentReturned": {
+                "type": "boolean",
+                "description": "The Guest’s card was charged after the booking ended, so the payment is refunded in full (an authorisation is only released)"
+              },
+              "refundCents": {
+                "type": "integer"
+              },
+              "refundStatus": {
+                "type": "string",
+                "enum": [
+                  "PENDING",
+                  "SUCCEEDED",
+                  "FAILED"
+                ]
+              }
+            },
+            "required": [
+              "reason",
+              "paymentReturned"
+            ],
+            "description": "EXPIRED: why, and whether a payment that went through was given back"
           },
           "extraCharges": {
             "type": "array",
@@ -9448,9 +9508,14 @@
                     "PAID",
                     "UNPAID",
                     "FAILED",
-                    "CANCELLED"
+                    "CANCELLED",
+                    "REFUNDED"
                   ],
-                  "description": "PENDING: being charged to the saved card. UNPAID: the saved card didn’t go through, so the Guest has a link to pay it, and it’s tried again. FAILED: it couldn’t be collected. CANCELLED: taken off by support"
+                  "description": "PENDING: being charged to the saved card. UNPAID: the saved card didn’t go through, so the Guest has a link to pay it, and it’s tried again. FAILED: it couldn’t be collected. CANCELLED: taken off by support. REFUNDED: paid, and all of it given back"
+                },
+                "refundedCents": {
+                  "type": "integer",
+                  "description": "A paid charge’s refunds that didn’t fail; left out when none"
                 },
                 "addedAt": {
                   "type": "string",
@@ -9518,6 +9583,7 @@
           "dropoff",
           "protectionPlan",
           "cancellationTier",
+          "terms",
           "lineItems",
           "price",
           "guest",
@@ -9640,6 +9706,10 @@
             "items": {
               "$ref": "#/components/schemas/BookingSummary"
             }
+          },
+          "nextPage": {
+            "type": "integer",
+            "description": "Set when there are more bookings"
           }
         },
         "required": [
@@ -9988,6 +10058,39 @@
                 },
                 "paidWith": {
                   "type": "string"
+                },
+                "refunds": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "amountCents": {
+                        "type": "integer"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "PENDING",
+                          "SUCCEEDED",
+                          "FAILED"
+                        ]
+                      },
+                      "at": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "amountCents",
+                      "status",
+                      "at"
+                    ]
+                  },
+                  "description": "Refunds made on the charge since; left out when there are none"
+                },
+                "refundedCents": {
+                  "type": "integer",
+                  "description": "Its refunds that went through; set with refunds"
                 }
               },
               "required": [
@@ -10189,6 +10292,588 @@
           "refundPct",
           "hoursBeforeStart",
           "message"
+        ]
+      },
+      "AdminBookingDetail": {
+        "type": "object",
+        "properties": {
+          "booking": {
+            "$ref": "#/components/schemas/Booking"
+          },
+          "guest": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "phone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "email"
+            ]
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "phone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "email"
+            ]
+          },
+          "statusHistory": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PAYMENT_PENDING",
+                    "PENDING",
+                    "CONFIRMED",
+                    "ACTIVE",
+                    "COMPLETED",
+                    "CANCELLED",
+                    "DECLINED",
+                    "EXPIRED"
+                  ]
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "by": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "status",
+                "at"
+              ]
+            }
+          },
+          "extraCharges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "EXTRA_KM",
+                    "FUEL",
+                    "CLEANING",
+                    "LATE_RETURN",
+                    "DAMAGE",
+                    "TOLL",
+                    "FINE",
+                    "OTHER"
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "amountCents": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "SUCCEEDED",
+                    "FAILED",
+                    "CANCELLED"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "description",
+                "amountCents",
+                "status"
+              ]
+            }
+          },
+          "payments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminPayment"
+            }
+          },
+          "payouts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminPayout"
+            }
+          },
+          "incidents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "DAMAGE",
+                    "ACCIDENT",
+                    "THEFT",
+                    "BREAKDOWN",
+                    "CLEANING",
+                    "FUEL",
+                    "LATE_RETURN",
+                    "NO_SHOW",
+                    "TOLL",
+                    "FINE",
+                    "DISPUTE",
+                    "OTHER"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "OPEN",
+                    "INVESTIGATING",
+                    "AWAITING_RESPONSE",
+                    "RESOLVED",
+                    "CLOSED"
+                  ]
+                }
+              },
+              "required": [
+                "ref",
+                "type",
+                "status"
+              ]
+            }
+          },
+          "tickets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "OPEN",
+                    "PENDING",
+                    "RESOLVED"
+                  ]
+                }
+              },
+              "required": [
+                "ref",
+                "subject",
+                "status"
+              ]
+            }
+          },
+          "refundableCents": {
+            "type": "integer",
+            "description": "What can still be refunded on the booking’s payment"
+          },
+          "hostFunding": {
+            "type": "object",
+            "properties": {
+              "maxCents": {
+                "type": "integer",
+                "description": "The most a Host-funded refund can be: the rental and delivery (or the extra charge) left"
+              },
+              "baseCents": {
+                "type": "integer",
+                "description": "What the Host’s payout was worked out from"
+              },
+              "payoutCents": {
+                "type": "integer",
+                "description": "The Host’s payout from it, before deductions"
+              },
+              "hostLeftCents": {
+                "type": "integer",
+                "description": "The Host’s share not refunded yet"
+              }
+            },
+            "required": [
+              "maxCents",
+              "baseCents",
+              "payoutCents",
+              "hostLeftCents"
+            ],
+            "description": "A Host-funded refund of the booking’s payment: how much, and the Host’s share"
+          },
+          "tripPayoutSent": {
+            "type": "boolean",
+            "description": "The trip’s payout was sent (or is being sent, or the booking ended without one), so a Host-funded refund comes off the Host’s next payout or is taken back from the transfer"
+          },
+          "refundableCharges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "paymentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "EXTRA_KM",
+                    "FUEL",
+                    "CLEANING",
+                    "LATE_RETURN",
+                    "DAMAGE",
+                    "TOLL",
+                    "FINE",
+                    "OTHER"
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "refundableCents": {
+                  "type": "integer"
+                },
+                "hostFunding": {
+                  "type": "object",
+                  "properties": {
+                    "maxCents": {
+                      "type": "integer",
+                      "description": "The most a Host-funded refund can be: the rental and delivery (or the extra charge) left"
+                    },
+                    "baseCents": {
+                      "type": "integer",
+                      "description": "What the Host’s payout was worked out from"
+                    },
+                    "payoutCents": {
+                      "type": "integer",
+                      "description": "The Host’s payout from it, before deductions"
+                    },
+                    "hostLeftCents": {
+                      "type": "integer",
+                      "description": "The Host’s share not refunded yet"
+                    }
+                  },
+                  "required": [
+                    "maxCents",
+                    "baseCents",
+                    "payoutCents",
+                    "hostLeftCents"
+                  ]
+                },
+                "payoutSent": {
+                  "type": "boolean",
+                  "description": "The Host’s share of the charge was paid, so a Host-funded refund is taken back another way"
+                }
+              },
+              "required": [
+                "paymentId",
+                "type",
+                "description",
+                "refundableCents",
+                "hostFunding",
+                "payoutSent"
+              ]
+            },
+            "description": "Paid extra charges with something left to refund (plan §8.1, item 11)"
+          },
+          "hostRefund": {
+            "type": "object",
+            "properties": {
+              "recoveredFrom": {
+                "type": "string",
+                "enum": [
+                  "THIS_PAYOUT",
+                  "NEXT_PAYOUT",
+                  "REVERSE_TRANSFER"
+                ]
+              },
+              "reversedCents": {
+                "type": "integer"
+              },
+              "owedCents": {
+                "type": "integer",
+                "description": "What comes off the Host’s next payout"
+              },
+              "note": {
+                "type": "string",
+                "description": "Why the transfer wasn’t reversed as asked"
+              }
+            },
+            "required": [
+              "recoveredFrom"
+            ],
+            "description": "After a Host-funded refund: how it’s recovered from the Host (plan §8.1, item 15)"
+          }
+        },
+        "required": [
+          "booking",
+          "guest",
+          "host",
+          "statusHistory",
+          "extraCharges",
+          "payments",
+          "payouts",
+          "incidents",
+          "tickets",
+          "refundableCents",
+          "refundableCharges"
+        ]
+      },
+      "AdminPayment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "guestName": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "BOOKING",
+              "EXTRA_CHARGE"
+            ]
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "AUTHORISED",
+              "SUCCEEDED",
+              "FAILED",
+              "REFUNDED",
+              "PARTIALLY_REFUNDED",
+              "CANCELLED"
+            ]
+          },
+          "method": {
+            "type": "string"
+          },
+          "failureReason": {
+            "type": "string"
+          },
+          "refundedCents": {
+            "type": "integer"
+          },
+          "refunds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "amountCents": {
+                  "type": "integer"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "fundedBy": {
+                  "type": "string",
+                  "enum": [
+                    "PLATFORM",
+                    "HOST"
+                  ]
+                },
+                "hostCents": {
+                  "type": "integer",
+                  "description": "A Host-funded refund: the Host’s share of it, which they pay back (plan §8.1, item 15). Rento Vroom covers the rest, its commission. Older Host-funded refunds have none: the Host paid all of them."
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "PENDING",
+                    "SUCCEEDED",
+                    "FAILED"
+                  ]
+                },
+                "failureReason": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "amountCents",
+                "reason",
+                "fundedBy",
+                "status",
+                "at"
+              ]
+            }
+          },
+          "dispute": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "dueBy": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "bookingRef",
+          "guestName",
+          "type",
+          "amountCents",
+          "status",
+          "refundedCents",
+          "refunds",
+          "createdAt"
+        ]
+      },
+      "AdminPayout": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "bookingRef": {
+            "type": "string"
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "TRIP",
+              "CANCELLATION_FEE",
+              "EXTRA_CHARGE"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "SCHEDULED",
+              "HELD",
+              "PAID",
+              "FAILED",
+              "CANCELLED"
+            ]
+          },
+          "holdReason": {
+            "type": "string",
+            "enum": [
+              "INCIDENT",
+              "DISPUTE",
+              "PAYOUT_SETUP",
+              "TRIP_NOT_STARTED",
+              "SUSPENDED",
+              "MANUAL"
+            ]
+          },
+          "amountCents": {
+            "type": "integer"
+          },
+          "deductedCents": {
+            "type": "integer"
+          },
+          "scheduledFor": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "paidAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "failureReason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "bookingRef",
+          "host",
+          "type",
+          "status",
+          "amountCents",
+          "deductedCents",
+          "scheduledFor"
+        ]
+      },
+      "CancelExtraChargeRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "reason"
         ]
       },
       "IdentityReviewResponse": {
@@ -11279,7 +11964,8 @@
               "$ref": "#/components/schemas/InspectionPhotoInput"
             },
             "maxItems": 10,
-            "default": []
+            "default": [],
+            "description": "Photos of the damage, each with angle DAMAGE"
           },
           "note": {
             "type": "string",
@@ -11343,12 +12029,22 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/HostPayout"
-            }
+            },
+            "description": "Payouts still to be sent, soonest first (on the first page only), then paid ones, newest first, a page at a time"
+          },
+          "paidCount": {
+            "type": "integer",
+            "description": "Paid payouts in all"
+          },
+          "nextCursor": {
+            "type": "string",
+            "description": "Set when there are more paid payouts: send it as cursor for the next page"
           }
         },
         "required": [
           "account",
-          "payouts"
+          "payouts",
+          "paidCount"
         ]
       },
       "PayoutAccount": {
@@ -11427,7 +12123,7 @@
           },
           "amountCents": {
             "type": "integer",
-            "description": "Sent (PAID), or due before deductions"
+            "description": "Sent (PAID), or due: less any deductions already reserved for it, which are listed"
           },
           "grossCents": {
             "type": "integer"
@@ -11539,7 +12235,7 @@
               },
               "upcomingPayoutsCents": {
                 "type": "integer",
-                "description": "Scheduled and held payouts, before deductions"
+                "description": "Payouts still to be sent, less the deductions already reserved for them"
               },
               "platformFeesMonthCents": {
                 "type": "integer"
@@ -11754,8 +12450,15 @@
             "type": "string",
             "enum": [
               "DUE",
-              "PAID"
-            ]
+              "PAID",
+              "REFUNDED",
+              "CANCELLED"
+            ],
+            "description": "DUE: still to pay. PAID: paid (refundedCents says how much came back, if any). REFUNDED: paid and all given back. CANCELLED: taken off by support, nothing to pay"
+          },
+          "refundedCents": {
+            "type": "integer",
+            "description": "Refunds made on the charge that didn’t fail; left out when none"
           },
           "failureReason": {
             "type": "string"
@@ -12388,6 +13091,20 @@
           "canReply": {
             "type": "boolean"
           },
+          "sharedWithOtherParty": {
+            "type": "boolean",
+            "description": "Guest and Host only: whether the viewer’s next update is shared with the other party. It is when the other party sees the case, unless support’s latest update to the viewer was for them alone (such as a question asked only them): the answer stays between the viewer and support"
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "BOTH",
+              "GUEST",
+              "HOST",
+              "INTERNAL"
+            ],
+            "description": "Staff only: who sees the case now: BOTH parties, only the GUEST or the HOST, or INTERNAL to the team. An update goes to them unless staff choose otherwise"
+          },
           "nextStatuses": {
             "type": "array",
             "items": {
@@ -12401,6 +13118,26 @@
               ]
             },
             "description": "Staff only: the statuses the case can move to now. A resolved case can be reopened; a closed one is final"
+          },
+          "protectionPlan": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "excessCents": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "name",
+              "excessCents"
+            ],
+            "description": "Staff only: the protection plan the Guest booked, when they took one"
+          },
+          "chargeLimitCents": {
+            "type": "integer",
+            "description": "Staff only, on a damage, accident or theft case under a protection plan: how much more the case can charge the Guest, so its charges stay within the plan’s excess (plan §3)"
           },
           "extraCharges": {
             "type": "array",
@@ -12697,6 +13434,28 @@
           }
         }
       },
+      "StaffIncidents": {
+        "type": "object",
+        "properties": {
+          "incidents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IncidentSummary"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "incidents",
+          "total",
+          "page"
+        ]
+      },
       "StaffNewIncidentRequest": {
         "type": "object",
         "properties": {
@@ -12808,8 +13567,7 @@
               "HOST",
               "INTERNAL"
             ],
-            "default": "BOTH",
-            "description": "BOTH parties, only the GUEST or HOST, or INTERNAL to support staff"
+            "description": "BOTH parties, only the GUEST or HOST, or INTERNAL to support staff. Without it, whoever already sees the case (the case’s `audience`). Taking the case with nothing else (assignToMe alone) is always INTERNAL, and nobody is told"
           },
           "status": {
             "type": "string",
@@ -12865,7 +13623,14 @@
           "amountCents": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 1000000
+            "maximum": 1000000,
+            "description": "On a damage, accident or theft case under a protection plan, the case’s charges together stay within the plan’s excess (`chargeLimitCents`; 409 OVER_EXCESS above it)"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 100,
+            "description": "A new value (such as a UUID) for each charge the form submits: the same one sent again adds no second charge"
           }
         },
         "required": [
@@ -12900,11 +13665,11 @@
               },
               "bookingRevenueCents": {
                 "type": "integer",
-                "description": "Paid for bookings made in the range, less refunds"
+                "description": "Paid for trips starting in the range, extra charges paid and cancellation fees kept in it, less the refunds of that money (the report’s money.bookingRevenueCents)"
               },
               "platformFeesCents": {
                 "type": "integer",
-                "description": "Service fees and commission on bookings made in the range"
+                "description": "Service fees and commission on trips starting in the range, the platform’s share of cancellation fees kept and the commission on extra charges (the report’s fees.totalCents)"
               },
               "hostPayoutsCents": {
                 "type": "integer",
@@ -12974,7 +13739,8 @@
                 "type": "integer"
               },
               "failedPayments": {
-                "type": "integer"
+                "type": "integer",
+                "description": "Payments that didn’t go through in the last 30 NZ days, today included: GET /admin/payments?view=failed with `from` 29 days before today"
               },
               "heldPayouts": {
                 "type": "integer"
@@ -13593,515 +14359,6 @@
           "page"
         ]
       },
-      "AdminBookingDetail": {
-        "type": "object",
-        "properties": {
-          "booking": {
-            "$ref": "#/components/schemas/Booking"
-          },
-          "guest": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "email": {
-                "type": "string"
-              },
-              "phone": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name",
-              "email"
-            ]
-          },
-          "host": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "email": {
-                "type": "string"
-              },
-              "phone": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name",
-              "email"
-            ]
-          },
-          "statusHistory": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "PAYMENT_PENDING",
-                    "PENDING",
-                    "CONFIRMED",
-                    "ACTIVE",
-                    "COMPLETED",
-                    "CANCELLED",
-                    "DECLINED",
-                    "EXPIRED"
-                  ]
-                },
-                "at": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "by": {
-                  "type": "string"
-                },
-                "reason": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "at"
-              ]
-            }
-          },
-          "extraCharges": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "EXTRA_KM",
-                    "FUEL",
-                    "CLEANING",
-                    "LATE_RETURN",
-                    "DAMAGE",
-                    "TOLL",
-                    "FINE",
-                    "OTHER"
-                  ]
-                },
-                "description": {
-                  "type": "string"
-                },
-                "amountCents": {
-                  "type": "integer"
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "PENDING",
-                    "SUCCEEDED",
-                    "FAILED",
-                    "CANCELLED"
-                  ]
-                }
-              },
-              "required": [
-                "id",
-                "type",
-                "description",
-                "amountCents",
-                "status"
-              ]
-            }
-          },
-          "payments": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AdminPayment"
-            }
-          },
-          "payouts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AdminPayout"
-            }
-          },
-          "incidents": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "ref": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "DAMAGE",
-                    "ACCIDENT",
-                    "THEFT",
-                    "BREAKDOWN",
-                    "CLEANING",
-                    "FUEL",
-                    "LATE_RETURN",
-                    "NO_SHOW",
-                    "TOLL",
-                    "FINE",
-                    "DISPUTE",
-                    "OTHER"
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "OPEN",
-                    "INVESTIGATING",
-                    "AWAITING_RESPONSE",
-                    "RESOLVED",
-                    "CLOSED"
-                  ]
-                }
-              },
-              "required": [
-                "ref",
-                "type",
-                "status"
-              ]
-            }
-          },
-          "tickets": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "ref": {
-                  "type": "string"
-                },
-                "subject": {
-                  "type": "string"
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "OPEN",
-                    "PENDING",
-                    "RESOLVED"
-                  ]
-                }
-              },
-              "required": [
-                "ref",
-                "subject",
-                "status"
-              ]
-            }
-          },
-          "refundableCents": {
-            "type": "integer",
-            "description": "What can still be refunded on the booking’s payment"
-          },
-          "tripPayoutSent": {
-            "type": "boolean",
-            "description": "The trip’s payout was sent (or is being sent, or the booking ended without one), so a Host-funded refund comes off the Host’s next payout or is taken back from the transfer"
-          },
-          "refundableCharges": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "paymentId": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "EXTRA_KM",
-                    "FUEL",
-                    "CLEANING",
-                    "LATE_RETURN",
-                    "DAMAGE",
-                    "TOLL",
-                    "FINE",
-                    "OTHER"
-                  ]
-                },
-                "description": {
-                  "type": "string"
-                },
-                "refundableCents": {
-                  "type": "integer"
-                },
-                "payoutSent": {
-                  "type": "boolean",
-                  "description": "The Host’s share of the charge was paid, so a Host-funded refund is taken back another way"
-                }
-              },
-              "required": [
-                "paymentId",
-                "type",
-                "description",
-                "refundableCents",
-                "payoutSent"
-              ]
-            },
-            "description": "Paid extra charges with something left to refund (plan §8.1, item 11)"
-          },
-          "hostRefund": {
-            "type": "object",
-            "properties": {
-              "recoveredFrom": {
-                "type": "string",
-                "enum": [
-                  "THIS_PAYOUT",
-                  "NEXT_PAYOUT",
-                  "REVERSE_TRANSFER"
-                ]
-              },
-              "reversedCents": {
-                "type": "integer"
-              },
-              "owedCents": {
-                "type": "integer",
-                "description": "What comes off the Host’s next payout"
-              },
-              "note": {
-                "type": "string",
-                "description": "Why the transfer wasn’t reversed as asked"
-              }
-            },
-            "required": [
-              "recoveredFrom"
-            ],
-            "description": "After a Host-funded refund: how it’s recovered from the Host (plan §8.1, item 15)"
-          }
-        },
-        "required": [
-          "booking",
-          "guest",
-          "host",
-          "statusHistory",
-          "extraCharges",
-          "payments",
-          "payouts",
-          "incidents",
-          "tickets",
-          "refundableCents",
-          "refundableCharges"
-        ]
-      },
-      "AdminPayment": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "bookingRef": {
-            "type": "string"
-          },
-          "guestName": {
-            "type": "string"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "BOOKING",
-              "EXTRA_CHARGE"
-            ]
-          },
-          "amountCents": {
-            "type": "integer"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "PENDING",
-              "AUTHORISED",
-              "SUCCEEDED",
-              "FAILED",
-              "REFUNDED",
-              "PARTIALLY_REFUNDED",
-              "CANCELLED"
-            ]
-          },
-          "method": {
-            "type": "string"
-          },
-          "failureReason": {
-            "type": "string"
-          },
-          "refundedCents": {
-            "type": "integer"
-          },
-          "refunds": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "amountCents": {
-                  "type": "integer"
-                },
-                "reason": {
-                  "type": "string"
-                },
-                "fundedBy": {
-                  "type": "string",
-                  "enum": [
-                    "PLATFORM",
-                    "HOST"
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "PENDING",
-                    "SUCCEEDED",
-                    "FAILED"
-                  ]
-                },
-                "failureReason": {
-                  "type": "string"
-                },
-                "at": {
-                  "type": "string",
-                  "format": "date-time"
-                }
-              },
-              "required": [
-                "amountCents",
-                "reason",
-                "fundedBy",
-                "status",
-                "at"
-              ]
-            }
-          },
-          "dispute": {
-            "type": "object",
-            "properties": {
-              "status": {
-                "type": "string"
-              },
-              "reason": {
-                "type": "string"
-              },
-              "dueBy": {
-                "type": "string",
-                "format": "date-time"
-              }
-            },
-            "required": [
-              "status"
-            ]
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "bookingRef",
-          "guestName",
-          "type",
-          "amountCents",
-          "status",
-          "refundedCents",
-          "refunds",
-          "createdAt"
-        ]
-      },
-      "AdminPayout": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "bookingRef": {
-            "type": "string"
-          },
-          "host": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "TRIP",
-              "CANCELLATION_FEE",
-              "EXTRA_CHARGE"
-            ]
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "SCHEDULED",
-              "HELD",
-              "PAID",
-              "FAILED",
-              "CANCELLED"
-            ]
-          },
-          "holdReason": {
-            "type": "string",
-            "enum": [
-              "INCIDENT",
-              "DISPUTE",
-              "PAYOUT_SETUP",
-              "TRIP_NOT_STARTED",
-              "SUSPENDED",
-              "MANUAL"
-            ]
-          },
-          "amountCents": {
-            "type": "integer"
-          },
-          "deductedCents": {
-            "type": "integer"
-          },
-          "scheduledFor": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "paidAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "failureReason": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "bookingRef",
-          "host",
-          "type",
-          "status",
-          "amountCents",
-          "deductedCents",
-          "scheduledFor"
-        ]
-      },
       "AdminStatusEditRequest": {
         "type": "object",
         "properties": {
@@ -14147,7 +14404,7 @@
               "PLATFORM",
               "HOST"
             ],
-            "description": "PLATFORM: a goodwill refund. HOST: rental the Host would otherwise get (plan §8.1, item 15)."
+            "description": "PLATFORM: a goodwill refund. HOST: rental the Host would otherwise get (plan §8.1, item 15): up to hostFunding.maxCents, and the Host pays back their share of it (the platform covers its commission)."
           },
           "recoverFrom": {
             "type": "string",
@@ -14328,6 +14585,10 @@
               "PLATFORM",
               "HOST"
             ]
+          },
+          "hostCents": {
+            "type": "integer",
+            "description": "A Host-funded refund: the Host’s share of it, which they pay back (plan §8.1, item 15). Rento Vroom covers the rest, its commission. Older Host-funded refunds have none: the Host paid all of them."
           },
           "status": {
             "type": "string",
@@ -15829,6 +16090,10 @@
                 "type": "integer",
                 "description": "Paid for trips starting in the range, GST included"
               },
+              "bookingRevenueCents": {
+                "type": "integer",
+                "description": "Trips, extra charges and cancellation fees kept, less the refunds of that money (gst.givenBack’s refunds): the overview’s booking revenue"
+              },
               "refundsCents": {
                 "type": "integer",
                 "description": "Sent to Guests in the range"
@@ -15857,6 +16122,7 @@
             },
             "required": [
               "grossBookingsCents",
+              "bookingRevenueCents",
               "refundsCents",
               "platformFeesCents",
               "hostPayoutsPaidCents",
@@ -17019,6 +17285,132 @@
           },
           "409": {
             "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/photo": {
+      "put": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Set the profile photo",
+        "description": "Spec §8, plan §6.2: the other party on a booking sees your first name and photo, as does your public profile. Upload the photo first with POST /uploads/signature (purpose PROFILE_PHOTO: JPEG, PNG, WebP or HEIC, up to 15 MB), then send its key here. It is stored as an upright WebP without its metadata, and replaces any photo you had, which is deleted. 400 UPLOAD_NOT_FOUND for a key that is not your own upload; 400 UNREADABLE_IMAGE when the file is not a photo we can read.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePhotoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The signed-in user, with the photo in avatarUrl",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests; try again later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A service this needs isn't set up or available yet, e.g. payments before the Stripe keys are set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Remove the profile photo",
+        "description": "Deletes the photo; you show as your initials again. Fine when there is no photo.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The signed-in user, without avatarUrl",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
             "content": {
               "application/json": {
                 "schema": {
@@ -18310,7 +18702,7 @@
           "Admin"
         ],
         "summary": "Staff: approve or reject a driver licence checked by hand",
-        "description": "Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`). Rejecting releases them with their card authorisations. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check.",
+        "description": "Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`). Rejecting releases them with their card authorisations. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check; 403 OWN_RECORD for a support member’s own licence.",
         "security": [
           {
             "cookieAuth": []
@@ -18461,55 +18853,6 @@
           },
           "404": {
             "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/overview": {
-      "get": {
-        "tags": [
-          "Admin"
-        ],
-        "summary": "KPI figures for the staff portal",
-        "description": "Admin and Support only.",
-        "security": [
-          {
-            "cookieAuth": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The overview figures",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AdminOverview"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not signed in, or the session has ended",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
             "content": {
               "application/json": {
                 "schema": {
@@ -22911,7 +23254,7 @@
           "Admin"
         ],
         "summary": "Host applications",
-        "description": "Oldest first. `status` is APPLIED by default.",
+        "description": "25 a page. `status` is APPLIED by default, listed oldest first; the others are listed newest first.",
         "security": [
           {
             "cookieAuth": []
@@ -22929,10 +23272,22 @@
                 "APPROVED",
                 "REJECTED",
                 "SUSPENDED"
-              ]
+              ],
+              "default": "APPLIED"
             },
             "required": false,
             "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 1
+            },
+            "required": false,
+            "name": "page",
             "in": "query"
           }
         ],
@@ -22943,6 +23298,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HostApplications"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -22976,7 +23341,7 @@
           "Admin"
         ],
         "summary": "Approve a Host application",
-        "description": "409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email, and 409 IDENTITY_NOT_VERIFIED until their identity check has passed (while the identityForHosts setting is on). Emails the Host.",
+        "description": "An application waiting for a decision, or one rejected before (409 NOT_APPLIED otherwise). 409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email, and 409 IDENTITY_NOT_VERIFIED until their identity check has passed (while the identityForHosts setting is on). 403 OWN_RECORD for a support member’s own application. Emails the Host.",
         "security": [
           {
             "cookieAuth": []
@@ -23065,6 +23430,7 @@
           "Admin"
         ],
         "summary": "Reject a Host application",
+        "description": "Only an application waiting for a decision: 409 NOT_APPLIED for a Host already approved, who is suspended instead. 403 OWN_RECORD for a support member’s own application.",
         "security": [
           {
             "cookieAuth": []
@@ -23144,6 +23510,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {
@@ -23391,7 +23767,7 @@
           "Admin"
         ],
         "summary": "Approve a listing (and its pending photos and documents)",
-        "description": "409 HOST_NOT_APPROVED until the Host’s application is approved.",
+        "description": "409 HOST_NOT_APPROVED until the Host’s application is approved. A listing back for review over its key details goes back on or off as its Host had it. 403 OWN_RECORD when it’s the support member’s own car.",
         "security": [
           {
             "cookieAuth": []
@@ -23492,6 +23868,7 @@
           "Admin"
         ],
         "summary": "Send a listing back to the Host for changes",
+        "description": "403 OWN_RECORD when it’s the support member’s own car.",
         "security": [
           {
             "cookieAuth": []
@@ -23592,6 +23969,7 @@
           "Admin"
         ],
         "summary": "Reject a listing",
+        "description": "403 OWN_RECORD when it’s the support member’s own car.",
         "security": [
           {
             "cookieAuth": []
@@ -24477,7 +24855,7 @@
           "Bookings"
         ],
         "summary": "My trips, or my bookings as a Host",
-        "description": "Groups (plan §8.2): upcoming (confirmed, and requests), current, completed, cancelled (cancelled, declined, expired), and requests (Hosts: waiting for an answer). Unpaid checkouts are left out.",
+        "description": "Groups (plan §8.2): upcoming (confirmed, and requests), current, completed, cancelled (cancelled, declined, expired), and requests (Hosts: waiting for an answer). Unpaid checkouts are left out. A page at a time: nextPage is set when there are more.",
         "security": [
           {
             "cookieAuth": []
@@ -24512,6 +24890,15 @@
             },
             "required": false,
             "name": "group",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required": false,
+            "name": "page",
             "in": "query"
           }
         ],
@@ -25304,7 +25691,7 @@
           "Admin"
         ],
         "summary": "Staff: cancel for a no-show, or as a platform cancellation",
-        "description": "Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. Both parties are told, except the Host of an Instant Book that never reached them.",
+        "description": "Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. An ACTIVE trip only as a Guest no-show, when the Host did the check-in alone and the Guest hasn’t confirmed it (409 NOT_CANCELLABLE otherwise). Earlier refunds come off the refund. Both parties are told, except the Host of an Instant Book that never reached them.",
         "security": [
           {
             "cookieAuth": []
@@ -25483,6 +25870,117 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/bookings/{id}/extra-charges/{chargeId}/cancel": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff with the refunds permission: cancel an extra charge that hasn’t been paid",
+        "description": "Only a PENDING or FAILED charge (409 NOT_CANCELLABLE otherwise; 409 ALREADY_PAID when the Guest paid it a moment ago, to refund instead). Its PaymentIntent and retries stop, it’s no longer owed, its pay link says it was cancelled, the Guest is told, and the reason goes to the audit log (plan §8.1, item 11).",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "The booking’s reference (RV-7K2Q9M) or id"
+            },
+            "required": true,
+            "description": "The booking’s reference (RV-7K2Q9M) or id",
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "The extra charge’s id"
+            },
+            "required": true,
+            "description": "The extra charge’s id",
+            "name": "chargeId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelExtraChargeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The booking’s whole record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminBookingDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {
@@ -26362,7 +26860,7 @@
           "Handover"
         ],
         "summary": "Record the check-in or check-out",
-        "description": "Photos of every required angle (uploaded first with POST /uploads/signature, purpose INSPECTION_PHOTO), the odometer, the fuel or battery level and damage pins. Check-in opens 2 hours before the start and starts the trip; check-out completes it. The Guest must have confirmed their email before check-in. The other party is asked to confirm.",
+        "description": "Photos of every required angle (uploaded first with POST /uploads/signature, purpose INSPECTION_PHOTO), the odometer, the fuel or battery level and damage pins. Check-in opens 2 hours before the start and starts the trip; check-out completes it, also on a trip support marked as started without a check-in (no extra kilometres are then worked out). The Guest must have confirmed their email before check-in. The other party is asked to confirm.",
         "security": [
           {
             "cookieAuth": []
@@ -26737,13 +27235,26 @@
           "Hosting"
         ],
         "summary": "The Host’s payout setup and payouts",
-        "description": "Upcoming, held and paid payouts, newest first, with the commission and its GST, deductions, and when a paid one should reach the bank.",
+        "description": "Payouts still to be sent (scheduled, held or delayed), soonest first, then paid ones, newest first, a page at a time (cursor), with the commission and its GST, deductions, and when each should reach the bank.",
         "security": [
           {
             "cookieAuth": []
           },
           {
             "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{24}$",
+              "description": "The nextCursor of the page before: the next page of paid payouts"
+            },
+            "required": false,
+            "description": "The nextCursor of the page before: the next page of paid payouts",
+            "name": "cursor",
+            "in": "query"
           }
         ],
         "responses": {
@@ -26757,8 +27268,28 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -27610,6 +28141,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -27796,6 +28337,7 @@
           "Incidents"
         ],
         "summary": "Add an update or evidence to an open case",
+        "description": "Shared with the other party when they see the case, unless it answers something support asked this party alone (the case’s `sharedWithOtherParty`). 409 CASE_CLOSED on a resolved or closed case; 409 CASE_CHANGED when support changed its status meanwhile.",
         "security": [
           {
             "cookieAuth": []
@@ -27896,6 +28438,7 @@
           "Admin"
         ],
         "summary": "Staff: cases, open ones by default",
+        "description": "Last updated first, 50 a page.",
         "security": [
           {
             "cookieAuth": []
@@ -27919,6 +28462,17 @@
             "required": false,
             "name": "status",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
           }
         ],
         "responses": {
@@ -27927,7 +28481,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Incidents"
+                  "$ref": "#/components/schemas/StaffIncidents"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -28157,7 +28721,7 @@
           "Admin"
         ],
         "summary": "Staff: post an update, change the status or take the case",
-        "description": "Updates go to both parties, one of them, or the team only (INTERNAL). The status moves only to one of the case’s `nextStatuses`: nothing goes back to OPEN, a resolved case can be reopened (INVESTIGATING or AWAITING_RESPONSE), and a closed one is final (409 INVALID_STATUS_CHANGE; 409 CASE_CHANGED when someone else changed the status meanwhile). Resolving or closing the last open case on a booking releases its payouts; reopening a case holds the unpaid ones again.",
+        "description": "Updates go to both parties, one of them, or the team only (INTERNAL); by default, to whoever already sees the case (`audience`). Taking the case with nothing else is always INTERNAL, and nobody is told. The status moves only to one of the case’s `nextStatuses`: nothing goes back to OPEN, a resolved case can be reopened (INVESTIGATING or AWAITING_RESPONSE), and a closed one is final (409 INVALID_STATUS_CHANGE; 409 CASE_CHANGED when someone else changed the status meanwhile). Resolving or closing the last open case on a booking releases its payouts; reopening a case holds the unpaid ones again.",
         "security": [
           {
             "cookieAuth": []
@@ -28359,7 +28923,7 @@
           "Admin"
         ],
         "summary": "Staff: charge the guest from a resolved case",
-        "description": "Charged to the Guest’s saved card; the Host’s share is paid out as its own payout.",
+        "description": "Charged to the Guest’s saved card; the Host’s share is paid out as its own payout. On a damage, accident or theft case under a protection plan, the case’s charges stay within the plan’s excess (409 OVER_EXCESS above `chargeLimitCents`). The same `idempotencyKey` sent again adds no second charge and answers with the case as it is.",
         "security": [
           {
             "cookieAuth": []
@@ -28830,7 +29394,7 @@
           "Admin"
         ],
         "summary": "Staff: lift a suspension",
-        "description": "Their listings return to search and held payouts are sent.",
+        "description": "Their listings return to search and held payouts are sent. 409 ACCOUNT_CLOSED for an account closed on request, which stays suspended.",
         "security": [
           {
             "cookieAuth": []
@@ -28909,6 +29473,7 @@
           "Admin"
         ],
         "summary": "Staff: clear a risk flag after looking into it",
+        "description": "403 OWN_RECORD for a support member’s own flags: another team member clears them.",
         "security": [
           {
             "cookieAuth": []
@@ -29312,10 +29877,10 @@
             "schema": {
               "type": "string",
               "maxLength": 100,
-              "description": "Booking reference, guest or host name or email"
+              "description": "Booking reference; or words each in the Guest’s or Host’s name, email or mobile, or in the car"
             },
             "required": false,
-            "description": "Booking reference, guest or host name or email",
+            "description": "Booking reference; or words each in the Guest’s or Host’s name, email or mobile, or in the car",
             "name": "q",
             "in": "query"
           },
@@ -29351,9 +29916,11 @@
           {
             "schema": {
               "type": "string",
-              "format": "date"
+              "format": "date",
+              "description": "Trips starting on or before this NZ date"
             },
             "required": false,
+            "description": "Trips starting on or before this NZ date",
             "name": "to",
             "in": "query"
           },
@@ -29488,7 +30055,7 @@
           "Admin"
         ],
         "summary": "Staff: mark a trip as started or completed",
-        "description": "Only CONFIRMED → ACTIVE and ACTIVE → COMPLETED, with the same side effects as check-in and check-out (plan §8.2).",
+        "description": "Only CONFIRMED → ACTIVE and ACTIVE → COMPLETED, with the same side effects as check-in and check-out (plan §8.2). 403 OWN_RECORD when the support member is its Guest or Host.",
         "security": [
           {
             "cookieAuth": []
@@ -29686,7 +30253,7 @@
           "Admin"
         ],
         "summary": "Staff: suspend a car",
-        "description": "Hidden at once; its upcoming bookings are returned for staff to keep or cancel (plan §8.2).",
+        "description": "Hidden at once; its upcoming bookings are returned for staff to keep or cancel (plan §8.2). 403 OWN_RECORD for a support member’s own car, here and when lifting it.",
         "security": [
           {
             "cookieAuth": []
@@ -29863,6 +30430,7 @@
           "Admin"
         ],
         "summary": "Staff with the refunds permission: payments",
+        "description": "Newest first. view=failed lists those that didn’t go through, including cards declined at checkout, each with its failure reason and the status it ended in.",
         "security": [
           {
             "cookieAuth": []
@@ -29910,10 +30478,23 @@
                 "disputed",
                 "refunds-failed"
               ],
-              "default": "all"
+              "default": "all",
+              "description": "failed: payments that didn’t go through, including cards declined at checkout (PENDING, then CANCELLED, with a failureReason)"
             },
             "required": false,
+            "description": "failed: payments that didn’t go through, including cards declined at checkout (PENDING, then CANCELLED, with a failureReason)",
             "name": "view",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "Only payments made on or after this NZ date"
+            },
+            "required": false,
+            "description": "Only payments made on or after this NZ date",
+            "name": "from",
             "in": "query"
           },
           {
@@ -32702,7 +33283,7 @@
           "Admin"
         ],
         "summary": "Admin: a report as a CSV file",
-        "description": "Bookings, payments, refunds, payouts, cancellations, the monthly GST summary, or revenue and fees by day, for a range of NZ days. Every total matches the summary for the same days.",
+        "description": "Bookings, payments, refunds, payouts, cancellations, the monthly GST summary, or revenue and fees by day, for a range of NZ days. Every total matches the summary for the same days. UTF-8 with a byte order mark, so Excel shows macrons.",
         "security": [
           {
             "cookieAuth": []
@@ -32802,6 +33383,7 @@
           "Admin"
         ],
         "summary": "Admin: the audit log",
+        "description": "Newest first, 50 a page; `from` and `to` reach entries older than the last page.",
         "security": [
           {
             "cookieAuth": []
@@ -32845,6 +33427,28 @@
             },
             "required": false,
             "name": "action",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "Entries on or after this NZ date"
+            },
+            "required": false,
+            "description": "Entries on or after this NZ date",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "description": "Entries on or before this NZ date"
+            },
+            "required": false,
+            "description": "Entries on or before this NZ date",
+            "name": "to",
             "in": "query"
           },
           {

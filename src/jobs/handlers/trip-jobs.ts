@@ -1,6 +1,7 @@
 import { env } from '../../env.js';
 import { formatNzDateTime } from '../../lib/format.js';
 import { BookingModel } from '../../modules/bookings/booking.model.js';
+import { guestMayNotHaveShown } from '../../modules/bookings/booking.service.js';
 import {
   loadBookingContext,
   toBookingView,
@@ -218,14 +219,76 @@ export async function returnReminderJob(
 }
 
 /**
+ * A trip the Host checked in alone (it started with their check-in), which the Guest hasn't confirmed by the
+ * start check: 1 h after the start the Guest is asked to confirm it; after 2 h support is alerted to a possible
+ * Guest no-show, which they can still cancel as one (plan §8.2).
+ */
+async function unconfirmedCheckIn(
+  { booking, context }: NonNullable<Awaited<ReturnType<typeof loadTrip>>>,
+  hoursAfter: number,
+  log: JobContext['log'],
+) {
+  const key = booking._id.toString();
+  const hostName = context.host?.firstName ?? 'The host';
+  if (hoursAfter >= 2) {
+    await alertStaff({
+      type: 'TRIP_CHECK_IN_UNCONFIRMED',
+      title: `Possible no-show on ${booking.ref}`,
+      body: `${hostName} did the check-in on booking ${booking.ref} (${booking.vehicleSnapshot.title}) alone, and the guest still hasn't confirmed it 2 hours after the start time. Contact the guest and host, and cancel it as a Guest no-show if the guest never turned up.`,
+      link: `/admin/bookings/${booking.ref}`,
+      dedupeKey: `TRIP_CHECK_IN_UNCONFIRMED:${key}`,
+    });
+    log.warn({ bookingId: key }, 'Check-in unconfirmed by the guest; support alerted');
+    return;
+  }
+  const path = `/trips/${booking.ref}/handover`;
+  await notify({
+    userId: booking.guestId,
+    type: 'CHECK_IN_UNCONFIRMED',
+    title: 'Please confirm the check-in',
+    body: `${hostName} did the check-in for your trip. Check the photos and readings, and confirm them.`,
+    link: path,
+    email: {
+      template: 'tripNotice',
+      props: {
+        firstName: context.guest?.firstName ?? 'there',
+        heading: 'Please confirm the check-in',
+        paragraphs: [
+          `${hostName} did the check-in for your trip in the ${booking.vehicleSnapshot.title}, which started an hour ago, but you haven’t confirmed it yet.`,
+          'Check the photos and readings and confirm them: they protect you both if anything is damaged. If you didn’t pick up the car, let us know straight away.',
+        ],
+        rows: [
+          { label: 'Car', value: booking.vehicleSnapshot.title },
+          { label: 'Pick-up', value: `${formatNzDateTime(booking.startAt)} (NZ time)` },
+          { label: 'Booking', value: booking.ref },
+        ],
+        buttonLabel: 'Confirm the check-in',
+        url: `${siteUrl()}${path}`,
+      },
+    },
+    sms: {
+      body: `Rento Vroom: ${hostName} did the check-in for ${booking.ref}. Please check and confirm it: ${siteUrl()}${path}`,
+      urgent: true,
+    },
+    dedupeKey: `CHECK_IN_UNCONFIRMED:${key}`,
+  });
+  log.info({ bookingId: key }, 'Check-in unconfirmed; guest reminded');
+}
+
+/**
  * `trip.startCheck`: 1 h after the start without a check-in, both parties are reminded; after 2 h,
- * support is alerted to a possible no-show (plan §8.2).
+ * support is alerted to a possible no-show (plan §8.2). A trip the Host checked in alone, which the Guest
+ * hasn't confirmed, gets the same two checks (unconfirmedCheckIn).
  */
 export async function startCheckJob(
   { bookingId, hoursAfter }: { bookingId: string; hoursAfter: number },
   { log }: JobContext,
 ) {
   const trip = await loadTrip(bookingId);
+  if (trip?.booking.status === 'ACTIVE' && (await guestMayNotHaveShown(trip.booking))) {
+    await unconfirmedCheckIn(trip, hoursAfter, log);
+    return;
+  }
   if (!trip || trip.booking.status !== 'CONFIRMED') return;
   const { booking, context } = trip;
   const key = booking._id.toString();

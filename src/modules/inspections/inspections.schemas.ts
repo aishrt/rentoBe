@@ -75,7 +75,14 @@ export const staffCompletionSchema = inspectionInputSchema
 export const flagDamageSchema = z
   .object({
     damagePins: z.array(damagePinInputSchema).min(1, { error: 'Mark where the damage is' }).max(10),
-    photos: z.array(inspectionPhotoInputSchema).max(10).default([]),
+    photos: z
+      .array(inspectionPhotoInputSchema)
+      .max(10)
+      .default([])
+      .refine((photos) => photos.every((photo) => photo.angle === 'DAMAGE'), {
+        error: 'Photos of new damage only',
+      })
+      .meta({ description: 'Photos of the damage, each with angle DAMAGE' }),
     note: z.string().trim().max(2000).optional(),
   })
   .meta({ id: 'FlagDamageRequest' });

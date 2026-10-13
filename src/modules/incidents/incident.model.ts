@@ -60,6 +60,8 @@ export interface IncidentEvent {
   status?: IncidentStatus;
   /** On an ASSIGNED event: the staff member the case went to. */
   assigneeId?: Types.ObjectId;
+  /** On a CHARGE_ADDED event: the booking's extra charge it records, so each charge has one entry. */
+  extraChargeId?: Types.ObjectId;
   createdAt: Date;
 }
 
@@ -91,6 +93,7 @@ const incidentEventSchema = new Schema<IncidentEvent>(
     visibility: { type: String, enum: EVENT_VISIBILITIES, default: 'BOTH' },
     status: { type: String, enum: INCIDENT_STATUSES },
     assigneeId: { type: Schema.Types.ObjectId, ref: 'User' },
+    extraChargeId: Schema.Types.ObjectId,
     createdAt: { type: Date, required: true, default: Date.now },
   },
   { _id: false },
