@@ -47,7 +47,9 @@ export const STRIPE_CONNECT_WEBHOOK_EVENTS = [
  */
 export const stripeEventHandlers: Partial<Record<StripeEventType, StripeEventHandler>> = {
   ...bookingPaymentHandlers,
-  'account.updated': (event, session) => applyAccountState(event.data.object as Stripe.Account, session),
+  // Applied unless a newer state is already (Stripe doesn't send events in order).
+  'account.updated': (event, session) =>
+    applyAccountState(event.data.object as Stripe.Account, session, new Date(event.created * 1000)),
   // Identity checks (plan §9, Days 19–20): applied by the `identity.sync` job.
   ...Object.fromEntries(
     (
@@ -60,7 +62,7 @@ export const stripeEventHandlers: Partial<Record<StripeEventType, StripeEventHan
     ).map((type) => [
       type,
       (event: Stripe.Event, session: ClientSession) =>
-        queueIdentitySync(event.data.object as Stripe.Identity.VerificationSession, session),
+        queueIdentitySync(event.data.object as Stripe.Identity.VerificationSession, session, event.id),
     ]),
   ),
 };

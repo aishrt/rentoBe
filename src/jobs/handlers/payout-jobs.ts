@@ -1,9 +1,7 @@
 import { runDataRetention } from '../../modules/admin/data-retention.service.js';
-import { BookingModel } from '../../modules/bookings/booking.model.js';
 import { runHostReminders } from '../../modules/hosts/host-reminders.service.js';
-import { ConditionReportModel } from '../../modules/inspections/condition-report.model.js';
-import { kilometresFor } from '../../modules/inspections/inspections.service.js';
-import { addExtraCharge, collectExtraCharge } from '../../modules/payments/extra-charges.service.js';
+import { chargeExtraKilometres } from '../../modules/inspections/extra-km.service.js';
+import { collectExtraCharge } from '../../modules/payments/extra-charges.service.js';
 import { runPayout } from '../../modules/payouts/payouts.service.js';
 import type { JobContext } from './index.js';
 
@@ -25,27 +23,13 @@ export async function collectExtraChargeJob(
 }
 
 /**
- * `trip.extraCharges`: after check-out, kilometres over the booking's allowance are charged at its extra-km
- * price (plan §5). Worked out from the condition reports, never typed in.
+ * `trip.extraCharges`: once the check-out is confirmed or the damage-report window closes, kilometres over the
+ * booking's allowance are charged at its extra-km price (plan §5). Worked out from the condition reports,
+ * never typed in; a distance above the daily review limit waits for staff.
  */
 export async function tripExtraChargesJob({ bookingId }: { bookingId: string }, { log }: JobContext) {
-  const booking = await BookingModel.findById(bookingId).lean();
-  if (!booking || booking.status !== 'COMPLETED') return;
-  if (booking.extraCharges.some((charge) => charge.type === 'EXTRA_KM')) return;
-  const [checkIn, checkOut] = await Promise.all([
-    ConditionReportModel.findOne({ bookingId, stage: 'CHECK_IN' }).lean(),
-    ConditionReportModel.findOne({ bookingId, stage: 'CHECK_OUT' }).lean(),
-  ]);
-  if (!checkIn || !checkOut) return;
-  const km = kilometresFor(booking, checkIn, checkOut);
-  if (km.extraChargeCents <= 0) return;
-  const rate = (booking.terms.extraKmCents / 100).toFixed(2);
-  await addExtraCharge(booking._id, {
-    type: 'EXTRA_KM',
-    description: `${km.extra} km over the ${km.allowance} km included, at $${rate} a km`,
-    amountCents: km.extraChargeCents,
-  });
-  log.info({ bookingId, extraKm: km.extra }, 'Extra kilometres charged');
+  const outcome = await chargeExtraKilometres(bookingId);
+  log.info({ bookingId, outcome }, 'Extra kilometres checked');
 }
 
 /** `daily.hostReminders` (plan §4.3): documents, RUC, maintenance and cars expiring before a booked trip. */

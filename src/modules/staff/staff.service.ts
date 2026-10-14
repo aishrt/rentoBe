@@ -13,6 +13,8 @@ import {
 import { createRefreshToken, hashToken } from '../auth/auth.tokens.js';
 import { passwordContainsEmailName } from '../auth/password-policy.js';
 import { SessionModel } from '../auth/session.model.js';
+import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.model.js';
+import { SupportTicketModel } from '../support/support-ticket.model.js';
 import { PERMISSIONS, UserModel } from '../users/user.model.js';
 import { effectiveRoles } from '../users/user.service.js';
 import { StaffInviteModel, type StaffInvite } from './staff-invite.model.js';
@@ -120,6 +122,34 @@ export async function findActiveStaff(userId: string) {
 }
 
 /**
+ * Hands back the open support requests and cases a staff member has, when they leave the team or are
+ * suspended: with nobody on them, a reply alerts the whole team and anyone can take them (plan §6.2, §7).
+ * Each case notes it, as when support unassigns one. Returns how many, for the audit log.
+ */
+export async function releaseAssignedWork(staffUserId: Types.ObjectId, actorId: string, now = new Date()) {
+  const tickets = await SupportTicketModel.updateMany(
+    { assignedTo: staffUserId, status: mongoose.trusted({ $in: ['OPEN', 'PENDING'] }) },
+    { $unset: { assignedTo: 1 } },
+  );
+  const incidents = await IncidentModel.updateMany(
+    { assignedTo: staffUserId, status: mongoose.trusted({ $in: OPEN_INCIDENT_STATUSES }) },
+    {
+      $unset: { assignedTo: 1 },
+      $push: {
+        events: {
+          actorId: new mongoose.Types.ObjectId(actorId),
+          action: 'UNASSIGNED',
+          attachments: [],
+          visibility: 'INTERNAL',
+          createdAt: now,
+        },
+      },
+    },
+  );
+  return { tickets: tickets.modifiedCount, incidents: incidents.modifiedCount };
+}
+
+/**
  * Emails someone a link to join the support team. Sending another invitation to the same address
  * replaces the earlier one, so only the newest link works. The address can already have a Rento Vroom
  * account (a former support member, or someone who also rents): accepting adds Support to it.
@@ -196,8 +226,8 @@ export async function revokeInvite(adminId: string, inviteId: string, ip?: strin
 
 /**
  * Takes someone off the support team: the role, any extra permissions and their authenticator apps go,
- * and they're signed out everywhere. Their account stays, as a Guest's if they also rent, and the
- * admin can invite them again.
+ * and they're signed out everywhere. The open requests and cases they had go back to the team. Their
+ * account stays, as a Guest's if they also rent, and the admin can invite them again.
  */
 export async function removeSupport(adminId: string, userId: string, ip?: string): Promise<void> {
   const user = mongoose.isValidObjectId(userId)
@@ -212,13 +242,14 @@ export async function removeSupport(adminId: string, userId: string, ip?: string
   await SessionModel.deleteMany({ userId: user._id });
   // Signed out at once (plan §6.2), open staff portal tabs included.
   disconnectUser(user._id);
+  const unassigned = await releaseAssignedWork(user._id, adminId);
   await recordAudit({
     actorId: adminId,
     action: 'staff.remove',
     entity: 'user',
     entityId: user.id,
     before: { roles: [...user.roles], permissions: [...user.permissions] },
-    after: { roles: user.roles.filter((role) => role !== 'SUPPORT'), permissions: [] },
+    after: { roles: user.roles.filter((role) => role !== 'SUPPORT'), permissions: [], unassigned },
     ip,
   });
 }

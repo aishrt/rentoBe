@@ -1,13 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import Stripe from 'stripe';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { stripe } from '../src/integrations/stripe.js';
 import { JobModel } from '../src/jobs/job.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { ConditionReportModel } from '../src/modules/inspections/condition-report.model.js';
 import { IncidentModel } from '../src/modules/incidents/incident.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
+import { PaymentModel } from '../src/modules/payments/payment.model.js';
 import { PayoutModel } from '../src/modules/payouts/payout.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
-import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
+import { createBookingRecord, createHost, createPaymentRecord, createVehicle } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent } from './helpers.js';
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -131,6 +134,17 @@ describe('incidents', () => {
       .post('/api/v1/incidents')
       .send({ bookingRef: booking.ref, type: 'DAMAGE', description: 'Dent in the passenger door.' });
     expect(late.body.error.code).toBe('DAMAGE_WINDOW_CLOSED');
+    // The same damage filed as something else is just as late.
+    for (const type of ['ACCIDENT', 'CLEANING', 'FUEL']) {
+      const other = await hostAgent
+        .post('/api/v1/incidents')
+        .send({ bookingRef: booking.ref, type, description: 'Dent in the passenger door.' });
+      expect(other.status).toBe(409);
+      expect(other.body.error).toMatchObject({
+        code: 'DAMAGE_WINDOW_CLOSED',
+        fields: { type: expect.stringContaining('48 hours') },
+      });
+    }
     // A toll notice can arrive weeks later, reported with the notice itself.
     const notice = await evidence(hostAgent, booking.ref);
     const toll = await hostAgent.post('/api/v1/incidents').send({
@@ -406,6 +420,92 @@ describe('incidents', () => {
           .send({ type: 'FUEL', description: 'Fuel', amountCents: 5000 })
       ).status,
     ).toBe(403);
+  });
+});
+
+describe('a case’s charges', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** A completed trip under a plan with a $100 excess, and a resolved case the guest reported. */
+  async function resolvedCase(type: string) {
+    const parts = await trip({
+      status: 'COMPLETED',
+      protectionPlan: {
+        code: 'BASIC',
+        name: 'Basic protection',
+        priceCents: 1500,
+        excessCents: 10_000,
+        coverSummary: 'Damage over the excess',
+        mandatory: true,
+      },
+    });
+    const opened = await parts.guestAgent
+      .post('/api/v1/incidents')
+      .send({ bookingRef: parts.booking.ref, type, description: 'Scrape along the rear bumper.' });
+    expect(opened.status).toBe(201);
+    const caseRef = opened.body.incident.caseRef as string;
+    await createStaff();
+    const staff = await staffAgent();
+    await staff.post(`/api/v1/admin/incidents/${caseRef}/events`).send({ status: 'RESOLVED', note: 'Agreed.' });
+    const charge = (body: object) => staff.post(`/api/v1/admin/incidents/${caseRef}/charges`).send(body);
+    return { ...parts, caseRef, staff, charge };
+  }
+
+  it('keeps damage charged on a case of any type within the protection plan’s excess', async () => {
+    const { charge } = await resolvedCase('OTHER');
+    const over = await charge({ type: 'DAMAGE', description: 'Bumper repair', amountCents: 12_000 });
+    expect(over.status).toBe(409);
+    expect(over.body.error.code).toBe('OVER_EXCESS');
+    // What the excess doesn't cover isn't capped, and doesn't count towards it.
+    expect((await charge({ type: 'CLEANING', description: 'Valet', amountCents: 12_000 })).status).toBe(200);
+    expect((await charge({ type: 'DAMAGE', description: 'Bumper repair', amountCents: 8_000 })).status).toBe(
+      200,
+    );
+    const more = await charge({ type: 'DAMAGE', description: 'Paint', amountCents: 3_000 });
+    expect(more.body.error.code).toBe('OVER_EXCESS');
+  });
+
+  it('shows a charge cancelled or refunded on the case’s history', async () => {
+    const { booking, caseRef, staff, charge, guestAgent } = await resolvedCase('CLEANING');
+    expect((await charge({ type: 'CLEANING', description: 'Valet', amountCents: 8_000 })).status).toBe(200);
+    expect((await charge({ type: 'FUEL', description: 'Refuel', amountCents: 5_000 })).status).toBe(200);
+    const [valet, refuel] = (await BookingModel.findById(booking._id).lean())!.extraCharges;
+
+    const cancelled = await staff
+      .post(`/api/v1/admin/bookings/${booking.ref}/extra-charges/${valet!._id}/cancel`)
+      .send({ reason: 'Charged by mistake' });
+    expect(cancelled.status).toBe(200);
+
+    // The refuel was paid, then part of it refunded.
+    const paid = await createPaymentRecord(booking, {
+      type: 'EXTRA_CHARGE',
+      extraChargeId: refuel!._id,
+      amountCents: 5_000,
+    });
+    await BookingModel.updateOne(
+      { _id: booking._id, 'extraCharges._id': refuel!._id },
+      { $set: { 'extraCharges.$.status': 'SUCCEEDED', 'extraCharges.$.paymentId': paid._id } },
+    );
+    vi.spyOn(stripe().refunds, 'create').mockResolvedValue({
+      id: 're_1',
+      status: 'succeeded',
+      amount: 2_000,
+    } as Stripe.Response<Stripe.Refund>);
+    const refunded = await staff
+      .post(`/api/v1/admin/bookings/${booking.ref}/refunds`)
+      .send({ paymentId: paid.id, amountCents: 2_000, reason: 'Tank was nearly full', fundedBy: 'PLATFORM' });
+    expect(refunded.status).toBe(200);
+    expect((await PaymentModel.findById(paid._id).lean())!.status).toBe('PARTIALLY_REFUNDED');
+
+    const seen = (await guestAgent.get(`/api/v1/incidents/${caseRef}`)).body.incident.events as {
+      action: string;
+      note?: string;
+    }[];
+    expect(seen.map((event) => event.action)).toEqual(
+      expect.arrayContaining(['CHARGE_ADDED', 'CHARGE_CANCELLED', 'CHARGE_REFUNDED']),
+    );
+    expect(seen.find((event) => event.action === 'CHARGE_CANCELLED')!.note).toContain('$80.00');
+    expect(seen.find((event) => event.action === 'CHARGE_REFUNDED')!.note).toContain('$20.00 of the $50.00');
   });
 });
 

@@ -2,10 +2,13 @@ import mongoose, { type ClientSession, type Types } from 'mongoose';
 import type Stripe from 'stripe';
 import { stripe } from '../../integrations/stripe.js';
 import { enqueue } from '../../jobs/queue.js';
+import { countryName } from '../../lib/countries.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { BookingModel } from '../bookings/booking.model.js';
+import { notAbandonedCheckout } from '../bookings/made-bookings.js';
 import { PaymentModel } from '../payments/payment.model.js';
 import { StripeEventModel } from '../payments/stripe-event.model.js';
+import { licenceCountryCode } from '../users/driver-licence.service.js';
 import { UserModel } from '../users/user.model.js';
 import { raiseRiskFlag } from './risk-flags.js';
 
@@ -22,12 +25,19 @@ const RADAR_WARNINGS = new Set(['elevated', 'highest']);
 
 const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
 
-/** A failed card payment (plan §8.1, item 6): too many in a day raises FAILED_PAYMENTS. */
+/**
+ * A failed card payment (plan §8.1, item 6), for a booking or an extra charge after a trip: too many in a day
+ * raises FAILED_PAYMENTS.
+ */
 export async function checkFailedPayments(guestId: Types.ObjectId, session: ClientSession, now = new Date()) {
   const settings = await getPlatformSettings();
   const bookings = await BookingModel.find({
     guestId,
-    createdAt: mongoose.trusted({ $gte: new Date(now.getTime() - 7 * DAY_MS) }),
+    $or: [
+      { createdAt: mongoose.trusted({ $gte: new Date(now.getTime() - 7 * DAY_MS) }) },
+      // Extra charges come after the trip, often weeks after it was booked.
+      { 'extraCharges.0': mongoose.trusted({ $exists: true }) },
+    ],
   })
     .select('_id')
     .session(session)
@@ -61,12 +71,7 @@ export async function checkBookingVelocity(guestId: Types.ObjectId, now = new Da
   const count = await BookingModel.countDocuments({
     guestId,
     createdAt: mongoose.trusted({ $gte: new Date(now.getTime() - DAY_MS) }),
-    $nor: [
-      {
-        status: mongoose.trusted({ $in: ['EXPIRED', 'CANCELLED'] }),
-        'statusHistory.status': mongoose.trusted({ $nin: ['PENDING', 'CONFIRMED'] }),
-      },
-    ],
+    ...notAbandonedCheckout(),
   });
   if (count > settings.risk.bookingsPerDay) {
     await raiseRiskFlag(guestId, 'BOOKING_VELOCITY', `${count} bookings started in 24 hours`, { now });
@@ -96,14 +101,19 @@ export async function checkPaymentRisk(paymentId: string, now = new Date()) {
 
   const cardCountry = charge.payment_method_details?.card?.country;
   if (cardCountry && cardCountry !== 'NZ') {
-    const guest = await UserModel.findById(booking.guestId).select('driverLicence.country').lean();
+    const guest = await UserModel.findById(booking.guestId)
+      .select('driverLicence.country driverLicence.class')
+      .lean();
     const cardPlace = regionNames.of(cardCountry) ?? cardCountry;
-    const licencePlace = guest?.driverLicence?.country;
-    if (!licencePlace || licencePlace.toLowerCase() !== cardPlace.toLowerCase()) {
+    // Compared as ISO codes: a licence saved as "USA" or "England" is read as US or GB.
+    const licence = guest?.driverLicence;
+    const licenceCode = licence ? licenceCountryCode(licence) : undefined;
+    if (!licenceCode || licenceCode !== cardCountry.toUpperCase()) {
+      const licencePlace = licence ? countryName(licenceCode ?? licence.country) : 'unknown';
       await raiseRiskFlag(
         booking.guestId,
         'CARD_COUNTRY',
-        `Card issued in ${cardPlace} for ${booking.ref}; licence from ${licencePlace ?? 'unknown'}`,
+        `Card issued in ${cardPlace} for ${booking.ref}; licence from ${licencePlace}`,
         { now },
       );
     }

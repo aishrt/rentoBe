@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import type { z } from 'zod';
+import { withTransaction } from '../../db.js';
 import { HttpError } from '../../lib/http-error.js';
 import { addNzDays, nzDate, nzDayEnd, nzDayStart } from '../../lib/nz-time.js';
 import { JobModel } from '../../jobs/job.model.js';
@@ -8,6 +9,7 @@ import { AuditLogModel } from '../audit/audit-log.model.js';
 import { BookingModel } from '../bookings/booking.model.js';
 import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.model.js';
 import { ReportModel } from '../moderation/report.model.js';
+import { NotificationModel } from '../notifications/notification.model.js';
 import { PaymentModel } from '../payments/payment.model.js';
 import { PayoutModel } from '../payouts/payout.model.js';
 import { ReviewModel } from '../reviews/review.model.js';
@@ -46,8 +48,13 @@ export async function adminDashboard(
       closedAt: mongoose.trusted({ $exists: false }),
     }),
     UserModel.countDocuments({ roles: 'HOST', status: 'ACTIVE', 'hostProfile.status': 'APPROVED' }),
-    // Cars Guests can find and book, as search counts them (plan §8.2).
-    VehicleModel.countDocuments(liveVehicleFilter()),
+    // Cars Guests can find and book, as search counts them (plan §8.2): live, with a current rego and a
+    // current WOF or CoF (plan §3, expired documents).
+    VehicleModel.countDocuments({
+      ...liveVehicleFilter(),
+      regoExpiry: mongoose.trusted({ $gte: now }),
+      $or: [{ wofExpiry: mongoose.trusted({ $gte: now }) }, { cofExpiry: mongoose.trusted({ $gte: now }) }],
+    }),
     BookingModel.countDocuments({
       status: mongoose.trusted({ $in: ['PENDING', 'CONFIRMED'] }),
       startAt: mongoose.trusted({ $gt: now }),
@@ -81,7 +88,9 @@ export async function adminDashboard(
       ...failedPaymentFilter(),
       createdAt: mongoose.trusted({ $gte: nzDayStart(nzDaysFrom(today, -29)) }),
     }),
-    PayoutModel.countDocuments({ status: mongoose.trusted({ $in: ['HELD', 'FAILED'] }) }),
+    // Each as its queue's link lists them.
+    PayoutModel.countDocuments({ status: 'HELD' }),
+    PayoutModel.countDocuments({ status: 'FAILED' }),
     JobModel.countDocuments({ status: 'FAILED' }),
   ]);
   const [
@@ -104,6 +113,7 @@ export async function adminDashboard(
     riskFlags,
     failedPayments,
     heldPayouts,
+    failedPayouts,
     failedJobs,
   ] = counts;
   // Money is counted as the Reports page counts it, so both agree for the same dates.
@@ -143,6 +153,7 @@ export async function adminDashboard(
       riskFlags: riskFlags!,
       failedPayments: failedPayments!,
       heldPayouts: heldPayouts!,
+      failedPayouts: failedPayouts!,
       failedJobs: failedJobs!,
     },
     generatedAt: now.toISOString(),
@@ -232,17 +243,34 @@ export async function listJobs(query: z.infer<typeof jobQuerySchema>) {
   };
 }
 
-/** POST /admin/jobs/{id}/retry: a failed job runs again now, with a fresh set of attempts. */
+/**
+ * POST /admin/jobs/{id}/retry: a failed job runs again now, with a fresh set of attempts. A `notification.send`
+ * job's last attempt marked its email or text FAILED, which the job then skips: it goes back in the queue too,
+ * in the same step, unless it was sent after all (so nothing is sent twice).
+ */
 export async function retryJob(staffId: string, jobId: string, ip?: string) {
   const job = mongoose.isValidObjectId(jobId)
-    ? await JobModel.findOneAndUpdate(
-        { _id: jobId, status: 'FAILED' },
-        {
-          $set: { status: 'QUEUED', runAt: new Date(), attempts: 0 },
-          $unset: { finishedAt: 1, lockedAt: 1, lockedBy: 1 },
-        },
-        { new: true },
-      ).lean()
+    ? await withTransaction(async (session) => {
+        const retried = await JobModel.findOneAndUpdate(
+          { _id: jobId, status: 'FAILED' },
+          {
+            $set: { status: 'QUEUED', runAt: new Date(), attempts: 0 },
+            $unset: { finishedAt: 1, lockedAt: 1, lockedBy: 1 },
+          },
+          { new: true, session },
+        ).lean();
+        if (retried?.type === 'notification.send') {
+          const { notificationId } = retried.payload as { notificationId?: string };
+          if (notificationId && mongoose.isValidObjectId(notificationId)) {
+            await NotificationModel.updateOne(
+              { _id: notificationId, status: 'FAILED' },
+              { $set: { status: 'QUEUED' }, $unset: { error: 1 } },
+              { session },
+            );
+          }
+        }
+        return retried;
+      })
     : null;
   if (!job) throw new HttpError(404, 'NOT_FOUND', 'No failed job with that id.');
   await recordAudit({

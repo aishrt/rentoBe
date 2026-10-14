@@ -7,7 +7,7 @@ import { nzDate } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { notify } from '../notifications/notify.js';
 import { UserModel } from '../users/user.model.js';
-import { toHostVehicleView } from '../vehicles/host-vehicles.service.js';
+import { applyVerifiedExpiry, toHostVehicleView } from '../vehicles/host-vehicles.service.js';
 import { listingChecklist, PHOTO_ANGLE_NAMES } from '../vehicles/listing-checklist.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import { VehicleModel, type VehicleDocument } from '../vehicles/vehicle.model.js';
@@ -296,12 +296,21 @@ async function findVehicle(id: string): Promise<VehicleDocument> {
 }
 
 /**
+ * A car that had been live, back for review over key details its Host changed (plan §3): it keeps the bookings
+ * it had. Listings sent back before whether they were on was kept have their list of changes.
+ */
+const reReview = (vehicle: VehicleDocument) =>
+  (vehicle.status === 'UNDER_REVIEW' || vehicle.status === 'CHANGES_REQUESTED') &&
+  (vehicle.keyReviewFrom !== undefined || Array.isArray(vehicle.keyChanges));
+
+/**
  * GET /admin/vehicles/{id}: the listing as staff review it, with the key details its Host changed since it
- * was live, and while it's suspended, its upcoming bookings still to keep or cancel (plan §8.2), each time
- * the page loads rather than only in the answer to the suspension.
+ * was live, and its upcoming bookings still to keep or cancel, each time the page loads: while it's suspended
+ * (plan §8.2), back for review over its key details, or rejected (as it can be after such a review).
  */
 export async function getVehicleForReview(id: string, now = new Date()) {
   const vehicle = await findVehicle(id);
+  const withBookings = vehicle.status === 'SUSPENDED' || vehicle.status === 'REJECTED' || reReview(vehicle);
   const [host, settings, upcomingBookings] = await Promise.all([
     UserModel.findById(vehicle.hostId)
       .select(
@@ -309,7 +318,7 @@ export async function getVehicleForReview(id: string, now = new Date()) {
       )
       .lean(),
     getPlatformSettings(),
-    vehicle.status === 'SUSPENDED' ? upcomingFor({ vehicleId: vehicle._id }, now) : undefined,
+    withBookings ? upcomingFor({ vehicleId: vehicle._id }, now) : undefined,
   ]);
   return {
     vehicle: toHostVehicleView(vehicle, settings),
@@ -380,6 +389,8 @@ export async function decideListing(
       if (document.status === 'PENDING') {
         document.status = 'VERIFIED';
         document.reviewedBy = staff;
+        // A new rego, WOF or CoF date on a car approved before applies with the document showing it.
+        applyVerifiedExpiry(vehicle, document);
         changesApproved.push(`the ${documentName(document.type)}`);
       }
     }
@@ -593,13 +604,23 @@ export async function decideDocument(
   const wasPending = document.status === 'PENDING';
   document.status = verify ? 'VERIFIED' : 'REJECTED';
   document.reviewedBy = new mongoose.Types.ObjectId(staffId);
+  // The car's rego, WOF or CoF date moves with a verified document showing a later one (plan §3).
+  const expiryKeys = ['regoExpiry', 'wofExpiry', 'cofExpiry'] as const;
+  const datesBefore = expiryKeys.map((key) => vehicle[key]?.getTime());
+  if (verify) applyVerifiedExpiry(vehicle, document);
+  const datesChanged = Object.fromEntries(
+    expiryKeys.flatMap((key, index) =>
+      vehicle[key]?.getTime() !== datesBefore[index] ? [[key, nzDate(vehicle[key]!)]] : [],
+    ),
+  );
   await vehicle.save();
+  forget('vehicles:featured');
   await recordAudit({
     actorId: staffId,
     action: verify ? 'vehicle.document-verified' : 'vehicle.document-rejected',
     entity: 'vehicle',
     entityId: vehicle.id,
-    after: { documentId, type: document.type },
+    after: { documentId, type: document.type, ...datesChanged },
     ip,
   });
   const host = await UserModel.findById(vehicle.hostId).select('firstName').lean();

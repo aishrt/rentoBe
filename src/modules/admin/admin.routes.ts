@@ -84,7 +84,8 @@ import {
   openIncidentAsStaff,
   updateIncidentAsStaff,
 } from '../incidents/incidents.service.js';
-import { staffCompletionSchema } from '../inspections/inspections.schemas.js';
+import { correctReading, settleExtraKilometres } from '../inspections/extra-km.service.js';
+import { readingCorrectionSchema, staffCompletionSchema } from '../inspections/inspections.schemas.js';
 import { getHandover, submitInspection } from '../inspections/inspections.service.js';
 import { staffThreadQuerySchema } from '../messages/messages.schemas.js';
 import { moderateReviewSchema } from '../reviews/reviews.schemas.js';
@@ -93,7 +94,7 @@ import { openThreadForStaff } from '../messages/messages.service.js';
 
 async function findVehicleForCalendar(id: string) {
   const vehicle = mongoose.isValidObjectId(id)
-    ? await VehicleModel.findById(id).select('_id rules').lean()
+    ? await VehicleModel.findById(id).select('_id hostId rules').lean()
     : null;
   if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No such car.');
   return vehicle;
@@ -312,6 +313,34 @@ export function adminRouter() {
     res.json({ handover: await getHandover(fresh, 'STAFF') });
   });
 
+  // A mistyped reading on a condition report, corrected by staff with a note for the audit log (plan §8.2).
+  // A completed trip's extra kilometres are worked out again from it, so it needs the refunds permission.
+  router.post('/bookings/:id/readings', requirePermission('REFUNDS'), async (req, res) => {
+    const input = validate(readingCorrectionSchema, req.body ?? {});
+    const actor = { userId: req.auth!.userId, roles: req.auth!.roles };
+    const { booking } = await findBookingFor(actor, String(req.params.id));
+    await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
+    const extraKm = await correctReading(actor.userId, booking, input, req.ip);
+    const { booking: fresh } = await findBookingFor(actor, booking.id);
+    res.json({ handover: await getHandover(fresh, 'STAFF'), ...(extraKm && { extraKm }) });
+  });
+
+  // Staff charge the extra kilometres from the readings as they stand: one held above the daily review
+  // limit once they've checked it, or one they won't wait for the other party to confirm.
+  router.post('/bookings/:id/extra-km', requirePermission('REFUNDS'), async (req, res) => {
+    const actor = { userId: req.auth!.userId, roles: req.auth!.roles };
+    const { booking } = await findBookingFor(actor, String(req.params.id));
+    await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
+    const extraKm = await settleExtraKilometres(
+      actor.userId,
+      booking,
+      'Charged by staff after checking the readings',
+      req.ip,
+    );
+    const { booking: fresh } = await findBookingFor(actor, booking.id);
+    res.json({ handover: await getHandover(fresh, 'STAFF'), extraKm });
+  });
+
   // Incidents and disputes (spec §15): the support team's cases.
   router.get('/incidents', async (req, res) => {
     res.json(await listIncidentsForStaff(validate(staffIncidentListQuerySchema, req.query)));
@@ -441,6 +470,8 @@ export function adminRouter() {
   // unblock freed, which the calendar no longer shows once the block is gone.
   router.post('/vehicles/:id/blocks', async (req, res) => {
     const vehicle = await findVehicleForCalendar(String(req.params.id));
+    // A support member who hosts the car leaves its calendar to someone else (plan §6.2).
+    await assertNotOwnRecord(req.auth!.userId, [vehicle.hostId]);
     const input = validate(blockInputSchema, req.body);
     const block = await blockDates(vehicle._id, input, req.auth!.userId, 'ADMIN');
     await recordAudit({
@@ -461,6 +492,7 @@ export function adminRouter() {
 
   router.delete('/vehicles/:id/blocks/:blockId', async (req, res) => {
     const vehicle = await findVehicleForCalendar(String(req.params.id));
+    await assertNotOwnRecord(req.auth!.userId, [vehicle.hostId]);
     const blockId = String(req.params.blockId);
     const block = mongoose.isValidObjectId(blockId)
       ? await AvailabilityBlockModel.findOne({ _id: blockId, vehicleId: vehicle._id }).lean()

@@ -1,6 +1,8 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
+import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
+import { IncidentModel } from '../src/modules/incidents/incident.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { SupportTicketModel } from '../src/modules/support/support-ticket.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
@@ -77,7 +79,7 @@ describe('Support ticket attachments', () => {
     expect(refused.body.error.fields).toEqual({ contentType: 'Files can be a PDF or a photo' });
 
     const receipt = await upload(agent);
-    expect(receipt.key).toMatch(new RegExp(`^support/${kiri.id}/`));
+    expect(receipt.key).toMatch(new RegExp(`^incoming/private/support/${kiri.id}/`));
     const opened = await agent.post('/api/v1/support/tickets').send({ ...contact, attachments: [receipt] });
     expect(opened.status).toBe(201);
     const ref = opened.body.ref as string;
@@ -108,7 +110,8 @@ describe('Support ticket attachments', () => {
     // A signed link opens the file for a short while, without a session.
     const file = await open(own.messages[0].attachments[0].url);
     expect(file.status).toBe(200);
-    expect(file.headers['cache-control']).toBe('private, no-store');
+    // Kept by this browser only, while the link works.
+    expect(file.headers['cache-control']).toMatch(/^private, max-age=\d+$/);
     // The file itself has no address of its own.
     expect((await open(own.messages[0].attachments[0].url.replace(/\?.*$/, ''))).status).toBe(403);
 
@@ -381,6 +384,124 @@ describe('Answering a closed account', () => {
         buttonLabel: 'Contact us',
         note: `To reply, use the contact form and mention ${asked.body.ref}.`,
       },
+    });
+  });
+});
+
+describe('Handing support work on', () => {
+  it('hands a ticket to another team member or to nobody, never to someone it is about', async () => {
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
+    const mere = await createStaff('mere@example.co.nz', 'SUPPORT');
+    const kiri = await createUser();
+    const kiriAgent = await signIn(kiri.email);
+    const { body } = await kiriAgent.post('/api/v1/me/privacy-requests').send({ type: 'ACCESS' });
+    const samAgent = await staffAgent('sam@example.co.nz');
+    const path = `/api/v1/admin/support/tickets/${body.ref}`;
+
+    const taken = await samAgent.patch(path).send({ assignToMe: true });
+    expect(taken.body.ticket).toMatchObject({ assignedToId: sam.id });
+
+    const handed = await samAgent.patch(path).send({ assignTo: mere.id });
+    expect(handed.status).toBe(200);
+    expect(handed.body.ticket).toMatchObject({ assignedToId: mere.id });
+    expect(
+      await NotificationModel.findOne({
+        type: 'SUPPORT_TICKET_ASSIGNED',
+        userId: mere._id,
+        channel: 'IN_APP',
+      }),
+    ).toMatchObject({ payload: { title: `Support request ${body.ref} is assigned to you` } });
+
+    const notStaff = await samAgent.patch(path).send({ assignTo: kiri.id });
+    expect(notStaff.status).toBe(409);
+    expect(notStaff.body.error.code).toBe('NOT_STAFF');
+
+    // Mere is a Guest too, and asks for her own information: it can't be handed to her.
+    const own = await SupportTicketModel.create({
+      ref: 'ST-MERE01',
+      userId: mere._id,
+      subject: 'Privacy: a copy of my personal information',
+      category: 'PRIVACY',
+      messages: [{ authorId: mere._id, body: 'Please send it' }],
+    });
+    const toHerself = await samAgent
+      .patch(`/api/v1/admin/support/tickets/${own.ref}`)
+      .send({ assignTo: mere.id });
+    expect(toHerself.status).toBe(409);
+    expect(toHerself.body.error.code).toBe('OWN_RECORD');
+
+    const nobody = await samAgent.patch(path).send({ assignTo: null });
+    expect(nobody.body.ticket.assignedToId).toBeUndefined();
+    expect((await SupportTicketModel.findOne({ ref: body.ref }).lean())!.assignedTo).toBeUndefined();
+    expect(await AuditLogModel.countDocuments({ action: 'ticket.updated', entityId: body.ref })).toBe(3);
+  });
+
+  it('gives a removed team member’s open tickets and cases back to the team', async () => {
+    const aroha = await createStaff('aroha@example.co.nz', 'ADMIN');
+    const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
+    const kiri = await createUser();
+    const kiriAgent = await signIn(kiri.email);
+    const { body } = await kiriAgent.post('/api/v1/me/privacy-requests').send({ type: 'ACCESS' });
+    await SupportTicketModel.updateOne({ ref: body.ref }, { $set: { assignedTo: sam._id } });
+    const host = await createHost();
+    const vehicle = await createVehicle(host._id);
+    const booking = await createBookingRecord({
+      guestId: kiri._id,
+      hostId: host._id,
+      vehicleId: vehicle._id,
+    });
+    const incident = await IncidentModel.create({
+      caseRef: 'IN-SAM777',
+      bookingId: booking._id,
+      reporterId: kiri._id,
+      type: 'DAMAGE',
+      description: 'A scratch on the bumper',
+      assignedTo: sam._id,
+      events: [{ actorId: kiri._id, action: 'OPENED', visibility: 'BOTH', createdAt: new Date() }],
+    });
+
+    const admin = await staffAgent();
+    expect((await admin.delete(`/api/v1/admin/staff/${sam.id}`)).status).toBe(204);
+    expect((await SupportTicketModel.findOne({ ref: body.ref }).lean())!.assignedTo).toBeUndefined();
+    const released = (await IncidentModel.findById(incident._id).lean())!;
+    expect(released.assignedTo).toBeUndefined();
+    expect(released.events.at(-1)).toMatchObject({ action: 'UNASSIGNED', visibility: 'INTERNAL' });
+    expect(await AuditLogModel.findOne({ action: 'staff.remove' }).lean()).toMatchObject({
+      after: { unassigned: { tickets: 1, incidents: 1 } },
+    });
+
+    // A ticket or case still naming someone no longer on the team: the whole team hears of a reply.
+    await SupportTicketModel.updateOne({ ref: body.ref }, { $set: { assignedTo: sam._id } });
+    await IncidentModel.updateOne({ _id: incident._id }, { $set: { assignedTo: sam._id } });
+    await kiriAgent.post(`/api/v1/support/tickets/${body.ref}/messages`).send({ body: 'Any news?' });
+    expect(
+      await NotificationModel.exists({ type: 'SUPPORT_TICKET_REPLY', userId: aroha._id, channel: 'IN_APP' }),
+    ).toBeTruthy();
+    expect(await NotificationModel.exists({ type: 'SUPPORT_TICKET_REPLY', userId: sam._id })).toBeNull();
+    await kiriAgent.post(`/api/v1/incidents/${incident.caseRef}/events`).send({ note: 'Here is a photo' });
+    expect(
+      await NotificationModel.exists({ type: 'INCIDENT_UPDATE', userId: aroha._id, channel: 'IN_APP' }),
+    ).toBeTruthy();
+    expect(await NotificationModel.exists({ type: 'INCIDENT_UPDATE', userId: sam._id })).toBeNull();
+  });
+
+  it('gives a suspended team member’s open tickets back to the team', async () => {
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
+    const kiri = await createUser();
+    const { body } = await (
+      await signIn(kiri.email)
+    )
+      .post('/api/v1/me/privacy-requests')
+      .send({ type: 'ACCESS' });
+    await SupportTicketModel.updateOne({ ref: body.ref }, { $set: { assignedTo: sam._id } });
+    const admin = await staffAgent();
+    const suspended = await admin.post(`/api/v1/admin/users/${sam.id}/suspend`).send({ reason: 'On leave' });
+    expect(suspended.status).toBe(200);
+    expect((await SupportTicketModel.findOne({ ref: body.ref }).lean())!.assignedTo).toBeUndefined();
+    expect(await AuditLogModel.findOne({ action: 'user.suspended' }).lean()).toMatchObject({
+      after: { unassigned: { tickets: 1, incidents: 0 } },
     });
   });
 });

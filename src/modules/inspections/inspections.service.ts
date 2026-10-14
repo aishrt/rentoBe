@@ -9,13 +9,20 @@ import { recordAudit } from '../audit/audit.service.js';
 import { BookingModel, type Booking, type BookingDocument } from '../bookings/booking.model.js';
 import { completeTrip, startTrip } from '../bookings/booking-transitions.js';
 import type { Viewer } from '../bookings/booking-view.js';
-import { afterTripCompleted } from '../bookings/trip-completion.js';
+import { afterTripCompleted, extraKmConfirmed } from '../bookings/trip-completion.js';
 import { postSystemMessage } from '../messages/thread-core.js';
 import { releaseHeldPayouts } from '../payouts/payouts.service.js';
 import { notify } from '../notifications/notify.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import { getStorage, fileLink } from '../../integrations/storage/storage.js';
-import { bookingUploadFolder } from '../uploads/upload-folders.js';
+import { scheduleLateCheckInChecks } from '../bookings/trip-jobs.js';
+import {
+  bookingUploadFolder,
+  confirmEach,
+  discardFiles,
+  refuseRepeatedKeys,
+} from '../uploads/upload-folders.js';
+import { assertLicenceForTrip } from '../users/driver-licence.service.js';
 import { UserModel } from '../users/user.model.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import {
@@ -48,6 +55,11 @@ const HOUR_MS = 60 * 60 * 1000;
 export const CHECK_IN_OPENS_HOURS = 2;
 /** A fuel or charge reading this many points short of what the policy asks is flagged. */
 const FUEL_TOLERANCE_PCT = 5;
+/** A device clock a few minutes slow doesn't make a photo look older than the inspection. */
+const CLOCK_SLACK_MS = 5 * 60 * 1000;
+
+const checkInOpensAt = (booking: Pick<Booking, 'startAt'>) =>
+  new Date(booking.startAt.getTime() - CHECK_IN_OPENS_HOURS * HOUR_MS);
 
 const siteUrl = () => env.FRONTEND_URL.replace(/\/+$/, '');
 const handoverPath = (booking: Pick<Booking, 'ref'>, role: 'GUEST' | 'HOST') =>
@@ -142,7 +154,7 @@ export async function getHandover(
     VehicleModel.findById(booking.vehicleId).select('fuelType').lean(),
     UserModel.findById(booking.guestId).select('emailVerifiedAt').lean(),
   ]);
-  const opensAt = new Date(booking.startAt.getTime() - CHECK_IN_OPENS_HOURS * HOUR_MS);
+  const opensAt = checkInOpensAt(booking);
   const windowEnds = checkOut
     ? new Date(checkOut.createdAt.getTime() + settings.trips.damageReportWindowHours * HOUR_MS)
     : undefined;
@@ -157,6 +169,7 @@ export async function getHandover(
     fuelPolicy: booking.terms.fuelPolicy,
     requiredAngles: [...REQUIRED_INSPECTION_ANGLES],
     checkInOpensAt: opensAt.toISOString(),
+    checkInClosesAt: booking.endAt.toISOString(),
     checkIn: checkIn ? toReportView(record, checkIn, viewer) : null,
     checkOut: checkOut ? toReportView(record, checkOut, viewer) : null,
     ...(windowEnds && { damageWindowEndsAt: windowEnds.toISOString() }),
@@ -164,7 +177,9 @@ export async function getHandover(
     ...(checkIn && checkOut && { kilometres: kilometresFor(booking, checkIn, checkOut) }),
     fuelShortfall: fuelShort(booking, checkIn, checkOut),
     actions: {
-      checkIn: Boolean(party) && booking.status === 'CONFIRMED' && !checkIn && now >= opensAt,
+      // Until the end time: after it, support sorts the booking out (submitInspection).
+      checkIn:
+        Boolean(party) && booking.status === 'CONFIRMED' && !checkIn && now >= opensAt && now < booking.endAt,
       // Also on a trip support marked as started without a check-in (plan §8.2): there's then no
       // check-in record to compare with, and no extra kilometres to work out.
       checkOut: Boolean(party) && booking.status === 'ACTIVE' && !checkOut,
@@ -177,15 +192,49 @@ export async function getHandover(
   };
 }
 
+const angleWords = (angles: Iterable<string>) =>
+  [...new Set(angles)].map((angle) => angle.toLowerCase().replace('_', ' ')).join(', ');
+
+/**
+ * The earliest a party's inspection photos can have been taken: once check-in opened, and for check-out
+ * and damage flagged after it, once the check-in was done (when there is one).
+ */
+function photosFrom(booking: Pick<Booking, 'startAt'>, checkInAt?: Date) {
+  return checkInAt
+    ? { at: checkInAt, words: 'the check-in' }
+    : { at: checkInOpensAt(booking), words: 'check-in opened' };
+}
+
+/**
+ * Attaches the photos of a report, each upload once (plan §3): a key can't be sent twice, here or for
+ * another report, as its upload moves when it's attached. A party's photos can't be older than `from`.
+ */
 async function confirmPhotos(
   booking: BookingDocument,
   input: Pick<InspectionInput, 'photos'>,
   takenBy: string,
   now: Date,
+  from: { at: Date; words: string } | null,
 ) {
+  refuseRepeatedKeys(
+    input.photos.map((photo) => photo.key),
+    'photos',
+  );
+  const early = from
+    ? input.photos.filter((photo) => new Date(photo.takenAt).getTime() < from.at.getTime() - CLOCK_SLACK_MS)
+    : [];
+  if (early.length > 0) {
+    throw new HttpError(
+      400,
+      'PHOTOS_TOO_EARLY',
+      `Some photos were taken before ${from!.words}. Please take them again.`,
+      { photos: `Take again: ${angleWords(early.map((photo) => photo.angle))}` },
+    );
+  }
   const { folder, isPrivate } = bookingUploadFolder('INSPECTION_PHOTO', booking.id);
-  return Promise.all(
-    input.photos.map(async (photo) => ({
+  return confirmEach(
+    input.photos,
+    async (photo) => ({
       angle: photo.angle,
       url: await getStorage().confirmUpload({ folder, isPrivate, ref: photo.key }),
       takenBy: new mongoose.Types.ObjectId(takenBy),
@@ -195,9 +244,13 @@ async function confirmPhotos(
       ...(photo.exifTakenAt && { exifTakenAt: new Date(photo.exifTakenAt) }),
       uploadedAt: now,
       ...(photo.lat !== undefined && photo.lng !== undefined && { lat: photo.lat, lng: photo.lng }),
-    })),
+    }),
+    (photo) => [photo.url],
   );
 }
+
+const isDuplicateKey = (error: unknown) =>
+  error instanceof mongoose.mongo.MongoServerError && error.code === 11000;
 
 /** Tells the other party a report waits for their review, and notes it in the booking's chat. */
 async function announce(
@@ -307,8 +360,15 @@ export async function submitInspection(
         checkIn ? 'Check-in is already done.' : 'This booking isn’t ready for check-in.',
       );
     }
-    if (now.getTime() < booking.startAt.getTime() - CHECK_IN_OPENS_HOURS * HOUR_MS) {
+    if (now.getTime() < checkInOpensAt(booking).getTime()) {
       throw problem('TOO_EARLY', `Check-in opens ${CHECK_IN_OPENS_HOURS} hours before the trip starts.`);
+    }
+    // A check-in after the end would start a trip that's already overdue; support sorts it out instead.
+    if (now.getTime() >= booking.endAt.getTime()) {
+      throw problem(
+        'CHECK_IN_CLOSED',
+        'This trip’s end time has passed, so check-in is closed. Please contact support and we’ll sort out the booking.',
+      );
     }
     if (settings.verification.emailBeforeTripStart) {
       const guest = await UserModel.findById(booking.guestId).select('emailVerifiedAt').lean();
@@ -319,6 +379,8 @@ export async function submitInspection(
         );
       }
     }
+    // The Guest's licence is valid for the whole trip and accepted (plan §3): 409 LICENCE_NOT_ELIGIBLE.
+    await assertLicenceForTrip(booking, viewer, now);
   } else {
     // A trip support marked as started without a check-in in the app (plan §8.2) can be checked out by
     // either party, or completed by staff; its extra kilometres can't then be worked out.
@@ -346,60 +408,77 @@ export async function submitInspection(
     });
   }
 
-  const photos = await confirmPhotos(booking, input, actorId, now);
   const by = viewer === 'STAFF' ? 'STAFF' : viewer;
   const previousCheckOut = stage === 'CHECK_IN' ? await lastCheckOutOdometer(booking) : null;
+  // Staff add the photos the Host sent them, whenever they were taken.
+  const from =
+    by === 'STAFF' ? null : photosFrom(booking, stage === 'CHECK_OUT' ? checkIn?.createdAt : undefined);
+  const photos = await confirmPhotos(booking, input, actorId, now, from);
 
-  await withTransaction(async (session) => {
-    const [report] = await ConditionReportModel.create(
-      [
-        {
-          bookingId: booking._id,
-          stage,
-          submittedBy: actorId,
-          odometer: input.odometer,
-          fuelOrBatteryPct: input.fuelOrBatteryPct,
-          ...(input.notes && { notes: input.notes }),
-          photos,
-          damagePins: input.damagePins.map((pin) => ({
-            ...pin,
-            newDamage: stage === 'CHECK_OUT',
-            flaggedBy: actorId,
-            flaggedAt: now,
-          })),
-          ...(by === 'GUEST' && { confirmedByGuestAt: now }),
-          ...(by === 'HOST' && { confirmedByHostAt: now }),
-          ...(by === 'STAFF' && { completedBy: actorId }),
-        },
-      ],
-      { session },
-    );
-    const moved =
-      stage === 'CHECK_IN'
-        ? await startTrip(booking, session, {
-            by: actorId,
-            graceMinutes: settings.trips.lateReturnGraceMinutes,
-            now,
-          })
-        : await completeTrip(booking, session, {
-            by: actorId,
-            now,
-            ...(by === 'STAFF' && { reason: 'Completed by support: check-out was missing' }),
-          });
-    if (!moved) throw problem('ALREADY_CHANGED', 'This booking has just changed. Please refresh.');
-    const record = moved.toObject() as BookingRecord;
-    await announce(record, stage, by, report!, session, now);
-    // The trip went ahead: a payout waiting for check-in can go (plan §8.1, item 9).
-    if (stage === 'CHECK_IN')
-      await releaseHeldPayouts({ bookingId: booking._id }, 'TRIP_NOT_STARTED', { session, now });
-    if (stage === 'CHECK_OUT')
-      await afterTripCompleted(
-        record,
-        checkIn ? { checkIn, checkOut: report!.toObject() as ReportRecord } : null,
-        session,
-        now,
+  try {
+    await withTransaction(async (session) => {
+      const [report] = await ConditionReportModel.create(
+        [
+          {
+            bookingId: booking._id,
+            stage,
+            submittedBy: actorId,
+            odometer: input.odometer,
+            fuelOrBatteryPct: input.fuelOrBatteryPct,
+            ...(input.notes && { notes: input.notes }),
+            photos,
+            damagePins: input.damagePins.map((pin) => ({
+              ...pin,
+              newDamage: stage === 'CHECK_OUT',
+              flaggedBy: actorId,
+              flaggedAt: now,
+            })),
+            ...(by === 'GUEST' && { confirmedByGuestAt: now }),
+            ...(by === 'HOST' && { confirmedByHostAt: now }),
+            ...(by === 'STAFF' && { completedBy: actorId }),
+          },
+        ],
+        { session },
       );
-  });
+      const moved =
+        stage === 'CHECK_IN'
+          ? await startTrip(booking, session, {
+              by: actorId,
+              graceMinutes: settings.trips.lateReturnGraceMinutes,
+              now,
+            })
+          : await completeTrip(booking, session, {
+              by: actorId,
+              now,
+              ...(by === 'STAFF' && { reason: 'Completed by support: check-out was missing' }),
+            });
+      if (!moved) throw problem('ALREADY_CHANGED', 'This booking has just changed. Please refresh.');
+      const record = moved.toObject() as BookingRecord;
+      await announce(record, stage, by, report!, session, now);
+      // The trip went ahead: a payout waiting for check-in can go (plan §8.1, item 9).
+      if (stage === 'CHECK_IN')
+        await releaseHeldPayouts({ bookingId: booking._id }, 'TRIP_NOT_STARTED', { session, now });
+      // Done after the start: the checks for a check-in the other party never confirms run from now.
+      if (stage === 'CHECK_IN') await scheduleLateCheckInChecks(record, session, now);
+      if (stage === 'CHECK_OUT')
+        await afterTripCompleted(
+          record,
+          checkIn ? { checkIn, checkOut: report!.toObject() as ReportRecord } : null,
+          session,
+          now,
+        );
+    });
+  } catch (error) {
+    // Nothing points to the photos now. Two at once: the other party's check-in or check-out got there first.
+    await discardFiles(photos.map((photo) => photo.url));
+    if (isDuplicateKey(error)) {
+      throw problem(
+        stage === 'CHECK_IN' ? 'NOT_CHECK_IN' : 'NOT_CHECK_OUT',
+        `${stage === 'CHECK_IN' ? 'Check-in' : 'Check-out'} is already done.`,
+      );
+    }
+    throw error;
+  }
 
   if (previousCheckOut !== null && stage === 'CHECK_IN' && input.odometer < previousCheckOut) {
     await alertStaff({
@@ -444,6 +523,14 @@ export async function confirmInspection(
   if (updated.matchedCount === 0 && !(await ConditionReportModel.exists({ bookingId: booking._id, stage }))) {
     throw new HttpError(404, 'NOT_FOUND', 'That report hasn’t been done yet.');
   }
+  // Both parties agree the check-out readings: the extra kilometres needn't wait for the damage-report window
+  // to close (plan §8.2).
+  if (stage === 'CHECK_OUT' && updated.modifiedCount > 0) {
+    const report = await ConditionReportModel.findOne({ bookingId: booking._id, stage })
+      .select('confirmedByGuestAt confirmedByHostAt')
+      .lean();
+    if (report?.confirmedByGuestAt && report.confirmedByHostAt) await extraKmConfirmed(booking.id, now);
+  }
 }
 
 /**
@@ -466,31 +553,37 @@ export async function flagDamage(
         : 'New damage is flagged at check-out.',
     );
   }
-  const photos = await confirmPhotos(booking, input, actorId, now);
-  await withTransaction(async (session) => {
-    await ConditionReportModel.updateOne(
-      { bookingId: booking._id, stage: 'CHECK_OUT' },
-      {
-        $push: {
-          damagePins: {
-            $each: input.damagePins.map((pin) => ({
-              ...pin,
-              ...(!pin.note && input.note && { note: input.note.slice(0, 500) }),
-              newDamage: true,
-              flaggedBy: actorId,
-              flaggedAt: now,
-            })),
+  const checkInAt = handover.checkIn ? new Date(handover.checkIn.submittedAt) : undefined;
+  const photos = await confirmPhotos(booking, input, actorId, now, photosFrom(booking, checkInAt));
+  try {
+    await withTransaction(async (session) => {
+      await ConditionReportModel.updateOne(
+        { bookingId: booking._id, stage: 'CHECK_OUT' },
+        {
+          $push: {
+            damagePins: {
+              $each: input.damagePins.map((pin) => ({
+                ...pin,
+                ...(!pin.note && input.note && { note: input.note.slice(0, 500) }),
+                newDamage: true,
+                flaggedBy: actorId,
+                flaggedAt: now,
+              })),
+            },
+            photos: { $each: photos },
           },
-          photos: { $each: photos },
         },
-      },
-      { session },
-    );
-    const who = viewer === 'GUEST' ? 'The guest' : 'The host';
-    await postSystemMessage(
-      booking,
-      `${who} flagged new damage after the trip${input.note ? `: ${input.note}` : '.'} Support can help through an incident report if needed.`,
-      { session, now },
-    );
-  });
+        { session },
+      );
+      const who = viewer === 'GUEST' ? 'The guest' : 'The host';
+      await postSystemMessage(
+        booking,
+        `${who} flagged new damage after the trip${input.note ? `: ${input.note}` : '.'} Support can help through an incident report if needed.`,
+        { session, now },
+      );
+    });
+  } catch (error) {
+    await discardFiles(photos.map((photo) => photo.url));
+    throw error;
+  }
 }

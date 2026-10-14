@@ -122,6 +122,11 @@ describe('two-way reviews', () => {
     expect((await UserModel.findById(host._id).lean())!.hostProfile!.rating).toEqual({ avg: 4, count: 2 });
     expect((await VehicleModel.findById(vehicle._id).lean())!.rating).toEqual({ avg: 4, count: 2 });
     expect(await NotificationModel.countDocuments({ type: 'REVIEW_PUBLISHED', channel: 'IN_APP' })).toBe(2);
+    // Each opens the reviews about them: the Host's in the Host area.
+    const link = async (userId: unknown) =>
+      (await NotificationModel.findOne({ userId, type: 'REVIEW_PUBLISHED' }).lean())!.payload;
+    expect(await link(host._id)).toMatchObject({ link: '/account/reviews?as=host' });
+    expect(await link(guest._id)).toMatchObject({ link: '/account/reviews' });
 
     const mine = await guestAgent.get('/api/v1/me/reviews');
     expect(mine.body.toWrite).toEqual([]);
@@ -172,6 +177,11 @@ describe('two-way reviews', () => {
     expect(hostProfile.body.profile.asHost).toMatchObject({ rating: { avg: 5, count: 1 } });
     expect(hostProfile.body.reviews).toEqual([expect.objectContaining({ direction: 'GUEST_TO_HOST' })]);
 
+    // The profile alone (plan §11), the same as with the reviews.
+    const profileOnly = await browserAgent().get(`/api/v1/users/${host.id}/profile`);
+    expect(profileOnly.status).toBe(200);
+    expect(profileOnly.body).toEqual({ profile: hostProfile.body.profile });
+
     // Open to visitors too; a suspended or closed account isn't shown.
     expect((await browserAgent().get(`/api/v1/users/${host.id}/reviews`)).status).toBe(200);
     await createUser({ email: 'tama@example.co.nz', firstName: 'Tama' });
@@ -179,6 +189,7 @@ describe('two-way reviews', () => {
     expect((await member.get(`/api/v1/users/${host.id}/reviews`)).status).toBe(200);
     await UserModel.updateOne({ _id: host._id }, { $set: { status: 'SUSPENDED' } });
     expect((await member.get(`/api/v1/users/${host.id}/reviews`)).status).toBe(404);
+    expect((await member.get(`/api/v1/users/${host.id}/profile`)).status).toBe(404);
     await UserModel.updateOne({ _id: guest._id }, { $set: { closedAt: new Date() } });
     expect((await member.get(`/api/v1/users/${guest.id}/reviews`)).status).toBe(404);
     expect((await member.get('/api/v1/users/not-an-id/reviews')).status).toBe(404);

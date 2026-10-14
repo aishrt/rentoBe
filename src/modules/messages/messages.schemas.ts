@@ -70,8 +70,36 @@ export const threadSummarySchema = z
   .meta({ id: 'ThreadSummary' });
 export type ThreadSummary = z.infer<typeof threadSummarySchema>;
 
+/** Conversations on one page of the inbox, unless fewer are asked for. */
+export const THREADS_PAGE_SIZE = 100;
+
+export const threadsQuerySchema = z.object({
+  cursor: z
+    .string()
+    .max(100)
+    .optional()
+    .meta({ description: 'The `nextCursor` of the page before, for the next page' }),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(THREADS_PAGE_SIZE)
+    .default(THREADS_PAGE_SIZE)
+    .meta({ description: `How many to return, most recent first: 1 to ${THREADS_PAGE_SIZE}` }),
+});
+
 export const threadsResponseSchema = z
-  .object({ threads: z.array(threadSummarySchema), unreadTotal: z.number().int() })
+  .object({
+    threads: z.array(threadSummarySchema),
+    unreadTotal: z
+      .number()
+      .int()
+      .meta({ description: 'Unread messages in every conversation, not just on this page' }),
+    nextCursor: z
+      .string()
+      .optional()
+      .meta({ description: 'Pass as `cursor` for the next page. Left out on the last page' }),
+  })
   .meta({ id: 'Threads' });
 
 export const unreadMessagesResponseSchema = z

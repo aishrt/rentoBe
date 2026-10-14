@@ -56,23 +56,22 @@ const view = (identity: IdentityVerification | undefined): IdentityStatusView =>
 const safeReturn = (path: string | undefined) =>
   path && path.startsWith('/') && !path.startsWith('//') ? path : '/account';
 
+const alreadyVerified = () => new HttpError(409, 'ALREADY_VERIFIED', 'Your identity is already verified.');
+const inReview = () =>
+  new HttpError(409, 'IN_REVIEW', 'Our team is checking your identity. We’ll email you when it’s done.');
+
 /**
- * POST /me/verification: Stripe's identity page for this person. A check already under way carries on;
- * otherwise a new one starts. Stripe brings them back to `returnTo` on the website.
+ * POST /me/verification: Stripe's identity page for this person. A check already under way carries on: one
+ * still waiting for the person reopens, one Stripe is checking answers 409 IDENTITY_PROCESSING (checkout
+ * waits for its result, plan §8.2), and one that has passed is applied rather than started again. A new
+ * check starts only when there's none, or the last was cancelled. Stripe brings them back to `returnTo`.
  */
 export async function startIdentityCheck(userId: string, returnTo?: string): Promise<{ url: string }> {
   const user = await UserModel.findById(userId).select('email status identityVerification');
   if (!user || user.status !== 'ACTIVE') throw unauthenticated();
   const identity = user.identityVerification;
-  if (identity?.status === 'APPROVED')
-    throw new HttpError(409, 'ALREADY_VERIFIED', 'Your identity is already verified.');
-  if (identity?.status === 'PENDING') {
-    throw new HttpError(
-      409,
-      'IN_REVIEW',
-      'Our team is checking your identity. We’ll email you when it’s done.',
-    );
-  }
+  if (identity?.status === 'APPROVED') throw alreadyVerified();
+  if (identity?.status === 'PENDING') throw inReview();
   if (identity?.status === 'REJECTED') {
     throw new HttpError(
       409,
@@ -83,9 +82,23 @@ export async function startIdentityCheck(userId: string, returnTo?: string): Pro
 
   const client = stripe();
   const returnUrl = `${siteUrl()}${safeReturn(returnTo)}`;
-  if (identity?.providerRef && identity.sessionStatus === 'requires_input') {
+  if (identity?.providerRef && identity.sessionStatus !== 'canceled') {
     const existing = await client.identity.verificationSessions.retrieve(identity.providerRef);
     if (existing.status === 'requires_input' && existing.url) return { url: existing.url };
+    if (existing.status === 'processing' || existing.status === 'verified') {
+      // Its result may not have reached us yet (the webhook's job runs a moment later): it's applied now.
+      const synced = await syncIdentity(user.id).catch((error: unknown) => {
+        logger.warn({ err: error, userId }, 'Could not sync the identity check');
+        return null;
+      });
+      if (synced?.status === 'APPROVED') throw alreadyVerified();
+      if (synced?.status === 'PENDING') throw inReview();
+      throw new HttpError(
+        409,
+        'IDENTITY_PROCESSING',
+        'We’re checking your ID. This usually takes a minute or two.',
+      );
+    }
   }
   const session = await client.identity.verificationSessions.create({
     type: 'document',
@@ -126,10 +139,14 @@ export async function startIdentityCheck(userId: string, returnTo?: string): Pro
   return { url: session.url! };
 }
 
-/** Webhook: Stripe has news about a check. The work happens in a job, outside the webhook's transaction. */
+/**
+ * Webhook: Stripe has news about a check. The work happens in a job, outside the webhook's transaction. Each
+ * event has its own job, so a check that goes back to processing after a retry is read again.
+ */
 export async function queueIdentitySync(
   session: Stripe.Identity.VerificationSession,
   dbSession: ClientSession,
+  eventId?: string,
 ) {
   const userId = session.metadata?.userId ?? session.client_reference_id;
   if (!userId) return;
@@ -137,7 +154,7 @@ export async function queueIdentitySync(
     'identity.sync',
     { userId, sessionId: session.id },
     {
-      uniqueKey: `identity-sync:${session.id}:${session.status}:${session.last_error?.code ?? ''}`,
+      uniqueKey: `identity-sync:${session.id}:${eventId ?? `${session.status}:${session.last_error?.code ?? ''}`}`,
       session: dbSession,
     },
   );

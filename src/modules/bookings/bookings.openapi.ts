@@ -34,9 +34,9 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Bookings'],
     summary: 'What checkout’s verification step still needs',
     description:
-      'Mobile, licence details and the eligibility rules in settings. With `end`, the licence is checked against that trip end.',
+      'Mobile, licence details and the eligibility rules in settings. With `end`, the licence is checked against that trip end; with `start`, age and years licensed count to that trip start (otherwise to today).',
     security: signedIn,
-    request: { query: z.object({ end: z.string().optional() }) },
+    request: { query: z.object({ end: z.string().optional(), start: z.string().optional() }) },
     responses: { 200: jsonResponse('Readiness', checkoutReadinessSchema), ...errorResponses(401) },
   });
 
@@ -46,7 +46,7 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Bookings'],
     summary: 'Save driver licence details',
     description:
-      'The number is encrypted, and a keyed hash finds the same licence on another account (a risk flag, not an error). The identity check confirms it when the person uses their licence as the ID; otherwise support staff check it.',
+      'The number is encrypted, and a keyed hash finds the same licence on another account (a risk flag, not an error). The identity check confirms it when the person uses their licence as the ID; otherwise support staff check it. The person’s upcoming bookings are checked against the new details: a request that no longer qualifies waits for support, and support hear of a confirmed trip that no longer does.',
     security: signedIn,
     request: { body: jsonBody(driverLicenceInputSchema) },
     responses: { 200: jsonResponse('Readiness', checkoutReadinessSchema), ...errorResponses(400, 401) },
@@ -73,7 +73,7 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Bookings'],
     summary: 'Start the identity check (Stripe Identity)',
     description:
-      'A photo of an ID (the driver licence if possible) and a matching selfie, on Stripe’s page. Stripe brings the person back to `returnTo`, a path on the website.',
+      'A photo of an ID (the driver licence if possible) and a matching selfie, on Stripe’s page. Stripe brings the person back to `returnTo`, a path on the website. A check under way carries on: one waiting for the person reopens; 409 IDENTITY_PROCESSING while Stripe is checking one, ALREADY_VERIFIED or IN_REVIEW once its result is applied. A new check starts only when the last was cancelled.',
     security: signedIn,
     request: {
       body: {
@@ -229,7 +229,7 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Bookings'],
     summary: 'Cancel a booking, or withdraw a request',
     description:
-      'The Guest: an unpaid checkout is released, a request withdrawn (nothing charged), a confirmed booking refunded under its tier. The Host: a confirmed booking is refunded in full and any Host cancellation fee applies; a request is declined instead (409 USE_DECLINE).',
+      'The Guest: an unpaid checkout is released, a request withdrawn (nothing charged), a confirmed booking refunded under its tier; after the pick-up time it counts as not turning up, so the tier applies as at the start time. The Host: a confirmed booking is refunded in full and any Host cancellation fee applies, until the start time (then 409 TRIP_STARTED: support handles it); a request is declined instead (409 USE_DECLINE). With expectedRefundCents, a refund now lower than the preview showed cancels nothing (409 REFUND_CHANGED).',
     security: signedIn,
     request: { params: idParam, body: jsonBody(cancelBookingSchema) },
     responses: {

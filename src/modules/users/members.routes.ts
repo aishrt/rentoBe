@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/auth.js';
 import { blockUser, unblockUser } from '../moderation/reports.service.js';
-import { memberReviews } from '../reviews/reviews.service.js';
+import { memberProfile, memberReviews } from '../reviews/reviews.service.js';
 
 /** Mounted at /api/v1/users: other members, as far as each party may see them (plan §6.2). */
 export function membersRouter() {
@@ -11,6 +11,11 @@ export function membersRouter() {
   // only what a listing already shows of its Host, so it's open to visitors, like the listing that links to it.
   router.get('/:id/reviews', async (req, res) => {
     res.json(await memberReviews(String(req.params.id)));
+  });
+
+  // The profile alone (plan §11), for a page that doesn't need the reviews.
+  router.get('/:id/profile', async (req, res) => {
+    res.json(await memberProfile(String(req.params.id)));
   });
 
   router.use(requireAuth);

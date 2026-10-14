@@ -406,3 +406,102 @@ describe('data retention', () => {
     expect(await runDataRetention(later)).toMatchObject({ identitiesRedacted: 0 });
   });
 });
+
+describe('a check already under way', () => {
+  it('waits for one Stripe is checking, and applies one that passed, rather than starting another', async () => {
+    const { user, agent } = await guestWithLicence();
+    await agent.post('/api/v1/me/verification').send({ returnTo: '/book/abc' });
+
+    // Back from Stripe's page before its webhook arrives: Stripe is checking the ID, and nothing new starts.
+    session = { ...session, status: 'processing' };
+    const again = await agent.post('/api/v1/me/verification').send({});
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('IDENTITY_PROCESSING');
+    expect(client.identity.verificationSessions.create).toHaveBeenCalledTimes(1);
+    expect((await agent.get('/api/v1/me/checkout')).body.identityProcessing).toBe(true);
+
+    // It passed: applied there and then, so the result isn't lost to a new check.
+    session = { ...session, status: 'verified', last_verification_report: 'vr_1' };
+    report = licenceReport('AB123456');
+    const passed = await agent.post('/api/v1/me/verification').send({});
+    expect(passed.status).toBe(409);
+    expect(passed.body.error.code).toBe('ALREADY_VERIFIED');
+    expect(client.identity.verificationSessions.create).toHaveBeenCalledTimes(1);
+    expect((await UserModel.findById(user._id).lean())!.identityVerification).toMatchObject({
+      providerRef: 'vs_1',
+      status: 'APPROVED',
+    });
+  });
+
+  it('queues each of Stripe’s events about a check, even two with the same status', async () => {
+    const { user } = await guestWithLicence();
+    const deliver = (id: string) => {
+      const payload = JSON.stringify({
+        id,
+        object: 'event',
+        type: 'identity.verification_session.processing',
+        api_version: '2026-08-26.dahlia',
+        created: 1_790_000_000,
+        livemode: false,
+        pending_webhooks: 1,
+        request: { id: null, idempotency_key: null },
+        data: {
+          object: {
+            id: 'vs_1',
+            object: 'identity.verification_session',
+            status: 'processing',
+            metadata: { userId: user.id },
+          },
+        },
+      });
+      return request(app)
+        .post('/api/v1/payments/webhook')
+        .set('Content-Type', 'application/json')
+        .set(
+          'Stripe-Signature',
+          Stripe.webhooks.generateTestHeaderString({ payload, secret: env.STRIPE_WEBHOOK_SECRET! }),
+        )
+        .send(payload);
+    };
+    // Processing, then (after a retry) processing again: the second is read too.
+    expect((await deliver('evt_processing_1')).status).toBe(200);
+    expect((await deliver('evt_processing_2')).status).toBe(200);
+    expect(await JobModel.countDocuments({ type: 'identity.sync', 'payload.userId': user.id })).toBe(2);
+  });
+});
+
+describe('a closed account’s identity check', () => {
+  it('is redacted 90 days after it began, even while it waited for support', async () => {
+    const closedLongAgo = await createUser({ email: 'closed@example.co.nz' });
+    const closedRecently = await createUser({ email: 'closed.recently@example.co.nz' });
+    const stillOpen = await createUser({ email: 'open@example.co.nz' });
+    for (const [person, providerRef, days, closed] of [
+      [closedLongAgo, 'vs_closed', 91, true],
+      [closedRecently, 'vs_closed_recent', 10, true],
+      [stillOpen, 'vs_open', 91, false],
+    ] as const) {
+      await UserModel.updateOne(
+        { _id: person._id },
+        {
+          $set: {
+            identityVerification: {
+              status: 'PENDING',
+              providerRef,
+              startedAt: new Date(Date.now() - days * DAY_MS),
+            },
+            ...(closed && { closedAt: new Date(Date.now() - DAY_MS) }),
+          },
+        },
+      );
+    }
+
+    expect(await runDataRetention()).toMatchObject({ identitiesRedacted: 1 });
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledWith('vs_closed');
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledTimes(1);
+    // Support still decides an open account's check; the recent one goes in its turn.
+    expect(await runDataRetention(new Date(Date.now() + 81 * DAY_MS))).toMatchObject({
+      identitiesRedacted: 1,
+    });
+    expect(client.identity.verificationSessions.redact).toHaveBeenLastCalledWith('vs_closed_recent');
+  });
+});

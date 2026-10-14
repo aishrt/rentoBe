@@ -102,10 +102,13 @@ export const attachmentInputSchema = z
   .meta({ id: 'AttachmentInput' });
 export type AttachmentInput = z.infer<typeof attachmentInputSchema>;
 
-/** A private file as the people allowed to see it get it: a link that works for 10 minutes. */
+/** A private file as the people allowed to see it get it: a link that works for at least 10 minutes. */
 export const attachmentViewSchema = z
   .object({
     url: z.string(),
+    previewUrl: z.string().optional().meta({
+      description: 'A message photo’s smaller copy, to show in the conversation; `url` opens the photo',
+    }),
     name: z.string().optional(),
     contentType: z.string().optional(),
   })

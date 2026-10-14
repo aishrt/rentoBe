@@ -1,4 +1,4 @@
-import mongoose, { type Types } from 'mongoose';
+import mongoose, { type ClientSession, type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { formatNzdExact } from '../../lib/format.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -6,7 +6,7 @@ import type { FileAttachment } from '../../lib/model-fields.js';
 import { randomRef } from '../../lib/refs.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
-import { BookingModel, type Booking } from '../bookings/booking.model.js';
+import { BookingModel, type Booking, type ExtraChargeType } from '../bookings/booking.model.js';
 import type { Actor } from '../bookings/booking.service.js';
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { notify } from '../notifications/notify.js';
@@ -115,6 +115,22 @@ function replyVisibility(
   return caseVisibleTo(incident, role === 'GUEST' ? 'HOST' : 'GUEST') ? 'BOTH' : role;
 }
 
+/**
+ * Whether support is waiting for this party's answer: the case awaits a response, and support asked them (a
+ * question for both sides, or for them alone), not only the other party. Their reply then hands the case back.
+ */
+function awaitsParty(incident: Pick<Incident, 'status' | 'events'>, role: 'GUEST' | 'HOST'): boolean {
+  if (incident.status !== 'AWAITING_RESPONSE') return false;
+  const askedLast = incident.events.findLast((candidate) => candidate.status === 'AWAITING_RESPONSE');
+  return !askedLast || askedLast.visibility === 'INTERNAL' || visibleTo(askedLast, role);
+}
+
+/**
+ * What can't be reported after the damage-report window following check-out, unless staff open the case
+ * (plan §3): damage, however it's filed. Tolls, infringements, no-shows and the rest arrive later.
+ */
+const WINDOW_TYPES: readonly Incident['type'][] = ['DAMAGE', 'ACCIDENT', 'CLEANING', 'FUEL'];
+
 /** Cases whose charges are covered by the protection plan beyond its excess (plan §3, Guest Agreement). */
 const EXCESS_CAPPED_TYPES: readonly Incident['type'][] = ['DAMAGE', 'ACCIDENT', 'THEFT'];
 
@@ -124,16 +140,30 @@ const caseCharges = (incident: Pick<IncidentRecord, '_id'>, booking: Pick<Bookin
     (charge) => charge.incidentId?.equals(incident._id) && charge.status !== 'CANCELLED',
   );
 
+/** Charges the plan's excess caps on a case of any type: damage, whatever the case was filed as. */
+const EXCESS_CAPPED_CHARGES: readonly ExtraChargeType[] = ['DAMAGE'];
+const capsCharge = (type: string | undefined) =>
+  (EXCESS_CAPPED_CHARGES as readonly string[]).includes(type ?? '');
+
 /**
- * How much more a damage, accident or theft case can charge a Guest who booked a protection plan: the
- * case's charges together stay within the plan's excess. Undefined when nothing but the charge limit
- * applies.
+ * How much more a case can charge a Guest who booked a protection plan, when the plan's excess caps it: on a
+ * damage, accident or theft case, the case's charges together stay within the excess; on another case, its
+ * damage charges do (`chargeType`: the charge about to be added). Undefined when nothing but the charge
+ * limit applies. `types`: the charge types that count, when not all of them do.
  */
-function chargeLimit(incident: Pick<IncidentRecord, '_id' | 'type'>, booking: Booking) {
+function chargeLimit(incident: Pick<IncidentRecord, '_id' | 'type'>, booking: Booking, chargeType?: string) {
   const plan = booking.protectionPlan;
-  if (!plan || !EXCESS_CAPPED_TYPES.includes(incident.type)) return undefined;
-  const charged = caseCharges(incident, booking).reduce((sum, charge) => sum + charge.amountCents, 0);
-  return { plan, charged, remaining: Math.max(0, plan.excessCents - charged) };
+  const wholeCase = EXCESS_CAPPED_TYPES.includes(incident.type);
+  if (!plan || !(wholeCase || capsCharge(chargeType))) return undefined;
+  const charged = caseCharges(incident, booking)
+    .filter((charge) => wholeCase || capsCharge(charge.type))
+    .reduce((sum, charge) => sum + charge.amountCents, 0);
+  return {
+    plan,
+    charged,
+    remaining: Math.max(0, plan.excessCents - charged),
+    ...(!wholeCase && { types: EXCESS_CAPPED_CHARGES }),
+  };
 }
 
 /** The description a party sees when support opened the case without sharing its first note with them. */
@@ -209,6 +239,7 @@ async function toView(
     canReply: role === 'STAFF' || (OPEN_INCIDENT_STATUSES as readonly string[]).includes(incident.status),
     ...(role !== 'STAFF' && {
       sharedWithOtherParty: replyVisibility(incident, booking, role) === 'BOTH',
+      awaitingYou: awaitsParty(incident, role),
     }),
     ...(role === 'STAFF' && {
       audience: caseAudience(incident),
@@ -404,7 +435,9 @@ export async function reportIncident(
       'Incidents can be reported on confirmed trips. Contact support for anything else.',
     );
   }
-  if (input.type === 'DAMAGE' && booking.status === 'COMPLETED') {
+  // Whatever it's filed as, damage found after the trip must come within the window (plan §3); staff can
+  // still open a case after it (openIncidentAsStaff).
+  if (WINDOW_TYPES.includes(input.type) && booking.status === 'COMPLETED') {
     const settings = await getPlatformSettings();
     const checkOut = await ConditionReportModel.findOne({ bookingId: booking._id, stage: 'CHECK_OUT' })
       .select('createdAt')
@@ -415,7 +448,8 @@ export async function reportIncident(
       throw new HttpError(
         409,
         'DAMAGE_WINDOW_CLOSED',
-        `Damage must be reported within ${settings.trips.damageReportWindowHours} hours of check-out. Contact support if you need help.`,
+        `${input.type === 'ACCIDENT' ? 'An accident' : TYPE_WORDS[input.type]} must be reported within ${settings.trips.damageReportWindowHours} hours of check-out, and that time has passed. Contact support if you need help.`,
+        { type: `Report this within ${settings.trips.damageReportWindowHours} hours of check-out` },
       );
     }
   }
@@ -563,6 +597,7 @@ function summary(incident: IncidentRecord, booking: BookingRecord, viewerId: str
     status: incident.status,
     reportedBy: reporter === 'STAFF' ? ('SUPPORT' as const) : reporter,
     role,
+    ...(role !== 'STAFF' && { awaitingYou: awaitsParty(incident, role) }),
     createdAt: incident.createdAt.toISOString(),
     updatedAt: incident.updatedAt.toISOString(),
   };
@@ -620,10 +655,7 @@ export async function replyToIncident(
   }
   const attachments = await confirmBookingFiles('INCIDENT_FILE', booking._id.toString(), input.attachments);
   // Back with support once the party support asked has answered (a reply from the other side doesn't).
-  const askedLast = incident.events.findLast((candidate) => candidate.status === 'AWAITING_RESPONSE');
-  const answersQuestion =
-    incident.status === 'AWAITING_RESPONSE' &&
-    (!askedLast || askedLast.visibility === 'INTERNAL' || visibleTo(askedLast, role));
+  const answersQuestion = awaitsParty(incident, role);
   const event: IncidentEvent = {
     actorId: new mongoose.Types.ObjectId(actor.userId),
     action: 'COMMENT',
@@ -645,7 +677,7 @@ export async function replyToIncident(
   const title = `${role === 'GUEST' ? 'The guest' : 'The host'} added to case ${incident.caseRef}`;
   const staffLink = `/admin/incidents/${incident.caseRef}`;
   const dedupeKey = `INCIDENT_STAFF:${incident._id.toString()}:${updated.events.length - 1}`;
-  if (incident.assignedTo) {
+  if (incident.assignedTo && (await findActiveStaff(incident.assignedTo.toString()))) {
     await notify({
       userId: incident.assignedTo,
       type: 'INCIDENT_UPDATE',
@@ -655,7 +687,7 @@ export async function replyToIncident(
       dedupeKey,
     });
   } else {
-    // Nobody has the case yet: the whole team hears, so the update doesn't wait unseen (plan §7).
+    // Nobody on the team has the case: the whole team hears, so the update doesn't wait unseen (plan §7).
     await alertStaff({
       type: 'INCIDENT_UPDATE',
       title,
@@ -904,7 +936,7 @@ export async function chargeFromIncident(
   if (incident.status !== 'RESOLVED') {
     throw new HttpError(409, 'NOT_RESOLVED', 'Resolve the case before adding a charge.');
   }
-  const limit = chargeLimit(incident, booking);
+  const limit = chargeLimit(incident, booking, input.type);
   if (limit && input.amountCents > limit.remaining) throw overExcess(limit);
   let chargeId: string;
   try {
@@ -916,7 +948,7 @@ export async function chargeFromIncident(
       addedBy: staffId,
       ...(key && { idempotencyKey: key }),
       // Checked again as it's added: another charge from the case may have gone in a moment ago.
-      ...(limit && { capCents: limit.plan.excessCents }),
+      ...(limit && { capCents: limit.plan.excessCents, ...(limit.types && { capTypes: limit.types }) }),
     });
   } catch (error) {
     // The same submit just added it, at the same moment.
@@ -925,7 +957,7 @@ export async function chargeFromIncident(
     }
     if (error instanceof HttpError && error.code === 'OVER_CAP') {
       const fresh = (await BookingModel.findById(booking._id).lean<BookingRecord>()) ?? booking;
-      throw overExcess(chargeLimit(incident, fresh)!);
+      throw overExcess(chargeLimit(incident, fresh, input.type)!);
     }
     throw error;
   }
@@ -1014,4 +1046,36 @@ async function recordCharge(
   await tellParties(updated, booking, event, updated.events.length - 1, 'A charge was added');
   const fresh = await BookingModel.findById(booking._id).lean<BookingRecord>();
   return toView(updated, fresh!, 'STAFF', staffId);
+}
+
+/**
+ * A case's charge cancelled or refunded, on the case's history for whoever sees the case, as its CHARGE_ADDED
+ * entry is (spec §15: the case's complete audit trail). Inside the caller's transaction, if any.
+ */
+export async function recordCaseChargeChange(
+  incidentId: Id,
+  change: {
+    action: 'CHARGE_CANCELLED' | 'CHARGE_REFUNDED';
+    actorId?: Id | string;
+    extraChargeId: Id;
+    note: string;
+    now?: Date;
+  },
+  session?: ClientSession,
+): Promise<void> {
+  const incident = await IncidentModel.findById(incidentId)
+    .select('events.visibility')
+    .session(session ?? null)
+    .lean<Pick<Incident, 'events'>>();
+  if (!incident) return;
+  const event: IncidentEvent = {
+    ...(change.actorId && { actorId: new mongoose.Types.ObjectId(String(change.actorId)) }),
+    action: change.action,
+    note: change.note,
+    attachments: [],
+    visibility: caseAudience(incident),
+    extraChargeId: change.extraChargeId,
+    createdAt: change.now ?? new Date(),
+  };
+  await IncidentModel.updateOne({ _id: incidentId }, { $push: { events: event } }, { session });
 }

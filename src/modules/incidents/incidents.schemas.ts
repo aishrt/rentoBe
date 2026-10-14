@@ -121,7 +121,7 @@ export const incidentChargeSchema = z
     description: z.string().trim().min(3).max(200),
     amountCents: z.number().int().min(1, { error: 'Enter an amount' }).max(1_000_000).meta({
       description:
-        'On a damage, accident or theft case under a protection plan, the case’s charges together stay within the plan’s excess (`chargeLimitCents`; 409 OVER_EXCESS above it)',
+        'On a damage, accident or theft case under a protection plan, the case’s charges together stay within the plan’s excess (`chargeLimitCents`; 409 OVER_EXCESS above it); on any other case, its DAMAGE charges do',
     }),
     idempotencyKey: z.string().trim().min(8).max(100).optional().meta({
       description:
@@ -134,7 +134,10 @@ export type IncidentChargeInput = z.infer<typeof incidentChargeSchema>;
 export const incidentEventViewSchema = z
   .object({
     id: z.string(),
-    action: z.string().meta({ description: 'OPENED, COMMENT, STATUS, ASSIGNED, UNASSIGNED, CHARGE_ADDED' }),
+    action: z.string().meta({
+      description:
+        'OPENED, COMMENT, STATUS, ASSIGNED, UNASSIGNED, CHARGE_ADDED, CHARGE_CANCELLED, CHARGE_REFUNDED',
+    }),
     by: z.enum(['YOU', 'GUEST', 'HOST', 'SUPPORT']),
     byName: z.string(),
     note: z.string().optional(),
@@ -158,6 +161,10 @@ export const incidentSummarySchema = z
     status: z.enum(INCIDENT_STATUSES),
     reportedBy: z.enum(['GUEST', 'HOST', 'SUPPORT']),
     role: z.enum(['GUEST', 'HOST', 'STAFF']).meta({ description: 'How the viewer sees the case' }),
+    awaitingYou: z.boolean().optional().meta({
+      description:
+        'Guest and Host only: support is waiting for the viewer’s answer (the case awaits a response, and support asked them, not only the other party)',
+    }),
     assignedTo: z.string().optional().meta({ description: 'Staff only: the support member handling it' }),
     assignedToId: z.string().optional().meta({ description: 'Staff only: their user id' }),
     createdAt: z.iso.datetime(),

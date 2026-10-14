@@ -18,10 +18,12 @@ import { NotificationModel } from '../src/modules/notifications/notification.mod
 import { UserModel } from '../src/modules/users/user.model.js';
 import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
 import { createStaff, createUser } from './helpers.js';
+import { timePasses } from './message-fixtures.js';
 
 /* Unread-message notices (plan §4.3 `messages.unreadEmail`, §7) and support opening a conversation (§6.2). */
 
-const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
 const context = {
   job: { attempts: 1, maxAttempts: 5 } as JobDocument,
   log: { info: vi.fn(), warn: vi.fn() },
@@ -69,25 +71,111 @@ async function noticeWentOut(booking: { _id: unknown }, ago: number) {
 
 describe('unread-message notices', () => {
   it('sends one notice for a burst of messages', async () => {
-    const { host, send } = await trip();
+    const { host, booking, send } = await trip();
     await send('First');
     await send('Second');
     const [job] = await unreadJobs();
+    await timePasses();
     await runJob(job!);
     expect((await bellNotices(host._id)).map((notice) => notice.payload)).toEqual([
       expect.objectContaining({ title: '2 new messages from Kiri', body: 'Second' }),
     ]);
 
-    // Minutes later, still unread: no new notice, and running the job again sends nothing.
+    // Minutes later, still unread: no new notice yet, and running the job again sends nothing. The
+    // message is queued for when 12 hours have passed since the last notice.
     await send('Third');
-    expect(await unreadJobs()).toHaveLength(1);
+    const jobs = await unreadJobs();
+    expect(jobs).toHaveLength(2);
+    const noticed = (await ThreadModel.findOne({ bookingId: booking._id }).lean())!.unreadNotices![0]!.at;
+    expect(jobs[1]!.runAt).toEqual(new Date(noticed.getTime() + UNREAD_NOTICE_COOLDOWN_MS));
+    expect(jobs[1]!.uniqueKey).toMatch(new RegExp(`:${noticed.getTime()}$`));
     await runJob(job!);
+    await runJob(jobs[1]!);
     expect(await bellNotices(host._id)).toHaveLength(1);
+  });
+
+  it('announces a message sent within the 12 hours once they are up, if it’s still unread', async () => {
+    const { host, send } = await trip();
+    await send('What time suits you?');
+    await timePasses();
+    await runJob((await unreadJobs())[0]!);
+
+    // Soon after the notice, another message: nothing for now.
+    await send('The key’s in the lockbox');
+    const deferred = (await unreadJobs())[1]!;
+    await timePasses();
+    await runJob(deferred);
+    expect(await bellNotices(host._id)).toHaveLength(1);
+
+    // When the 12 hours are up, it's announced.
+    await timePasses(UNREAD_NOTICE_COOLDOWN_MS);
+    await runJob(deferred);
+    expect((await bellNotices(host._id)).map((notice) => notice.payload)).toEqual([
+      expect.objectContaining({ title: 'New message from Kiri' }),
+      expect.objectContaining({ title: '2 new messages from Kiri', body: 'The key’s in the lockbox' }),
+    ]);
+    expect(await unreadJobs()).toHaveLength(2);
+  });
+
+  it('doesn’t announce a message sent within the 12 hours once it’s been read', async () => {
+    const { host, asHost, booking, send } = await trip();
+    await send('What time suits you?');
+    await timePasses();
+    await runJob((await unreadJobs())[0]!);
+    await send('The key’s in the lockbox');
+    const deferred = (await unreadJobs())[1]!;
+    await readThread(asHost, booking.ref);
+
+    await timePasses(UNREAD_NOTICE_COOLDOWN_MS);
+    await runJob(deferred);
+    expect(await bellNotices(host._id)).toHaveLength(1);
+  });
+
+  it('doesn’t announce a message minutes old for an earlier streak, once the reader caught up', async () => {
+    const { host, asHost, booking, send } = await trip();
+    await send('First');
+    await timePasses(5 * MINUTE_MS);
+    await readThread(asHost, booking.ref);
+    await send('Second');
+    const jobs = await unreadJobs();
+    expect(jobs).toHaveLength(2);
+
+    // The first message's job, 10 minutes after it: the second is only 5 minutes old.
+    await timePasses(5 * MINUTE_MS);
+    await runJob(jobs[0]!);
+    expect(await bellNotices(host._id)).toHaveLength(0);
+
+    // Its own job, 10 minutes after it.
+    await timePasses(6 * MINUTE_MS);
+    await runJob(jobs[1]!);
+    expect((await bellNotices(host._id)).map((notice) => notice.payload)).toEqual([
+      expect.objectContaining({ title: 'New message from Kiri', body: 'Second' }),
+    ]);
+  });
+
+  it('marks the conversation’s new-message notices read when it’s read', async () => {
+    const { host, asHost, booking, send } = await trip();
+    await send('Hi');
+    await timePasses();
+    await runJob((await unreadJobs())[0]!);
+    const other = await NotificationModel.create({
+      userId: host._id,
+      type: 'BOOKING_CONFIRMED',
+      channel: 'IN_APP',
+      status: 'SENT',
+      payload: { title: 'Booked', link: `/host/bookings/${booking.ref}` },
+    });
+    expect((await bellNotices(host._id))[0]!.readAt).toBeUndefined();
+
+    await readThread(asHost, booking.ref);
+    expect((await bellNotices(host._id))[0]!.readAt).toBeInstanceOf(Date);
+    expect((await NotificationModel.findById(other._id))!.readAt).toBeUndefined();
   });
 
   it('sends another notice for a message the next day, while the first is still unread', async () => {
     const { host, booking, send } = await trip();
     await send('Is the car ready?');
+    await timePasses();
     await runJob((await unreadJobs())[0]!);
     await noticeWentOut(booking, UNREAD_NOTICE_COOLDOWN_MS + HOUR_MS);
 
@@ -109,12 +197,14 @@ describe('unread-message notices', () => {
   it('starts again once the conversation has been read', async () => {
     const { host, asHost, booking, send } = await trip();
     await send('First');
+    await timePasses();
     await runJob((await unreadJobs())[0]!);
     await readThread(asHost, booking.ref);
 
     await send('One more thing');
     const jobs = await unreadJobs();
     expect(jobs).toHaveLength(2);
+    await timePasses();
     await runJob(jobs[1]!);
     expect(await bellNotices(host._id)).toHaveLength(2);
   });
@@ -123,6 +213,7 @@ describe('unread-message notices', () => {
     const { host, guest, send } = await trip();
     await send('Hi');
     await UserModel.updateOne({ _id: host._id }, { $addToSet: { blockedUserIds: guest._id } });
+    await timePasses();
     await runJob((await unreadJobs())[0]!);
     expect(await NotificationModel.countDocuments({ type: 'NEW_MESSAGE' })).toBe(0);
   });
@@ -130,6 +221,7 @@ describe('unread-message notices', () => {
   it('drops a held text once they turn those texts off, or block the sender', async () => {
     const { host, guest, send } = await trip();
     await send('Hi');
+    await timePasses();
     await runJob((await unreadJobs())[0]!);
     const sms = await NotificationModel.findOne({ userId: host._id, channel: 'SMS' });
     expect(sms!.payload).toMatchObject({ whileOptedIn: 'unreadMessageSms' });
@@ -156,6 +248,7 @@ describe('unread-message notices', () => {
   it('sends each email with the notification as its idempotency key, so a retry sends it once', async () => {
     const { host, send } = await trip();
     await send('Hi');
+    await timePasses();
     await runJob((await unreadJobs())[0]!);
     const email = await NotificationModel.findOne({ userId: host._id, channel: 'EMAIL' });
     const mailed = vi.spyOn(getMailer(), 'send').mockResolvedValue({ id: 'email-1', provider: 'console' });

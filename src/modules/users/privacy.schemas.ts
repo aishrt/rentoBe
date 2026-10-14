@@ -30,6 +30,10 @@ export const privacyRequestResponseSchema = z
     alreadyOpen: z
       .boolean()
       .meta({ description: 'The same request was already open, so no new one was made' }),
+    added: z.boolean().meta({
+      description:
+        'With alreadyOpen: the message was added to the open request, which goes back to support (as a reply does)',
+    }),
   })
   .meta({ id: 'PrivacyRequestResponse' });
 
@@ -39,6 +43,10 @@ export const CLOSURE_BLOCKERS = [
   'OPEN_INCIDENT',
   'UNPAID_CHARGE',
   'PAYOUT_DUE',
+  'FEES_OWED',
+  'REFUND_PENDING',
+  'OPEN_DISPUTE',
+  'RECENT_TRIP',
 ] as const;
 
 export const accountClosureSchema = z
@@ -46,7 +54,7 @@ export const accountClosureSchema = z
     allowed: z.boolean(),
     blockers: z.array(z.object({ code: z.enum(CLOSURE_BLOCKERS), message: z.string() })).meta({
       description:
-        'Why the account can’t be closed yet (plan §8.2): a trip or booking still to come or under way, an open incident, an unpaid charge or a payout still due',
+        'Why the account can’t be closed yet (plan §8.2): a trip or booking still to come or under way, an open incident, an unpaid charge or a payout still due, Host fees or refunds owed, a failed refund still to return, an open card dispute, or a trip still in its damage-report window or whose extra kilometres aren’t worked out yet',
     }),
   })
   .meta({ id: 'AccountClosure' });

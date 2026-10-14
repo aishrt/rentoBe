@@ -2,6 +2,7 @@ import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { errorResponses, jsonResponse, signedIn } from '../../openapi/shared.js';
 import {
+  earningsQuerySchema,
   earningsResponseSchema,
   hostPayoutsQuerySchema,
   hostPayoutsResponseSchema,
@@ -32,9 +33,10 @@ export function registerPayoutPaths(registry: OpenAPIRegistry) {
     tags: ['Hosting'],
     summary: 'The earnings dashboard',
     description:
-      'Earnings count on the trip’s start date in NZ time, weeks run Monday to Sunday, and amounts are net of Host-funded refunds and Host cancellation fees.',
+      'Earnings count on the trip’s start date in NZ time, weeks run Monday to Sunday, and amounts are net of Host-funded refunds and Host cancellation fees. With `month`, the per-trip breakdown has every trip starting that month.',
     security: signedIn,
-    responses: { 200: jsonResponse('Earnings', earningsResponseSchema), ...errorResponses(401, 404) },
+    request: { query: earningsQuerySchema },
+    responses: { 200: jsonResponse('Earnings', earningsResponseSchema), ...errorResponses(400, 401, 404) },
   });
 
   registry.registerPath({

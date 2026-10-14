@@ -17,6 +17,10 @@ export const payoutAccountSchema = z
     refundsOwedCents: z.number().int().meta({
       description: 'Host-funded refunds made after a booking’s payout, still to come off a payout',
     }),
+    payoutsOwedCents: z.number().int().meta({
+      description:
+        'A trip payout sent before its booking was cancelled (a Guest no-show), less the Host’s share of the kept fee: still to come off a payout',
+    }),
   })
   .meta({ id: 'PayoutAccount' });
 
@@ -41,6 +45,10 @@ export const hostPayoutSchema = z
             .string()
             .optional()
             .meta({ description: 'HOST_FUNDED_REFUND: the booking the refund was made on' }),
+          payoutSent: z.boolean().optional().meta({
+            description:
+              'HOST_FUNDED_REFUND: not a refund, but a payout already sent for that booking before it was cancelled, owed back',
+          }),
         }),
       )
       .meta({ description: 'Each line taken off the payout' }),
@@ -160,7 +168,8 @@ export const earningsResponseSchema = z
       previousMonthCents: cents,
       lifetimeCents: cents,
       upcomingPayoutsCents: cents.meta({
-        description: 'Payouts still to be sent, less the deductions already reserved for them',
+        description:
+          'What the payouts still to be sent will bring, as they are sent: less the deductions reserved for each, or the Host-funded refunds of its own booking, and the Host cancellation fees and refunds the Host owes',
       }),
       platformFeesMonthCents: cents,
       platformFeesLifetimeCents: cents,
@@ -168,10 +177,27 @@ export const earningsResponseSchema = z
     months: z
       .array(z.object({ month: z.string().meta({ description: '2026-10' }), netCents: cents }))
       .meta({ description: 'The last 12 months, oldest first' }),
-    bookings: z.array(earningsRowSchema).meta({ description: 'Newest trip first, up to 100' }),
+    bookings: z.array(earningsRowSchema).meta({
+      description: 'Newest trip first: every trip starting in `month`, or the latest 100 without it',
+    }),
+    tripMonths: z
+      .array(z.string())
+      .meta({ description: 'Every month with a trip (2026-10), newest first, future ones included' }),
     gstRegistered: z.boolean(),
+    supplier: z.object({ name: z.string(), gstNumber: z.string().optional() }).optional().meta({
+      description:
+        'GST-registered Hosts: who charges the commission, for their tax invoice, with its GST number once it has one',
+    }),
   })
   .meta({ id: 'Earnings' });
+
+export const earningsQuerySchema = z.object({
+  month: z
+    .string()
+    .regex(/^\d{4}-(0[1-9]|1[0-2])$/, { error: 'Choose a month (2026-10)' })
+    .optional()
+    .meta({ description: 'A month, 2026-10: every trip starting in it, rather than the latest 100' }),
+});
 
 export const statementQuerySchema = z.object({
   period: z

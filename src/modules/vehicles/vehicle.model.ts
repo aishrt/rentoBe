@@ -186,6 +186,12 @@ export interface Vehicle {
   regoExpiry?: Date;
   /** For vehicles that need a Certificate of Fitness instead of a WOF. */
   cofExpiry?: Date;
+  /**
+   * Later rego, WOF or CoF expiry dates the Host entered on a car staff have approved (plan §3: new documents
+   * stay pending until support staff approve them). Search and booking keep the dates above until staff
+   * verify a document of that type showing the new one.
+   */
+  pendingExpiries?: { regoExpiry?: Date; wofExpiry?: Date; cofExpiry?: Date };
   /** Road User Charges licence end reading (diesel, EV and PHEV). */
   rucValidToKm?: number;
   powertrain?: Powertrain;
@@ -310,6 +316,7 @@ const vehicleSchema = new Schema<Vehicle>(
     wofExpiry: Date,
     regoExpiry: Date,
     cofExpiry: Date,
+    pendingExpiries: { regoExpiry: Date, wofExpiry: Date, cofExpiry: Date },
     rucValidToKm: { type: Number, min: 0 },
     powertrain: {
       type: new Schema<Powertrain>(

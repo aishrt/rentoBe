@@ -1,5 +1,5 @@
 import type { ClientSession, Types } from 'mongoose';
-import { afterCommit } from '../../db.js';
+import { afterCommit, withTransaction } from '../../db.js';
 import type { EmailTemplateName, EmailTemplateProps } from '../../emails/index.js';
 import { enqueue } from '../../jobs/queue.js';
 import { fromNzWallClock, toNzWallClock, addNzDays } from '../../lib/nz-time.js';
@@ -91,7 +91,13 @@ export function smsSendTime(now: Date, quietStart: string, quietEnd: string): Da
 export async function notify(
   input: NotifyInput,
   { session, now = new Date() }: { session?: ClientSession; now?: Date } = {},
-) {
+): Promise<void> {
+  // One event's notifications are saved together: the dedupe check below skips the event once any channel
+  // exists, so an in-app one saved without its email (or text) would mean the email never went.
+  if (!session) {
+    await withTransaction((own) => notify(input, { session: own, now }));
+    return;
+  }
   if (
     input.dedupeKey &&
     (await NotificationModel.exists({ dedupeKey: input.dedupeKey }).session(session ?? null))

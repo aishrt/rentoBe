@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { cancellationTierSchema } from '../admin/platform-settings.schemas.js';
 import { PAYMENT_STATUSES } from '../payments/payment.model.js';
-import { PAYOUT_HOLD_REASONS, PAYOUT_STATUSES } from '../payouts/payout.model.js';
+import {
+  DEDUCTION_TYPES,
+  PAYOUT_HOLD_REASONS,
+  PAYOUT_STATUSES,
+  PAYOUT_TYPES,
+} from '../payouts/payout.model.js';
 import { ratingSchema } from '../search/search.schemas.js';
 import {
   deliveryAddressSchema,
@@ -61,10 +66,18 @@ export const paymentSessionSchema = z
 export type PaymentSession = z.infer<typeof paymentSessionSchema>;
 
 export const cancelBookingSchema = z
-  .object({ reason: z.string().trim().max(500).optional() })
+  .object({
+    reason: z.string().trim().max(500).optional(),
+    expectedRefundCents: z.number().int().min(0).optional().meta({
+      description:
+        'The refund the preview showed: when the refund worked out now is less, nothing is cancelled (409 REFUND_CHANGED, with the new preview’s message in fields.expectedRefundCents)',
+    }),
+  })
   .meta({ id: 'CancelBookingRequest' });
 
-export const declineBookingSchema = cancelBookingSchema.meta({ id: 'DeclineBookingRequest' });
+export const declineBookingSchema = z
+  .object({ reason: z.string().trim().max(500).optional() })
+  .meta({ id: 'DeclineBookingRequest' });
 
 export const identityReviewSchema = z
   .object({
@@ -86,6 +99,10 @@ export const verificationOutcomeShape = {
     description:
       'Bookings not confirmed because their car (or its Host) is suspended: confirmed when the suspension is lifted, unless their time runs out first',
   }),
+  licenceNotEligible: z.array(z.string()).optional().meta({
+    description:
+      'Bookings not confirmed because the Guest’s licence no longer meets the rules for that trip (it expires before the trip ends, say): they keep waiting until the Guest updates it, support cancels them or their time runs out',
+  }),
 };
 export type VerificationOutcome = {
   confirmed: string[];
@@ -93,6 +110,7 @@ export type VerificationOutcome = {
   released: string[];
   stillInReview?: string[];
   carSuspended?: string[];
+  licenceNotEligible?: string[];
 };
 
 export const identityReviewResponseSchema = z
@@ -280,6 +298,9 @@ export const bookingViewSchema = z
             'The platform’s commission on the rental and delivery, as the trip’s payout was made with it',
         }),
         commissionGstCents: z.number().int().meta({ description: 'The GST included in the commission' }),
+        type: z.enum(PAYOUT_TYPES).optional().meta({
+          description: 'The payout below: the trip’s, or a cancelled booking’s share of the kept fee',
+        }),
         status: z.enum(PAYOUT_STATUSES).optional().meta({ description: 'Once confirmed: the trip’s payout' }),
         holdReason: z.enum(PAYOUT_HOLD_REASONS).optional(),
         scheduledFor: z.iso.datetime().optional(),
@@ -291,6 +312,65 @@ export const bookingViewSchema = z
         paidCents: z.number().int().optional().meta({
           description: 'Everything paid out for the booking so far, less any taken back for refunds',
         }),
+        earnings: z
+          .object({
+            rentalCents: z.number().int(),
+            deliveryCents: z.number().int(),
+            extraChargesCents: z.number().int(),
+            keptFeeCents: z
+              .number()
+              .int()
+              .meta({ description: 'Cancelled: the Host’s part of the fee kept, before commission' }),
+            commissionCents: z.number().int(),
+            commissionGstCents: z.number().int(),
+            hostFundedRefundsCents: z.number().int(),
+            hostCancellationFeeCents: z.number().int().meta({ description: 'Less any part waived' }),
+            netCents: z.number().int(),
+          })
+          .optional()
+          .meta({
+            description:
+              'Once confirmed (or cancelled): what the booking earned the Host, as its row on the earnings page and statement',
+          }),
+        settled: z
+          .array(
+            z.object({
+              type: z.enum(DEDUCTION_TYPES),
+              amountCents: z.number().int(),
+              bookingRef: z.string().optional(),
+              payoutSent: z
+                .boolean()
+                .optional()
+                .meta({ description: 'A payout already sent for that booking, owed back' }),
+            }),
+          )
+          .optional()
+          .meta({
+            description:
+              'What this booking’s payouts settled for other bookings (Host cancellation fees, refunds, payouts already sent): part of what it earned, though not paid out',
+          }),
+        settledElsewhere: z
+          .array(
+            z.object({
+              amountCents: z.number().int(),
+              bookingRef: z.string().meta({ description: 'The booking whose payout it came off' }),
+              payoutSent: z
+                .boolean()
+                .optional()
+                .meta({ description: 'A payout already sent for this booking, rather than a refund' }),
+            }),
+          )
+          .optional()
+          .meta({ description: 'What the Host’s other payouts took off for this booking' }),
+        owed: z
+          .object({
+            refundsCents: z.number().int(),
+            payoutSentCents: z.number().int().meta({
+              description: 'A trip payout sent before the booking was cancelled, less the Host’s share',
+            }),
+          })
+          .optional()
+          .meta({ description: 'Still owed for this booking, to come off the Host’s next payout' }),
         refunds: z
           .array(
             z.object({
@@ -302,6 +382,10 @@ export const bookingViewSchema = z
               hostCents: z.number().int().optional().meta({
                 description:
                   'HOST: what the Host pays back for it, their share; Rento Vroom covers its commission',
+              }),
+              cancellation: z.boolean().optional().meta({
+                description:
+                  'The cancellation’s own refund, settled by the policy rather than the Host’s payout',
               }),
               extraCharge: z
                 .boolean()
@@ -337,6 +421,10 @@ export const bookingViewSchema = z
             'Where the refund stands, once one was made: PENDING (on its way), SUCCEEDED, or FAILED (support returns it another way)',
         }),
         feeCents: z.number().int().optional(),
+        earlierRefundCents: z.number().int().optional().meta({
+          description:
+            'Refunds made before the cancellation, which came off what it could give back (all of the payment, when the refund is 0 and nothing was kept)',
+        }),
         hostShareCents: z.number().int().optional(),
         hostFeeCents: z.number().int().optional(),
       })

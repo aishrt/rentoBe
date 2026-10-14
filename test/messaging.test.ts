@@ -1,9 +1,12 @@
+import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
+import request from 'supertest';
 import { withTransaction } from '../src/db.js';
 import type { JobContext } from '../src/jobs/handlers/index.js';
 import { unreadMessageEmailJob } from '../src/jobs/handlers/message-jobs.js';
 import { pickupReminderJob, startCheckJob } from '../src/jobs/handlers/trip-jobs.js';
 import { JobModel } from '../src/jobs/job.model.js';
+import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { confirmBooking, endBooking } from '../src/modules/bookings/booking-transitions.js';
@@ -18,7 +21,8 @@ import { NotificationModel } from '../src/modules/notifications/notification.mod
 import { SupportTicketModel } from '../src/modules/support/support-ticket.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { createBookingRecord, createHost, createPaymentRecord, createVehicle } from './fixtures.js';
-import { PASSWORD, browserAgent, createStaff, createUser, staffAgent } from './helpers.js';
+import { PASSWORD, browserAgent, createStaff, createUser, staffAgent, testApp } from './helpers.js';
+import { timePasses } from './message-fixtures.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const context = { log: { info: vi.fn(), warn: vi.fn() } } as unknown as JobContext;
@@ -112,6 +116,34 @@ describe('booking messages', () => {
     expect(history.body.messages[0].readAt).toEqual(expect.any(String));
   });
 
+  it('pages the inbox, most recent first, with the unread total of every conversation', async () => {
+    const { host, guest, booking, guestAgent, hostAgent } = await trip();
+    const parties = { guestId: guest._id, hostId: host._id, vehicleId: booking.vehicleId };
+    const later = [
+      await createBookingRecord(parties, { startAt: new Date(Date.now() + 20 * DAY_MS) }),
+      await createBookingRecord(parties, { startAt: new Date(Date.now() + 30 * DAY_MS) }),
+    ];
+    for (const each of [booking, ...later]) {
+      await guestAgent.post(`/api/v1/threads/${each.ref}/messages`).send({ body: `About ${each.ref}` });
+    }
+    // All at the same moment: the newest conversation still comes first.
+    await ThreadModel.updateMany({}, { $set: { lastMessageAt: new Date() } });
+    const refs = (response: request.Response) =>
+      response.body.threads.map((thread: { ref: string }) => thread.ref);
+
+    const first = await hostAgent.get('/api/v1/threads?limit=2');
+    expect(refs(first)).toEqual([later[1]!.ref, later[0]!.ref]);
+    expect(first.body.unreadTotal).toBe(3);
+    const second = await hostAgent.get(`/api/v1/threads?limit=2&cursor=${first.body.nextCursor}`);
+    expect(refs(second)).toEqual([booking.ref]);
+    expect(second.body).toMatchObject({ unreadTotal: 3 });
+    expect(second.body.nextCursor).toBeUndefined();
+
+    // Without a limit, 100 to a page, as before.
+    expect(refs(await hostAgent.get('/api/v1/threads'))).toHaveLength(3);
+    expect((await hostAgent.get('/api/v1/threads?cursor=nope')).status).toBe(400);
+  });
+
   it('hides contact details until the booking is confirmed', async () => {
     const { booking, guestAgent, hostAgent } = await trip({
       status: 'PENDING',
@@ -181,24 +213,60 @@ describe('booking messages', () => {
     ).toBe(201);
   });
 
-  it('sends photos through private, expiring links', async () => {
-    const { booking, guestAgent } = await trip();
-    const photo = Buffer.from('fake-jpeg');
-    const target = await guestAgent.post('/api/v1/uploads/signature').send({
-      purpose: 'MESSAGE_PHOTO',
-      bookingId: booking.ref,
-      contentType: 'image/jpeg',
-      size: photo.length,
-    });
-    expect(target.status).toBe(200);
-    expect(target.body.key).toMatch(new RegExp(`^bookings/${booking.id}/messages/`));
-    await guestAgent.put(new URL(target.body.url).pathname).set('Content-Type', 'image/jpeg').send(photo);
+  it('sends photos through private, expiring links, without where they were taken', async () => {
+    const { booking, guestAgent, hostAgent } = await trip();
+    // A phone photo of 1200×900, which says where it was taken.
+    const photo = await sharp({ create: { width: 1200, height: 900, channels: 3, background: '#2050c0' } })
+      .jpeg()
+      .withExif({ IFD3: { GPSLatitudeRef: 'S', GPSLatitude: '36/1 50/1 0/1' } })
+      .toBuffer();
+    const upload = async () => {
+      const target = await guestAgent.post('/api/v1/uploads/signature').send({
+        purpose: 'MESSAGE_PHOTO',
+        bookingId: booking.ref,
+        contentType: 'image/jpeg',
+        size: photo.length,
+      });
+      expect(target.status).toBe(200);
+      await guestAgent.put(new URL(target.body.url).pathname).set('Content-Type', 'image/jpeg').send(photo);
+      return target.body.key as string;
+    };
+    const key = await upload();
+    // It waits where nothing serves it until it's sent.
+    expect(key).toMatch(new RegExp(`^incoming/private/bookings/${booking.id}/messages/`));
 
     const sent = await guestAgent
       .post(`/api/v1/threads/${booking.ref}/messages`)
-      .send({ attachments: [{ key: target.body.key, contentType: 'image/jpeg' }] });
+      .send({ attachments: [{ key, contentType: 'image/jpeg' }] });
     expect(sent.status).toBe(201);
-    expect(sent.body.message.attachments[0].url).toMatch(/\/api\/v1\/files\/private\/bookings\/.+\?e=\d+&s=/);
+    const [attachment] = sent.body.message.attachments;
+    expect(attachment.url).toMatch(/\/api\/v1\/files\/private\/bookings\/.+\.jpg\?e=\d+&s=/);
+    expect(attachment.previewUrl).toMatch(/\/api\/v1\/files\/private\/bookings\/.+-800\.webp\?e=\d+&s=/);
+
+    // The other party gets the photo without its metadata, and the conversation a smaller copy.
+    const open = (url: string) => request(testApp()).get(new URL(url).pathname + new URL(url).search);
+    const full = await open(attachment.url);
+    expect(full.status).toBe(200);
+    expect(full.headers['cache-control']).toMatch(/^private, max-age=\d+$/);
+    const fullInfo = await sharp(full.body as Buffer).metadata();
+    expect(fullInfo).toMatchObject({ format: 'jpeg', width: 1200, height: 900 });
+    expect(fullInfo.exif).toBeUndefined();
+    const preview = await sharp((await open(attachment.previewUrl)).body as Buffer).metadata();
+    expect(preview).toMatchObject({ format: 'webp', width: 800, height: 600 });
+    // The same links on the next refresh, so the browser shows the copy it has.
+    const thread = (await hostAgent.get(`/api/v1/threads/${booking.ref}/messages`)).body;
+    expect(JSON.stringify(thread)).toContain(attachment.url);
+
+    // Sent once: the key no longer works, and one key twice in a message is refused.
+    const again = await guestAgent
+      .post(`/api/v1/threads/${booking.ref}/messages`)
+      .send({ attachments: [{ key }] });
+    expect(again.body.error.code).toBe('UPLOAD_NOT_FOUND');
+    const twice = await upload();
+    const doubled = await guestAgent
+      .post(`/api/v1/threads/${booking.ref}/messages`)
+      .send({ attachments: [{ key: twice }, { key: twice }] });
+    expect(doubled.body.error.fields.attachments).toMatch(/twice/);
 
     // Another booking's folder can't be attached.
     const elsewhere = await guestAgent
@@ -268,6 +336,7 @@ describe('booking messages', () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.runAt.getTime()).toBeGreaterThan(Date.now() + 9 * 60_000);
 
+    await timePasses();
     await unreadMessageEmailJob(jobs[0]!.payload as { threadId: string; recipientId: string }, context);
     const sent = await NotificationModel.find({ userId: host._id, type: 'NEW_MESSAGE' });
     expect(sent.map((notification) => notification.channel).sort()).toEqual(['EMAIL', 'IN_APP']);
@@ -422,6 +491,63 @@ describe('automated booking messages and reminders', () => {
     );
   });
 
+  it('reminds a trip booked within 3 hours of pick-up once, straight away, and texts the Host at once', async () => {
+    // Quiet hours now, so a text that can wait does.
+    const hour = Number(
+      new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', hour: '2-digit', hourCycle: 'h23' })
+        .format(new Date())
+        .slice(0, 2),
+    );
+    const at = (value: number) => `${String(value % 24).padStart(2, '0')}:00`;
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      { $set: { settings: { sms: { quietHoursStart: at(hour), quietHoursEnd: at(hour + 2) } } } },
+      { upsert: true },
+    );
+    const startAt = new Date(Date.now() + 100 * 60_000);
+    const { booking, host } = await trip({
+      status: 'PAYMENT_PENDING',
+      startAt,
+      endAt: new Date(startAt.getTime() + DAY_MS),
+    });
+    await UserModel.updateOne(
+      { _id: host._id },
+      { $set: { phone: '+64211113333', phoneVerifiedAt: new Date() } },
+    );
+    const payment = await createPaymentRecord(booking);
+    await withTransaction((session) => confirmBooking(booking, payment, session));
+
+    const reminders = await JobModel.find({ refId: booking.id, type: 'reminder.pickup' });
+    expect(reminders.map((job) => job.payload)).toEqual([{ bookingId: booking.id, hoursBefore: 2 }]);
+    expect(reminders[0]!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+    const text = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'BOOKING_CONFIRMED',
+      channel: 'SMS',
+    });
+    expect(text!.payload).not.toHaveProperty('expiresAt');
+    const delivery = await JobModel.findOne({ 'payload.notificationId': text!.id });
+    expect(delivery!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    // Booked well ahead: the Host's text can wait for the morning, but not past the pick-up.
+    const later = await createBookingRecord(
+      { guestId: booking.guestId, hostId: host._id, vehicleId: booking.vehicleId },
+      { status: 'PAYMENT_PENDING' },
+    );
+    const paid = await createPaymentRecord(later);
+    await withTransaction((session) => confirmBooking(later, paid, session));
+    expect(await JobModel.countDocuments({ refId: later.id, type: 'reminder.pickup' })).toBe(2);
+    const held = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'BOOKING_CONFIRMED',
+      channel: 'SMS',
+      'payload.body': new RegExp(later.ref),
+    });
+    expect(held!.payload).toMatchObject({ expiresAt: later.startAt });
+    const morning = await JobModel.findOne({ 'payload.notificationId': held!.id });
+    expect(morning!.runAt.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+  });
+
   it('reminds both sides before pick-up by email, text and chat, and skips a trip that moved on', async () => {
     const { booking, guest, host } = await trip();
     await UserModel.updateOne({ _id: guest._id }, { $unset: { emailVerifiedAt: 1 } });
@@ -498,6 +624,7 @@ describe('moderation and suspended accounts', () => {
     }
     // Nor is it emailed on.
     const [job] = await JobModel.find({ type: 'messages.unreadEmail' });
+    await timePasses();
     await unreadMessageEmailJob(job!.payload as { threadId: string; recipientId: string }, context);
     expect(await NotificationModel.countDocuments({ userId: host._id, type: 'NEW_MESSAGE' })).toBe(0);
 
@@ -554,6 +681,7 @@ describe('moderation and suspended accounts', () => {
 
     // The Host was emailed and notified about it before anyone reported it.
     const [job] = await JobModel.find({ type: 'messages.unreadEmail' });
+    await timePasses();
     await unreadMessageEmailJob(job!.payload as { threadId: string; recipientId: string }, context);
     const notice = { userId: host._id, type: 'NEW_MESSAGE' };
     expect((await NotificationModel.findOne({ ...notice, channel: 'IN_APP' }).lean())!.payload).toMatchObject(

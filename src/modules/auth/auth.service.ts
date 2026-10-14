@@ -124,7 +124,7 @@ export async function signup(input: SignupInput, context: RequestContext): Promi
   return { user: toPublicUser(user), tokens: await startSession(user, context) };
 }
 
-async function sendVerificationEmail(user: UserDocument): Promise<void> {
+export async function sendVerificationEmail(user: UserDocument): Promise<void> {
   const token = await createAuthLink(user._id, 'VERIFY_EMAIL', VERIFY_EMAIL_VALID_MS);
   await enqueue('email.send', {
     to: user.email,

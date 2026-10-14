@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import type Stripe from 'stripe';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -10,6 +11,7 @@ import { NotificationModel } from '../src/modules/notifications/notification.mod
 import { applyAccountState } from '../src/modules/payouts/connect.service.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
+import { nzDate } from '../src/lib/nz-time.js';
 import { createPlaces, createVehicle, nzDay } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent, testApp } from './helpers.js';
 
@@ -149,6 +151,61 @@ describe('Host application', () => {
     expect(application).toMatchObject({ identityStatus: 'NONE', identityRequired: false });
     const approved = await staff.post(`/api/v1/admin/host-applications/${user.id}/approve`).send({});
     expect(approved.body.status).toBe('APPROVED');
+  });
+});
+
+describe('Applying again', () => {
+  it('keeps an approved Host’s Stripe payout state, what they owe and their record', async () => {
+    const { user, agent } = await applicant();
+    const bookingId = new mongoose.Types.ObjectId();
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          roles: ['GUEST', 'HOST'],
+          hostProfile: {
+            status: 'APPROVED',
+            appliedAt: new Date('2026-09-01T00:00:00Z'),
+            reviewNotes: 'All good',
+            stripeAccountId: 'acct_hana',
+            connectRefusals: 2,
+            payoutsEnabled: false,
+            payoutRequirements: ['external_account'],
+            payoutDelayDays: 3,
+            bio: 'Old bio',
+            responseRate: 90,
+            tripCount: 4,
+            rating: { avg: 4.5, count: 4 },
+            feesOwedCents: 2_500,
+            refundsOwed: [{ bookingId, stripeRefundId: 're_1', amountCents: 1_000, createdAt: new Date() }],
+            gstRegistered: false,
+          },
+        },
+      },
+    );
+
+    const updated = await agent
+      .post('/api/v1/me/host-application')
+      .send({ acceptHostAgreement: true, bio: 'New bio', gstRegistered: true, gstNumber: '123456789' });
+    expect(updated.status).toBe(200);
+    const profile = (await UserModel.findById(user._id).lean())!.hostProfile!;
+    expect(profile).toMatchObject({
+      status: 'APPROVED',
+      reviewNotes: 'All good',
+      stripeAccountId: 'acct_hana',
+      connectRefusals: 2,
+      payoutRequirements: ['external_account'],
+      payoutDelayDays: 3,
+      bio: 'New bio',
+      gstRegistered: true,
+      gstNumber: '123-456-789',
+      responseRate: 90,
+      tripCount: 4,
+      rating: { avg: 4.5, count: 4 },
+      feesOwedCents: 2_500,
+      refundsOwed: [expect.objectContaining({ stripeRefundId: 're_1', amountCents: 1_000 })],
+    });
+    expect(profile.appliedAt).toEqual(new Date('2026-09-01T00:00:00Z'));
   });
 });
 
@@ -461,5 +518,89 @@ describe('Vehicle onboarding', () => {
     expect(
       await NotificationModel.countDocuments({ type: 'LISTING_PHOTO_REJECTED', channel: 'IN_APP' }),
     ).toBe(1);
+  });
+});
+
+describe('expiry dates on an approved car', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const inDays = (days: number) => nzDate(new Date(Date.now() + days * DAY_MS));
+
+  it('moves a date later only with a document staff verify, and keeps the last checked copy', async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { hostProfile: { status: 'APPROVED', appliedAt: new Date() } } },
+    );
+    const checked = (type: string) => ({ type, url: `local:vehicles/x/${type}.pdf`, status: 'VERIFIED' });
+    const vehicle = await createVehicle(user._id, {
+      documents: [checked('REGO'), checked('WOF'), checked('INSURANCE')] as never,
+    });
+    const rego = nzDate(vehicle.regoExpiry!);
+
+    // A later rego date waits for the document; an earlier WOF date applies at once.
+    const later = await agent
+      .patch(`/api/v1/host/vehicles/${vehicle.id}`)
+      .send({ regoExpiry: inDays(400), wofExpiry: inDays(100) });
+    expect(later.status).toBe(200);
+    expect(later.body.vehicle).toMatchObject({
+      status: 'ACTIVE',
+      regoExpiry: rego,
+      wofExpiry: inDays(100),
+      pendingExpiries: { regoExpiry: inDays(400) },
+    });
+    // Saving the WOF date again later than the checked one waits too; put back, it stops waiting.
+    const wof = await agent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ wofExpiry: inDays(150) });
+    expect(wof.body.vehicle.pendingExpiries).toEqual({ regoExpiry: inDays(400), wofExpiry: inDays(150) });
+    const back = await agent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ wofExpiry: inDays(100) });
+    expect(back.body.vehicle.pendingExpiries).toEqual({ regoExpiry: inDays(400) });
+
+    // The new registration, with the date it shows: staff verify it, and the car's date moves.
+    const key = await upload(agent, vehicle.id, 'VEHICLE_DOCUMENT', PDF, 'application/pdf');
+    const attached = await agent
+      .post(`/api/v1/host/vehicles/${vehicle.id}/documents`)
+      .send({ type: 'REGO', upload: key, expiry: inDays(400) });
+    const newRego = attached.body.vehicle.documents.find(
+      (document: { type: string; status: string }) =>
+        document.type === 'REGO' && document.status === 'PENDING',
+    );
+    await createStaff();
+    const staff = await staffAgent();
+    const review = await staff.get(`/api/v1/admin/vehicles/${vehicle.id}`);
+    expect(review.body.vehicle.pendingExpiries).toEqual({ regoExpiry: inDays(400) });
+    const verified = await staff
+      .post(`/api/v1/admin/vehicles/${vehicle.id}/documents/${newRego.id}`)
+      .send({ decision: 'VERIFY' });
+    expect(verified.status).toBe(200);
+    expect(verified.body.vehicle.regoExpiry).toBe(inDays(400));
+    expect(verified.body.vehicle.pendingExpiries).toBeUndefined();
+    const audit = await AuditLogModel.findOne({ action: 'vehicle.document-verified' }).lean();
+    expect(audit!.after).toMatchObject({ type: 'REGO', regoExpiry: inDays(400) });
+
+    // The only checked WOF stays until a new one is checked; the old registration can go now.
+    const fresh = (await VehicleModel.findById(vehicle._id).lean())!;
+    const idOf = (type: string) =>
+      fresh.documents
+        .find((document) => document.type === type && document.url.includes(type))!
+        ._id!.toString();
+    const lastWof = await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/documents/${idOf('WOF')}`);
+    expect(lastWof.status).toBe(409);
+    expect(lastWof.body.error).toMatchObject({
+      code: 'LAST_VERIFIED_DOCUMENT',
+      message: expect.stringMatching(/only checked WOF/),
+    });
+    const oldRego = await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/documents/${idOf('REGO')}`);
+    expect(oldRego.status).toBe(200);
+  });
+
+  it('applies a draft’s dates as entered', async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { hostProfile: { status: 'APPROVED', appliedAt: new Date() } } },
+    );
+    const vehicle = await createVehicle(user._id, { status: 'DRAFT' });
+    const saved = await agent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ regoExpiry: inDays(500) });
+    expect(saved.body.vehicle.regoExpiry).toBe(inDays(500));
+    expect(saved.body.vehicle.pendingExpiries).toBeUndefined();
   });
 });

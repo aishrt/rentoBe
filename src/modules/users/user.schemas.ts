@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AGREEMENT_TYPES, HOST_STATUSES, ROLES } from './user.model.js';
+import { AGREEMENT_TYPES, HOST_STATUSES, PERMISSIONS, ROLES } from './user.model.js';
 
 /** The user fields the API returns about the signed-in user. Never includes secrets. */
 export const publicUserSchema = z
@@ -20,6 +20,10 @@ export const publicUserSchema = z
         'The name must match the ID once the identity check has passed or is being checked: it is then corrected through a privacy request (POST /me/privacy-requests), not PATCH /me',
     }),
     roles: z.array(z.enum(ROLES)),
+    permissions: z.array(z.enum(PERMISSIONS)).optional().meta({
+      description:
+        'Staff only: what they can do beyond their role (plan §6.2), e.g. REFUNDS for refunds, charges, payments and payouts. The admin has every one.',
+    }),
     emailVerified: z.boolean(),
     phone: z.string().optional().meta({ description: 'Verified mobile number, E.164 (+64211234567)' }),
     phoneVerified: z.boolean(),

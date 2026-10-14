@@ -14,6 +14,7 @@ import {
   staffThreadQuerySchema,
   staffThreadResponseSchema,
   threadResponseSchema,
+  threadsQuerySchema,
   threadsResponseSchema,
   unreadMessagesResponseSchema,
 } from './messages.schemas.js';
@@ -30,9 +31,10 @@ export function registerMessagePaths(registry: OpenAPIRegistry) {
     tags: ['Messages'],
     summary: 'Your conversations, most recent first',
     description:
-      'One thread per booking, as Guest and as Host. Live updates arrive over Socket.IO as `message`.',
+      'One thread per booking, as Guest and as Host, 100 to a page unless fewer are asked for; `nextCursor` asks for the next. Live updates arrive over Socket.IO as `message`.',
     security: signedIn,
-    responses: { 200: jsonResponse('Conversations', threadsResponseSchema), ...errorResponses(401) },
+    request: { query: threadsQuerySchema },
+    responses: { 200: jsonResponse('Conversations', threadsResponseSchema), ...errorResponses(400, 401) },
   });
 
   registry.registerPath({

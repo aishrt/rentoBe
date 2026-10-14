@@ -522,6 +522,48 @@ describe('staff cancellations', () => {
   });
 });
 
+describe('a confirmed trip past its pick-up time (plan §8.2)', () => {
+  /** Confirmed under the Flexible policy, its pick-up 2 hours ago: half back at the start time. */
+  async function started() {
+    const { host, guest, ids } = await parties();
+    const startAt = new Date(Date.now() - 2 * HOUR_MS);
+    const booking = await createBookingRecord(ids, {
+      startAt,
+      endAt: new Date(startAt.getTime() + 3 * DAY_MS),
+      cancellationPolicy: 'FLEXIBLE',
+      cancellationTerms: FLEXIBLE,
+    });
+    await createPaymentRecord(booking);
+    return { host, guest, booking };
+  }
+
+  it('counts the Guest’s cancellation as not turning up, worked out at the start time', async () => {
+    const { guest, booking } = await started();
+    const agent = await signIn(guest.email);
+    expect((await agent.get(`/api/v1/bookings/${booking.ref}`)).body.booking.actions.cancel).toBe(true);
+    const preview = (await agent.get(`/api/v1/bookings/${booking.ref}/cancellation-preview`)).body;
+    // Not 0 % for hours that went negative: the policy's 50 % at the start time.
+    expect(preview).toMatchObject({ allowed: true, refundPct: 50, refundCents: 19_185, feeCents: 14_685 });
+    expect(preview.message).toMatch(/^Cancelling after the pick-up time counts as not turning up/);
+    const cancelled = await agent.post(`/api/v1/bookings/${booking.ref}/cancel`).send({});
+    expect(cancelled.body.booking.cancellation).toMatchObject({ by: 'GUEST', refundCents: 19_185 });
+  });
+
+  it('leaves the Host to contact support instead of cancelling', async () => {
+    const { host, booking } = await started();
+    const agent = await signIn(host.email);
+    expect((await agent.get(`/api/v1/bookings/${booking.ref}`)).body.booking.actions.cancel).toBe(false);
+    const preview = (await agent.get(`/api/v1/bookings/${booking.ref}/cancellation-preview`)).body;
+    expect(preview).toMatchObject({ allowed: false, kind: null });
+    expect(preview.message).toMatch(/start time has passed.*contact support/);
+    const refused = await agent.post(`/api/v1/bookings/${booking.ref}/cancel`).send({});
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe('TRIP_STARTED');
+    expect(client.refunds.create).not.toHaveBeenCalled();
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('CONFIRMED');
+  });
+});
+
 describe('a payment that arrives after its hold ran out', () => {
   it('is refunded in full when someone else booked the dates meanwhile, and the Guest is told why', async () => {
     const { id, piId, vehicle, guest } = await checkout();

@@ -51,6 +51,7 @@ import { listReports, resolveReport } from './admin-moderation.service.js';
 import {
   adminRefundSchema,
   adminStatusEditSchema,
+  adminUserUpdateSchema,
   auditQuerySchema,
   bookingListQuerySchema,
   destinationCreateSchema,
@@ -71,6 +72,7 @@ import {
   refundListQuerySchema,
   reportRangeSchema,
   resolveReportSchema,
+  riskQueueQuerySchema,
   staffTicketReplySchema,
   suspendSchema,
   ticketListQuerySchema,
@@ -81,6 +83,7 @@ import {
 import { adminDashboard, auditLog, listJobs, retryJob } from './admin-audit.service.js';
 import { exportReport, platformReport } from './admin-reports.service.js';
 import { listTickets, replyToTicket, staffTicket, updateTicket } from './admin-support.service.js';
+import { correctUserDetails, exportUserData } from './admin-user-privacy.service.js';
 import {
   clearRiskFlag,
   closeAccount,
@@ -120,6 +123,23 @@ export function adminOpsRouter() {
     res.json({ user: await userDetail(param(req, 'id')) });
   });
 
+  // Privacy requests to correct or access personal information (plan §14): support's work, audit-logged.
+  router.patch('/users/:id', async (req, res) => {
+    const input = validate(adminUserUpdateSchema, req.body);
+    res.json({
+      user: await correctUserDetails(req.auth!.userId, req.auth!.roles, param(req, 'id'), input, req.ip),
+    });
+  });
+
+  router.get('/users/:id/export', async (req, res) => {
+    const { filename, data } = await exportUserData(req.auth!.userId, param(req, 'id'), req.ip);
+    res
+      .type('application/json; charset=utf-8')
+      .set('Content-Disposition', `attachment; filename="${filename}"`)
+      .set('Cache-Control', 'no-store')
+      .send(JSON.stringify(data, null, 2));
+  });
+
   router.post('/users/:id/suspend', async (req, res) => {
     const { reason } = validate(suspendSchema, req.body);
     res.json({
@@ -150,8 +170,8 @@ export function adminOpsRouter() {
     res.json({ user: await setStaffPermissions(req.auth!.userId, param(req, 'id'), refunds, req.ip) });
   });
 
-  router.get('/risk', async (_req, res) => {
-    res.json({ users: await riskQueue() });
+  router.get('/risk', async (req, res) => {
+    res.json(await riskQueue(validate(riskQueueQuerySchema, req.query).page));
   });
 
   // Bookings: search, the whole record, status edits and refunds.

@@ -429,17 +429,55 @@ async function onePayout(payoutId: Id) {
   return row!;
 }
 
-/** POST /admin/payouts/{id}/hold: staff hold a payout that hasn't gone, until they release it. */
+/** A payout scheduled with its deductions reserved is being sent to Stripe this moment (runPayout). */
+const beingSent = (payout: Pick<PayoutRecord, 'status' | 'deductionsReservedAt'>) =>
+  payout.status === 'SCHEDULED' && Boolean(payout.deductionsReservedAt);
+
+const payoutInFlight = () =>
+  new HttpError(
+    409,
+    'PAYOUT_IN_FLIGHT',
+    'This payout is being sent to Stripe right now, so it can’t be changed. Refresh in a minute to see how it went.',
+  );
+
+/** Why a payout changed under a staff action: it's being sent now, or was paid or cancelled meanwhile. */
+async function changedMeanwhile(payoutId: Id, fallback: HttpError): Promise<HttpError> {
+  const now = await PayoutModel.findById(payoutId).select('status deductionsReservedAt').lean();
+  if (now && beingSent(now)) return payoutInFlight();
+  if (now && (now.status === 'PAID' || now.status === 'CANCELLED')) {
+    return new HttpError(409, 'NOT_HOLDABLE', 'This payout has already been paid or cancelled.');
+  }
+  return fallback;
+}
+
+/**
+ * POST /admin/payouts/{id}/hold: staff hold a payout that hasn't gone, until they release it. Not one being
+ * sent this moment (409 PAYOUT_IN_FLIGHT): its transfer would go out all the same.
+ */
 export async function holdPayout(staffId: string, payoutId: string, reason: string, ip?: string) {
   const payout = await findPayout(payoutId);
   await assertNotOwnRecord(staffId, [payout.hostId]);
   if (!['SCHEDULED', 'HELD', 'FAILED'].includes(payout.status)) {
     throw new HttpError(409, 'NOT_HOLDABLE', 'This payout has already been paid or cancelled.');
   }
-  await PayoutModel.updateOne(
-    { _id: payout._id, status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }) },
+  if (beingSent(payout)) throw payoutInFlight();
+  const held = await PayoutModel.updateOne(
+    {
+      _id: payout._id,
+      status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }),
+      $or: [
+        { status: mongoose.trusted({ $ne: 'SCHEDULED' }) },
+        { deductionsReservedAt: mongoose.trusted({ $exists: false }) },
+      ],
+    },
     { $set: { status: 'HELD', holdReason: 'MANUAL' } },
   );
+  if (held.matchedCount === 0) {
+    throw await changedMeanwhile(
+      payout._id,
+      new HttpError(409, 'NOT_HOLDABLE', 'This payout has just changed. Please refresh.'),
+    );
+  }
   await recordAudit({
     actorId: staffId,
     action: 'payout.held',
@@ -459,11 +497,16 @@ export async function holdPayout(staffId: string, payoutId: string, reason: stri
 export async function releasePayout(staffId: string, payoutId: string, ip?: string, now = new Date()) {
   const payout = await findPayout(payoutId);
   await assertNotOwnRecord(staffId, [payout.hostId]);
-  if (payout.status !== 'HELD') throw new HttpError(409, 'NOT_HELD', 'This payout isn’t on hold.');
-  await PayoutModel.updateOne(
+  if (payout.status !== 'HELD') {
+    throw beingSent(payout) ? payoutInFlight() : new HttpError(409, 'NOT_HELD', 'This payout isn’t on hold.');
+  }
+  const released = await PayoutModel.updateOne(
     { _id: payout._id, status: 'HELD' },
     { $set: { status: 'SCHEDULED' }, $unset: { holdReason: 1 } },
   );
+  if (released.matchedCount === 0) {
+    throw await changedMeanwhile(payout._id, new HttpError(409, 'NOT_HELD', 'This payout isn’t on hold.'));
+  }
   await queueTransfer(payout, now);
   await recordAudit({
     actorId: staffId,
@@ -481,9 +524,21 @@ export async function releasePayout(staffId: string, payoutId: string, ip?: stri
 export async function retryPayout(staffId: string, payoutId: string, ip?: string, now = new Date()) {
   const payout = await findPayout(payoutId);
   await assertNotOwnRecord(staffId, [payout.hostId]);
-  if (payout.status !== 'FAILED')
-    throw new HttpError(409, 'NOT_FAILED', 'Only a failed payout can be retried.');
-  await PayoutModel.updateOne({ _id: payout._id, status: 'FAILED' }, { $set: { status: 'SCHEDULED' } });
+  if (payout.status !== 'FAILED') {
+    throw beingSent(payout)
+      ? payoutInFlight()
+      : new HttpError(409, 'NOT_FAILED', 'Only a failed payout can be retried.');
+  }
+  const retried = await PayoutModel.updateOne(
+    { _id: payout._id, status: 'FAILED' },
+    { $set: { status: 'SCHEDULED' } },
+  );
+  if (retried.matchedCount === 0) {
+    throw await changedMeanwhile(
+      payout._id,
+      new HttpError(409, 'NOT_FAILED', 'Only a failed payout can be retried.'),
+    );
+  }
   await queueTransfer(payout, now);
   await recordAudit({
     actorId: staffId,

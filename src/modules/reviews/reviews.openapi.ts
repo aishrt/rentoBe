@@ -5,6 +5,7 @@ import {
   moderateReviewSchema,
   moderationReviewSchema,
   myReviewsResponseSchema,
+  publicProfileSchema,
   reviewInputSchema,
   reviewResponseSchema,
   userReviewsResponseSchema,
@@ -39,10 +40,27 @@ export function registerReviewPaths(registry: OpenAPIRegistry) {
     tags: ['Reviews'],
     summary: 'A member’s public profile and the published reviews about them',
     description:
-      'Only what each party may see of the other (plan §6.2), and the reviews about them as Guest and as Host, without the booking each came from. This is the public profile plan §11 lists as GET /users/{id}/profile, open to visitors. A closed or suspended account is not found.',
+      'Only what each party may see of the other (plan §6.2), and the reviews about them as Guest and as Host, without the booking each came from. Open to visitors. A closed or suspended account is not found.',
     request: { params: z.object({ id: z.string() }) },
     responses: {
       200: jsonResponse('Profile and reviews', userReviewsResponseSchema),
+      ...errorResponses(404),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/users/{id}/profile',
+    tags: ['Reviews'],
+    summary: 'A member’s public profile',
+    description:
+      'The public profile of plan §11: only the fields of plan §6.2 (first name, photo, year joined, whether verified, ratings and trips as Guest and Host, and a Host’s bio and response rate), as GET /users/{id}/reviews gives it, without the reviews. Open to visitors. A closed or suspended account is not found.',
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: jsonResponse(
+        'Profile',
+        z.object({ profile: publicProfileSchema }).meta({ id: 'UserProfileResponse' }),
+      ),
       ...errorResponses(404),
     },
   });

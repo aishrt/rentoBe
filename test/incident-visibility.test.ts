@@ -104,12 +104,17 @@ describe('a party’s reply', () => {
     // The Guest's next update is for support only; the Host's is still for both.
     expect((await view(guestAgent, caseRef)).sharedWithOtherParty).toBe(false);
     expect((await view(hostAgent, caseRef)).sharedWithOtherParty).toBe(true);
+    // Support wait for the Guest's answer, not the Host's, in the case and in each one's list.
+    expect((await view(guestAgent, caseRef)).awaitingYou).toBe(true);
+    expect((await view(hostAgent, caseRef)).awaitingYou).toBe(false);
+    expect((await guestAgent.get('/api/v1/incidents')).body.incidents[0].awaitingYou).toBe(true);
+    expect((await hostAgent.get('/api/v1/incidents')).body.incidents[0].awaitingYou).toBe(false);
 
     const answer = await guestAgent
       .post(`/api/v1/incidents/${caseRef}/events`)
       .send({ note: 'My partner was, for an hour.' });
     expect(answer.status).toBe(201);
-    expect(answer.body.incident).toMatchObject({ status: 'INVESTIGATING' });
+    expect(answer.body.incident).toMatchObject({ status: 'INVESTIGATING', awaitingYou: false });
     expect(answer.body.incident.events.at(-1)).toMatchObject({
       visibility: 'GUEST',
       status: 'INVESTIGATING',
@@ -132,6 +137,9 @@ describe('a party’s reply', () => {
       .post(`/api/v1/admin/incidents/${caseRef}/events`)
       .send({ note: 'Waiting on the roadside report.', status: 'AWAITING_RESPONSE', visibility: 'INTERNAL' });
     expect((await view(hostAgent, caseRef)).sharedWithOtherParty).toBe(true);
+    // Neither party saw a question, so either may answer it.
+    expect((await view(hostAgent, caseRef)).awaitingYou).toBe(true);
+    expect((await view(guestAgent, caseRef)).awaitingYou).toBe(true);
 
     const reply = await hostAgent
       .post(`/api/v1/incidents/${caseRef}/events`)

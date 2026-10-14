@@ -1,6 +1,8 @@
 import mongoose from 'mongoose';
 import { z } from 'zod';
 import { env } from '../../env.js';
+import { logger } from '../../integrations/logger.js';
+import { countryName } from '../../lib/countries.js';
 import { decrypt } from '../../lib/encryption.js';
 import { HttpError } from '../../lib/http-error.js';
 import { nzDate } from '../../lib/nz-time.js';
@@ -9,6 +11,13 @@ import { BookingModel } from '../bookings/booking.model.js';
 import { resolveVerificationReview } from '../bookings/booking.service.js';
 import { verificationOutcomeShape, type VerificationOutcome } from '../bookings/bookings.schemas.js';
 import { notify } from '../notifications/notify.js';
+import { alertStaff } from '../staff/staff-alerts.js';
+import {
+  licenceCountryCode,
+  licenceProblemsForTrip,
+  verificationInReview,
+  type EligibilityProblem,
+} from '../users/driver-licence.service.js';
 import { UserModel, type User } from '../users/user.model.js';
 import { assertNotOwnRecord } from './own-record.js';
 import { getPlatformSettings } from './platform-settings.service.js';
@@ -96,7 +105,7 @@ export function staffLicenceView(licence: User['driverLicence']): z.infer<typeof
   if (!licence) return null;
   return {
     class: licence.class,
-    country: licence.country,
+    country: countryName(licenceCountryCode(licence) ?? licence.country),
     numberEnding: licence.numberEnding ?? '',
     ...(licence.version && { version: licence.version }),
     expiry: nzDate(licence.expiry),
@@ -253,10 +262,111 @@ export async function revealLicenceNumber(userId: string, staffId: string, ip?: 
 
 const accountUrl = () => `${env.FRONTEND_URL.replace(/\/+$/, '')}/account`;
 
+/** Why a licence no longer suits a booked trip, as staff read it. */
+const LICENCE_PROBLEM_WORDS: Partial<Record<EligibilityProblem['code'], string>> = {
+  LICENCE_REQUIRED: 'there are no licence details',
+  LICENCE_REJECTED: 'our team turned the licence down',
+  TOO_YOUNG: 'they’re under the minimum age when the trip starts',
+  CLASS_NOT_ACCEPTED: 'the licence class isn’t accepted',
+  NOT_LICENSED_LONG_ENOUGH: 'they won’t have held the licence long enough when the trip starts',
+  LICENCE_EXPIRES: 'the licence expires before the trip ends',
+  ENGLISH_PROOF_REQUIRED: 'the overseas licence isn’t in English and has no English proof',
+};
+
+/**
+ * The Guest saved new licence details, or support turned their licence down: each upcoming booking is held to
+ * the licence rules again, as booking it was (plan §3: a licence valid until the trip ends, of a class the
+ * rules accept). A request that no longer qualifies waits for support (its verification review, as a check in
+ * review does), so the Host's acceptance doesn't take the payment; a confirmed trip that no longer qualifies
+ * is flagged to support, and check-in refuses it. Support hear of each. With `rejected`, the requests are
+ * released next, so only the confirmed trips are flagged. Requests held this way go ahead once the licence is
+ * fixed and approved, and nothing else waits for support. Returns the confirmed trips flagged.
+ */
+export async function recheckBookedTrips(
+  guestId: string,
+  now = new Date(),
+  { rejected = false }: { rejected?: boolean } = {},
+): Promise<{ flagged: string[] }> {
+  const guest = await UserModel.findById(guestId)
+    .select('firstName phoneVerifiedAt dob identityVerification driverLicence')
+    .lean();
+  if (!guest) return { flagged: [] };
+  const settings = await getPlatformSettings();
+  const bookings = await BookingModel.find({
+    guestId: guest._id,
+    status: mongoose.trusted({ $in: ['PENDING', 'CONFIRMED'] }),
+    endAt: mongoose.trusted({ $gt: now }),
+  })
+    .sort({ startAt: 1 })
+    .select('ref status startAt endAt verificationReview')
+    .lean();
+  const flagged: string[] = [];
+  let waitingForSupport = false;
+  let blocked = false;
+  for (const booking of bookings) {
+    if (booking.status === 'PENDING' && booking.verificationReview?.status === 'PENDING') {
+      waitingForSupport = true;
+    }
+    const problems = licenceProblemsForTrip(guest, settings, booking, now);
+    if (problems.length === 0) continue;
+    blocked = true;
+    if (booking.status === 'PENDING') {
+      await BookingModel.updateOne(
+        {
+          _id: booking._id,
+          status: 'PENDING',
+          'verificationReview.status': mongoose.trusted({ $ne: 'PENDING' }),
+        },
+        { $set: { verificationReview: { status: 'PENDING' } } },
+      );
+      if (rejected) continue;
+    } else {
+      flagged.push(booking.ref);
+    }
+    const licence = guest.driverLicence;
+    const why = problems.flatMap((problem) => LICENCE_PROBLEM_WORDS[problem.code] ?? []).join(', and ');
+    await alertStaff({
+      type: 'LICENCE_NOT_ELIGIBLE',
+      title: `Licence problem on ${booking.ref}`,
+      body:
+        booking.status === 'PENDING'
+          ? `${guest.firstName}'s driver licence no longer meets the rules for request ${booking.ref}: ${why}. It now waits for our check, so the host's acceptance won't take the payment. It goes ahead once the licence is sorted out and approved, or ends when the request expires; cancel it from the booking if it can't go ahead.`
+          : `${guest.firstName}'s driver licence no longer meets the rules for confirmed booking ${booking.ref}: ${why}. Check-in is refused until it's sorted out. Contact the guest, or cancel the booking if the trip can't go ahead.`,
+      link: `/admin/bookings/${booking.ref}`,
+      // Once for each licence and problem, however often the same details are saved.
+      dedupeKey: [
+        'LICENCE_NOT_ELIGIBLE',
+        booking._id.toString(),
+        problems.map((problem) => problem.code).join(','),
+        licence?.numberHash ?? '',
+        licence ? nzDate(licence.expiry) : '',
+        licence?.status ?? '',
+      ].join(':'),
+    });
+  }
+  // Fixed and approved: what waited only for the licence goes ahead, once nothing else waits for support.
+  if (
+    waitingForSupport &&
+    !blocked &&
+    guest.driverLicence?.status === 'APPROVED' &&
+    !verificationInReview(guest, settings)
+  ) {
+    try {
+      await resolveVerificationReview(guest._id.toString(), 'APPROVE', undefined, now);
+    } catch (error) {
+      // The licence is saved either way; the requests still wait, and expire if nothing settles them.
+      logger.warn({ err: error, guestId }, 'Could not confirm the bookings held for a licence');
+    }
+  }
+  return { flagged };
+}
+
 /**
  * POST /admin/users/{id}/licence-review: support checked the licence details by hand. Approved: the bookings
- * that waited for it are confirmed, unless the identity check still waits too. Rejected: they're released,
- * with their card authorisations (plan §8.2). 409 when the licence isn't waiting for a check.
+ * that waited for it are confirmed, unless the identity check still waits too, or the licence doesn't meet
+ * the rules for that trip. Rejected: the Guest's requests are released, with their card authorisations (plan
+ * §8.2), and support hear of each confirmed trip, which check-in then refuses. 409 when the licence isn't
+ * waiting for a check.
  */
 export async function reviewLicence(
   userId: string,
@@ -289,8 +399,13 @@ export async function reviewLicence(
     after: { status, ...(note && { note }) },
     ...(ip && { ip }),
   });
+  // Turned down: every request goes back to support's review to be released with the others, and each
+  // confirmed trip is flagged (plan §3: the licence has to be valid for the trip).
+  const { flagged } =
+    decision === 'REJECT' ? await recheckBookedTrips(user.id, now, { rejected: true }) : { flagged: [] };
   const outcome: VerificationOutcome = await resolveVerificationReview(user.id, decision, staffId, now);
   const stillWaiting = outcome.stillInReview ?? [];
+  const notEligible = outcome.licenceNotEligible ?? [];
 
   if (decision === 'APPROVE') {
     await notify({
@@ -322,6 +437,11 @@ export async function reviewLicence(
                   `Your booking ${stillWaiting.join(', ')} is still held for you while we finish your identity check. Your card isn’t charged until it’s approved.`,
                 ]
               : []),
+            ...(notEligible.length > 0
+              ? [
+                  `Your booking ${notEligible.join(', ')} is still held: your licence doesn’t meet our rules for that trip (for example, it expires before the trip ends). Update your licence details, or contact us. Your card isn’t charged meanwhile.`,
+                ]
+              : []),
           ],
           buttonLabel: 'Your account',
           url: accountUrl(),
@@ -347,6 +467,11 @@ export async function reviewLicence(
             ...(outcome.released.length > 0
               ? [
                   `Booking ${outcome.released.join(', ')} was released, and your card authorisation with it: nothing was charged.`,
+                ]
+              : []),
+            ...(flagged.length > 0
+              ? [
+                  `Your confirmed booking ${flagged.join(', ')} can’t start until your licence is sorted out. Our team will be in touch about it.`,
                 ]
               : []),
             'If something was entered wrongly, update it from your account, or reply to this email.',

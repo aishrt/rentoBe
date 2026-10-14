@@ -182,6 +182,8 @@ const paidGross = (payout: Pick<PayoutRecord, 'amountCents' | 'deductions'>) =>
 
 /** The key a paid trip payout's overpayment is owed under, as its own line on the Host's next payout. */
 const overpaidKey = (payoutId: Id | string) => `trip-payout-${payoutId.toString()}`;
+/** Whether what the Host owes (or a deduction for it) is a payout already sent, not a refund (plan §8.1, item 15). */
+export const isPayoutSentBack = (key: string | undefined) => Boolean(key?.startsWith('trip-payout-'));
 
 /**
  * Where a booking's TRIP payout stands as the booking is cancelled (plan §8.1, items 15 and 16). NONE: there
@@ -189,29 +191,82 @@ const overpaidKey = (payoutId: Id | string) => `trip-payout-${payoutId.toString(
  * IN_FLIGHT: its deductions are reserved and its transfer is being made, so the cancellation waits a minute;
  * PAID: it went before the cancellation (a Guest no-show after the Host's check-in), so the Host keeps only their
  * share of the kept fee and owes the rest off their next payout (owedCents), or is paid the difference
- * (topUpCents).
+ * (topUpCents). `reliefCents`: what the cancellation took off the Host's share of the booking's earlier
+ * Host-funded refunds, which the Host paid in full so far, so it's theirs back. A transfer that failed without a
+ * clear answer may have gone through all the same: outside a transaction, Stripe is asked, and a transfer it
+ * made is recorded as paid.
  */
 export async function tripPayoutOnCancel(
   bookingId: Id,
   hostShareCents: number,
-  session?: ClientSession,
+  {
+    session,
+    reliefCents = 0,
+    now = new Date(),
+  }: { session?: ClientSession; reliefCents?: number; now?: Date } = {},
 ): Promise<
   | { state: 'NONE' | 'UNPAID' | 'IN_FLIGHT' }
   | { state: 'PAID'; paidCents: number; owedCents: number; topUpCents: number }
 > {
-  const trip = await PayoutModel.findOne({ bookingId, type: 'TRIP' })
+  let trip = await PayoutModel.findOne({ bookingId, type: 'TRIP' })
     .session(session ?? null)
     .lean<PayoutRecord>();
   if (!trip || trip.status === 'CANCELLED') return { state: 'NONE' };
   if (trip.status === 'SCHEDULED' && trip.deductionsReservedAt) return { state: 'IN_FLIGHT' };
+  if (trip.status === 'FAILED' && trip.deductionsReservedAt && !session) {
+    const found = await paidIfTransferred(trip, now).catch(() => null);
+    // Stripe couldn't be asked: whether it was sent isn't known yet, so the cancellation waits.
+    if (!found) return { state: 'IN_FLIGHT' };
+    trip = found;
+    if (trip.status === 'SCHEDULED' && trip.deductionsReservedAt) return { state: 'IN_FLIGHT' };
+  }
+  if (trip.status === 'CANCELLED') return { state: 'NONE' };
   if (trip.status !== 'PAID') return { state: 'UNPAID' };
   const paidCents = paidGross(trip);
   return {
     state: 'PAID',
     paidCents,
-    owedCents: Math.max(0, paidCents - hostShareCents),
-    topUpCents: Math.max(0, hostShareCents - paidCents),
+    owedCents: Math.max(0, paidCents - hostShareCents - reliefCents),
+    topUpCents: Math.max(0, hostShareCents + reliefCents - paidCents),
   };
+}
+
+/**
+ * A FAILED payout whose transfer Stripe made after all (a timeout or a 5xx it finished): recorded as paid, with
+ * the deductions reserved for it, as the transfer sent the payout less those. Resolves the payout as it is now.
+ */
+async function paidIfTransferred(payout: PayoutRecord, now: Date): Promise<PayoutRecord> {
+  const booking = await BookingModel.findById(payout.bookingId).select('ref').lean();
+  const transferId = booking && (await existingTransfer(payout._id.toString(), booking.ref));
+  if (!transferId) return payout;
+  await PayoutModel.updateOne(
+    { _id: payout._id, status: 'FAILED' },
+    {
+      $set: {
+        status: 'PAID',
+        paidAt: now,
+        amountCents: Math.max(0, payout.amountCents - reservedCents(payout)),
+        stripeTransferId: transferId,
+      },
+      $unset: { holdReason: 1, failureReason: 1 },
+    },
+  );
+  return (await PayoutModel.findById(payout._id).lean<PayoutRecord>()) ?? payout;
+}
+
+/**
+ * What a cancellation took off the Host's share of the booking's earlier Host-funded refunds (plan §8.1, item
+ * 15): the Guest got that part back under the cancellation anyway.
+ */
+async function refundReliefCents(bookingId: Id, session: ClientSession): Promise<number> {
+  const payments = await PaymentModel.find({ bookingId, type: 'BOOKING' })
+    .select('refunds')
+    .session(session)
+    .lean();
+  return payments
+    .flatMap((payment) => payment.refunds)
+    .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED')
+    .reduce((sum, refund) => sum + (refund.hostReliefCents ?? 0), 0);
 }
 
 /**
@@ -219,20 +274,30 @@ export async function tripPayoutOnCancel(
  * fee (no-shows included) becomes a CANCELLATION_FEE payout, paid when the trip's would have been
  * (plan §4.2, §8.1 item 16). A TRIP payout already paid (a Guest no-show after the Host's check-in) isn't paid
  * again: the Host keeps their share of the kept fee from it, and owes the rest off their next payout, shown as
- * a line on it, or is paid the difference when their share is the bigger (plan §8.1, item 15).
+ * a line on it, or is paid the difference when their share is the bigger (plan §8.1, item 15). A failed one is
+ * cancelled too, and what it reserved given back.
  */
 export async function replaceTripPayout(booking: BookingRecord, session: ClientSession, now = new Date()) {
   const cancelled = await PayoutModel.findOneAndUpdate(
-    { bookingId: booking._id, type: 'TRIP', status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD'] }) },
+    {
+      bookingId: booking._id,
+      type: 'TRIP',
+      status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }),
+    },
     { $set: { status: 'CANCELLED', deductions: [] }, $unset: { holdReason: 1, deductionsReservedAt: 1 } },
     { new: false, session },
   ).lean<PayoutRecord>();
   if (cancelled) {
     await giveBackDeductions(cancelled, session);
-    await oweOwnRefunds(cancelled, session);
+    await oweOwnRefunds(cancelled, session, now);
   }
   let share = booking.hostShareCents ?? 0;
-  const settled = cancelled ? null : await tripPayoutOnCancel(booking._id, share, session);
+  const settled = cancelled
+    ? null
+    : await tripPayoutOnCancel(booking._id, share, {
+        session,
+        reliefCents: await refundReliefCents(booking._id, session),
+      });
   if (settled?.state === 'PAID') {
     const trip = await PayoutModel.findOne({ bookingId: booking._id, type: 'TRIP' })
       .select('_id')
@@ -249,8 +314,11 @@ export async function replaceTripPayout(booking: BookingRecord, session: ClientS
   const scheduledFor = new Date(
     Math.max(booking.startAt.getTime() + PAYOUT_AFTER_START_HOURS * HOUR_MS, now.getTime()),
   );
-  // A top-up after a paid trip payout carries its part of the commission.
-  const commission = Math.round((keptFeeCommission(booking) * share) / Math.max(1, booking.hostShareCents ?? share));
+  // A top-up after a paid trip payout carries its part of the commission (none on refund relief beyond the share).
+  const commission = Math.round(
+    (keptFeeCommission(booking) * Math.min(share, booking.hostShareCents ?? share)) /
+      Math.max(1, booking.hostShareCents ?? share),
+  );
   const [payout] = await PayoutModel.create(
     [
       {
@@ -508,6 +576,8 @@ async function reserveDeductions(
       return await withTransaction(async (session) => {
         const fresh = await PayoutModel.findById(payout._id).session(session).lean<PayoutRecord>();
         if (!fresh || fresh.status === 'PAID' || fresh.status === 'CANCELLED') return null;
+        // Staff held it a moment ago: it waits for them.
+        if (fresh.holdReason === 'MANUAL') return null;
         if (fresh.deductionsReservedAt) return fresh.deductions;
         const { deductions, carryOver } = await deductionsFor(fresh, booking, session, now);
         await takeOwed(fresh.hostId, deductions, session);
@@ -522,6 +592,7 @@ async function reserveDeductions(
           {
             _id: fresh._id,
             status: mongoose.trusted({ $nin: ['PAID', 'CANCELLED'] }),
+            holdReason: mongoose.trusted({ $ne: 'MANUAL' }),
             deductionsReservedAt: mongoose.trusted({ $exists: false }),
           },
           { $set: { deductions, deductionsReservedAt: now } },
@@ -597,32 +668,108 @@ async function addRefundOwed(
   );
 }
 
+/** Takes up to `cents` off what the Host owes for a refund, e.g. once a cancellation lowered their share of it. */
+async function reduceRefundOwed(hostId: Id, stripeRefundId: string, cents: number, session: ClientSession) {
+  const host = await UserModel.findById(hostId).select('hostProfile.refundsOwed').session(session).lean();
+  const owed = host?.hostProfile?.refundsOwed?.find((line) => line.stripeRefundId === stripeRefundId);
+  const less = Math.min(cents, owed?.amountCents ?? 0);
+  if (less <= 0) return;
+  await UserModel.updateOne(
+    { _id: hostId, 'hostProfile.refundsOwed.stripeRefundId': stripeRefundId },
+    { $inc: { 'hostProfile.refundsOwed.$.amountCents': -less } },
+    { session },
+  );
+  await UserModel.updateOne(
+    { _id: hostId },
+    { $pull: { 'hostProfile.refundsOwed': { amountCents: 0 } } },
+    { session },
+  );
+}
+
 /**
  * A trip's payout cancelled before it was sent: the Host-funded refunds on the booking that were to come off
  * it are owed instead, and come off the Host's next payout (plan §8.1, item 15). Unreserved, it was to take the
- * Host's whole share of each; reserved, what its deductions took (any rest is owed already). Pass the payout as
- * it was before it was cancelled.
+ * Host's share of each (as the cancellation left it); reserved, what its deductions took (any rest is owed
+ * already), less what the cancellation took off the Host's share since. Once only for a payout. Pass the payout
+ * as it was before it was cancelled.
  */
-async function oweOwnRefunds(payout: PayoutRecord, session: ClientSession) {
+async function oweOwnRefunds(payout: PayoutRecord, session: ClientSession, now = new Date()) {
   if (payout.type !== 'TRIP') return;
+  const first = await PayoutModel.updateOne(
+    { _id: payout._id, ownRefundsOwedAt: mongoose.trusted({ $exists: false }) },
+    { $set: { ownRefundsOwedAt: now } },
+    { session },
+  );
+  if (first.modifiedCount === 0) return;
   const payments = await PaymentModel.find({ bookingId: payout.bookingId, type: 'BOOKING' })
     .session(session)
     .lean();
   for (const refund of payments.flatMap((payment) => payment.refunds)) {
     if (refund.fundedBy !== 'HOST' || refund.status === 'FAILED' || refund.kind === 'CANCELLATION') continue;
     if (!refund.stripeRefundId) continue;
-    const owed = payout.deductionsReservedAt
-      ? payout.deductions
-          .filter(
-            (deduction) =>
-              !deduction.owed &&
-              deduction.type === 'HOST_FUNDED_REFUND' &&
-              deduction.stripeRefundId === refund.stripeRefundId,
-          )
-          .reduce((sum, deduction) => sum + deduction.amountCents, 0)
-      : hostPartOf(refund);
+    let owed = hostPartOf(refund);
+    if (payout.deductionsReservedAt) {
+      const taken = payout.deductions
+        .filter(
+          (deduction) =>
+            !deduction.owed &&
+            deduction.type === 'HOST_FUNDED_REFUND' &&
+            deduction.stripeRefundId === refund.stripeRefundId,
+        )
+        .reduce((sum, deduction) => sum + deduction.amountCents, 0);
+      // The reservation took the Host's whole share as it was then: the cancellation's relief comes off what it
+      // took, then off any rest the Host already owes for it.
+      const relief = refund.hostReliefCents ?? 0;
+      owed = Math.max(0, taken - relief);
+      if (relief > taken) {
+        await reduceRefundOwed(payout.hostId, refund.stripeRefundId, relief - taken, session);
+      }
+    }
     if (owed > 0) await addRefundOwed(payout.hostId, payout.bookingId, refund.stripeRefundId, owed, session);
   }
+}
+
+/**
+ * A trip's payout cancelled (its booking was cancelled) while its transfer was being made, or after one that
+ * failed without a clear answer went through: the transfer went out all the same, so it's recorded as paid,
+ * without the deductions its cancellation gave back, and what it sent comes off the Host's next payout, so
+ * they're never paid twice (plan §8.1, items 15 and 16). False when it was paid already.
+ */
+async function sentAfterCancel(
+  payout: PayoutRecord,
+  booking: BookingRecord,
+  { amount, transferId }: { amount: number; transferId?: string },
+  session: ClientSession,
+  now: Date,
+): Promise<boolean> {
+  const updated = await PayoutModel.updateOne(
+    { _id: payout._id, status: mongoose.trusted({ $ne: 'PAID' }) },
+    {
+      $set: {
+        status: 'PAID',
+        paidAt: now,
+        amountCents: amount,
+        deductions: [],
+        ...(transferId && { stripeTransferId: transferId }),
+      },
+      $unset: { holdReason: 1, failureReason: 1 },
+    },
+    { session },
+  );
+  if (updated.matchedCount === 0) return false;
+  if (amount > 0) await addRefundOwed(payout.hostId, booking._id, overpaidKey(payout._id), amount, session);
+  const host = await UserModel.findById(payout.hostId).select('firstName').session(session).lean();
+  await alertStaff(
+    {
+      type: 'PAYOUT_SENT_AFTER_CANCEL',
+      title: `A cancelled payout for ${booking.ref} was sent`,
+      body: `the ${formatNzdExact(amount)} payout for booking ${booking.ref} was being transferred to ${host?.firstName ?? 'the host'} as it was cancelled, and the transfer went through. It now comes off their next payout. Check it if they contact us.`,
+      link: `/admin/bookings/${booking.ref}`,
+      dedupeKey: `PAYOUT_SENT_AFTER_CANCEL:${payout._id.toString()}`,
+    },
+    { session },
+  );
+  return true;
 }
 
 export type PayoutOutcome = 'paid' | 'held' | 'skipped' | 'failed';
@@ -640,26 +787,40 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
   const booking = await BookingModel.findById(payout.bookingId).lean<BookingRecord>();
   if (!booking) return 'skipped';
   if (payout.type === 'TRIP' && ['CANCELLED', 'DECLINED', 'EXPIRED'].includes(booking.status)) {
-    await withTransaction(async (session) => {
+    // A transfer that failed without a clear answer may have gone through all the same.
+    const transferId =
+      payout.status === 'FAILED' && payout.deductionsReservedAt
+        ? await existingTransfer(payout.id, booking.ref)
+        : undefined;
+    const sent = await withTransaction(async (session) => {
       const cancelled = await PayoutModel.findOneAndUpdate(
         { _id: payout._id, status: mongoose.trusted({ $nin: ['PAID', 'CANCELLED'] }) },
         { $set: { status: 'CANCELLED', deductions: [] }, $unset: { deductionsReservedAt: 1 } },
         { new: false, session },
       ).lean<PayoutRecord>();
-      if (cancelled) {
-        await giveBackDeductions(cancelled, session);
-        await oweOwnRefunds(cancelled, session);
-      }
+      if (!cancelled) return false;
+      await giveBackDeductions(cancelled, session);
+      await oweOwnRefunds(cancelled, session, now);
+      if (!transferId) return false;
+      // It went: recorded as sent after the cancellation, so what it sent is owed back.
+      const amount = Math.max(0, cancelled.amountCents - reservedCents(cancelled));
+      return sentAfterCancel(cancelled, booking, { amount, transferId }, session, now);
     });
-    return 'skipped';
+    return sent ? 'paid' : 'skipped';
   }
 
   const hold = await holdFor(payout, booking);
   if (hold) {
-    await PayoutModel.updateOne(
-      { _id: payout._id, status: mongoose.trusted({ $ne: 'PAID' }) },
+    // Never a payout cancelled or paid meanwhile, nor one staff held: only they release that.
+    const held = await PayoutModel.updateOne(
+      {
+        _id: payout._id,
+        status: mongoose.trusted({ $nin: ['PAID', 'CANCELLED'] }),
+        holdReason: mongoose.trusted({ $ne: 'MANUAL' }),
+      },
       { $set: { status: 'HELD', holdReason: hold } },
     );
+    if (held.matchedCount === 0) return 'skipped';
     // Checked again each day, and straight away when what holds it is fixed.
     await enqueue(
       'payout.transfer',
@@ -676,6 +837,17 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
 
   const deductions = await reserveDeductions(payout, booking, now);
   if (!deductions) return 'skipped';
+  // Being sent from here (a retry of a failed transfer, or a held payout released, too): SCHEDULED with its
+  // deductions reserved, so a cancellation waits for it and staff can't hold it meanwhile.
+  const sending = await PayoutModel.updateOne(
+    {
+      _id: payout._id,
+      status: mongoose.trusted({ $in: ['SCHEDULED', 'HELD', 'FAILED'] }),
+      holdReason: mongoose.trusted({ $ne: 'MANUAL' }),
+    },
+    { $set: { status: 'SCHEDULED' }, $unset: { holdReason: 1 } },
+  );
+  if (sending.matchedCount === 0) return 'skipped';
   const deducted = deductions.reduce((sum, deduction) => sum + deduction.amountCents, 0);
   const amount = payout.amountCents - deducted;
   const host = await UserModel.findById(payout.hostId).select('firstName hostProfile').lean();
@@ -733,10 +905,17 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
 
   const paid = await withTransaction(async (session) => {
     const before = await PayoutModel.findById(payout._id).select('status').session(session).lean();
-    // Cancelled while its transfer was being made (its booking was cancelled that moment): the transfer went
-    // out all the same, so it's recorded as paid, without the deductions its cancellation gave back, and what it
-    // sent comes off the Host's next payout, so they're never paid twice (plan §8.1, items 15 and 16).
-    const cancelledMeanwhile = before?.status === 'CANCELLED';
+    // Cancelled while its transfer was being made (its booking was cancelled that moment): owed back.
+    if (before?.status === 'CANCELLED') {
+      const sent = await sentAfterCancel(
+        payout.toObject() as PayoutRecord,
+        booking,
+        { amount: Math.max(0, amount), transferId },
+        session,
+        now,
+      );
+      return sent ? true : null;
+    }
     const updated = await PayoutModel.findOneAndUpdate(
       { _id: payout._id, status: mongoose.trusted({ $ne: 'PAID' }) },
       {
@@ -744,7 +923,7 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
           status: 'PAID',
           paidAt: now,
           amountCents: Math.max(0, amount),
-          deductions: cancelledMeanwhile ? [] : deductions,
+          deductions,
           ...(transferId && { stripeTransferId: transferId }),
         },
         $unset: { holdReason: 1, failureReason: 1 },
@@ -753,28 +932,13 @@ export async function runPayout(payoutId: string, now = new Date()): Promise<Pay
     );
     // What the Host owed was already taken off their balance when the deductions were reserved.
     if (!updated) return null;
-    if (cancelledMeanwhile) {
-      if (amount > 0) {
-        await addRefundOwed(payout.hostId, booking._id, overpaidKey(payout._id), amount, session);
-      }
-      await alertStaff(
-        {
-          type: 'PAYOUT_SENT_AFTER_CANCEL',
-          title: `A cancelled payout for ${booking.ref} was sent`,
-          body: `the ${formatNzdExact(Math.max(0, amount))} payout for booking ${booking.ref} was being transferred to ${host?.firstName ?? 'the host'} as it was cancelled, and the transfer went through. It now comes off their next payout. Check it if they contact us.`,
-          link: `/admin/bookings/${booking.ref}`,
-          dedupeKey: `PAYOUT_SENT_AFTER_CANCEL:${payout.id}`,
-        },
-        { session },
-      );
-      return updated;
-    }
     await notifyPaid(
       updated.toObject() as PayoutRecord,
       booking,
       host?.firstName ?? 'there',
       host?.hostProfile?.payoutDelayDays,
       session,
+      host?.hostProfile?.gstRegistered,
     );
     return updated;
   });
@@ -796,8 +960,14 @@ export function expectedBankDate(paidAt: Date, delayDays = DEFAULT_BANK_DAYS): D
 }
 
 /** A deduction in words, as the Host sees it on the earnings page and the payout email. */
-export function deductionLabel(deduction: Pick<Deduction, 'type'>, bookingRef?: string): string {
+export function deductionLabel(
+  deduction: Pick<Deduction, 'type' | 'stripeRefundId'>,
+  bookingRef?: string,
+): string {
   if (deduction.type === 'HOST_CANCELLATION_FEE') return 'Host cancellation fee';
+  // A trip payout sent before its booking was cancelled, owed back less the Host's share of the kept fee.
+  if (deduction.type === 'HOST_FUNDED_REFUND' && isPayoutSentBack(deduction.stripeRefundId))
+    return bookingRef ? `Payout already sent for ${bookingRef}` : 'A payout already sent';
   if (deduction.type === 'HOST_FUNDED_REFUND')
     return bookingRef ? `Refund for ${bookingRef}` : 'Refund to a guest';
   return 'Other deduction';
@@ -820,11 +990,14 @@ async function notifyPaid(
   firstName: string,
   delayDays: number | undefined,
   session: ClientSession,
+  gstRegistered = false,
 ) {
   const refs = await bookingRefs(
     payout.deductions.map((deduction) => deduction.bookingId),
     session,
   );
+  // A GST-registered Host's tax invoice for the commission names its supplier (plan §8.1, item 22).
+  const business = gstRegistered ? (await getPlatformSettings()).business : undefined;
   const bank = expectedBankDate(payout.paidAt!, delayDays);
   const amount = formatNzdExact(payout.amountCents);
   await notify(
@@ -852,6 +1025,16 @@ async function notifyPaid(
                   {
                     label: 'Platform commission',
                     value: `−${formatNzdExact(payout.commissionCents)} (incl. ${formatNzdExact(payout.commissionGstCents ?? 0)} GST)`,
+                  },
+                ]
+              : []),
+            ...(business && payout.commissionCents !== undefined
+              ? [
+                  {
+                    label: 'Commission charged by',
+                    value: business.gstNumber
+                      ? `${business.legalName}, GST number ${business.gstNumber}`
+                      : business.legalName,
                   },
                 ]
               : []),
@@ -1006,6 +1189,7 @@ export async function listHostPayouts(hostId: string, cursor?: string) {
           type: deduction.type,
           amountCents: deduction.amountCents,
           ...(ref && { bookingRef: ref }),
+          ...(isPayoutSentBack(deduction.stripeRefundId) && { payoutSent: true }),
         };
       }),
       ...(reversed > 0 && { reversedCents: reversed }),
@@ -1146,7 +1330,10 @@ export async function recoverHostRefund(
     { $set: { updatedAt: new Date() } },
     { session, timestamps: false },
   );
-  if (pending.matchedCount > 0) return { recoveredFrom: 'THIS_PAYOUT' };
+  if (pending.matchedCount > 0) {
+    await notifyRefundRecovered(booking, refund, { thisPayout: true }, session, Boolean(extraChargeId));
+    return { recoveredFrom: 'THIS_PAYOUT' };
+  }
 
   const reversed = reversal?.reversed ? reversal.amountCents : 0;
   if (reversal?.reversed) {
@@ -1188,7 +1375,13 @@ export async function recoverHostRefund(
       { session },
     );
   }
-  await notifyRefundRecovered(booking, refund, reversed, owed, session, Boolean(extraChargeId));
+  await notifyRefundRecovered(
+    booking,
+    refund,
+    { reversedCents: reversed, owedCents: owed },
+    session,
+    Boolean(extraChargeId),
+  );
   return {
     recoveredFrom: reversed > 0 ? 'REVERSE_TRANSFER' : 'NEXT_PAYOUT',
     ...(reversed > 0 && { reversedCents: reversed }),
@@ -1200,12 +1393,18 @@ export async function recoverHostRefund(
   };
 }
 
-/** Tells the Host a refund they fund was taken back from their payout, or comes off their next one. */
+/**
+ * Tells the Host a refund they fund comes off their payout for it, still to be sent (`thisPayout`), was taken
+ * back from their payout, or comes off their next one.
+ */
 async function notifyRefundRecovered(
   booking: BookingRecord,
   refund: { amountCents: number; hostCents: number; stripeRefundId: string },
-  reversedCents: number,
-  owedCents: number,
+  {
+    reversedCents = 0,
+    owedCents = 0,
+    thisPayout = false,
+  }: { reversedCents?: number; owedCents?: number; thisPayout?: boolean },
   session: ClientSession,
   extraCharge = false,
 ) {
@@ -1218,6 +1417,11 @@ async function notifyRefundRecovered(
   const reversed = formatNzdExact(reversedCents);
   const owed = formatNzdExact(owedCents);
   const how = [
+    ...(thisPayout
+      ? [
+          `${share} comes off your payout for this ${extraCharge ? 'charge' : 'booking'}, still to be sent, shown as its own line.`,
+        ]
+      : []),
     ...(reversedCents > 0 ? [`${reversed} has been taken back from your payout for it.`] : []),
     ...(owedCents > 0
       ? [`${reversedCents > 0 ? 'The other ' : ''}${owed} comes off your next payout, shown as its own line.`]
@@ -1227,8 +1431,9 @@ async function notifyRefundRecovered(
     {
       userId: booking.hostId,
       type: 'HOST_REFUND_RECOVERED',
-      title:
-        owedCents > 0
+      title: thisPayout
+        ? `${subject} for ${booking.ref} comes off your payout for it`
+        : owedCents > 0
           ? `${subject} for ${booking.ref} comes off your next payout`
           : `${subject} for ${booking.ref} was taken back from your payout`,
       body: how.join(' '),
@@ -1239,7 +1444,7 @@ async function notifyRefundRecovered(
           firstName: host?.firstName ?? 'there',
           heading: `A refund for booking ${booking.ref}`,
           paragraphs: [
-            `We’ve refunded the guest ${amount} for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}. It’s a refund of ${extraCharge ? 'an extra charge' : 'rental'} you were paid, so it’s funded by you as the Host.`,
+            `We’ve refunded the guest ${amount} for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}. It’s a refund of ${extraCharge ? 'an extra charge' : 'rental'} you ${thisPayout ? 'are being' : 'were'} paid, so it’s funded by you as the Host.`,
             ...(partly
               ? [`You pay your share of it, ${share}: Rento Vroom covers its commission on the rest.`]
               : []),
@@ -1252,6 +1457,7 @@ async function notifyRefundRecovered(
             ...(partly ? [{ label: 'Your share', value: share }] : []),
             ...(reversedCents > 0 ? [{ label: 'Taken back from your payout', value: `−${reversed}` }] : []),
             ...(owedCents > 0 ? [{ label: 'Off your next payout', value: `−${owed}` }] : []),
+            ...(thisPayout ? [{ label: 'Off your payout for it', value: `−${share}` }] : []),
           ],
           buttonLabel: 'See your earnings',
           url: `${siteUrl()}/host/earnings`,

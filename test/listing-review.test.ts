@@ -148,3 +148,50 @@ describe('a suspended car', () => {
     expect((await page()).upcomingBookings).toBeUndefined();
   });
 });
+
+describe('a car back for review over its key details', () => {
+  it('lists its bookings, which stay booked if it’s rejected, and takes no more on a rejected car', async () => {
+    const host = await createHost();
+    const guest = await createUser();
+    const vehicle = await createVehicle(host._id);
+    const parties = { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id };
+    const confirmed = await createBookingRecord(parties, { startAt: new Date(Date.now() + 10 * DAY_MS) });
+    const request = await createBookingRecord(parties, {
+      status: 'PENDING',
+      instantBook: false,
+      startAt: new Date(Date.now() + 5 * DAY_MS),
+      requestExpiresAt: new Date(Date.now() + DAY_MS),
+    });
+    const hostAgent = await signIn('hana@example.co.nz');
+    await createStaff();
+    const staff = await staffAgent();
+    const page = async () => (await staff.get(`/api/v1/admin/vehicles/${vehicle.id}`)).body;
+
+    // Live, nothing to list; back for review, staff see what it carries before they decide.
+    expect((await page()).upcomingBookings).toBeUndefined();
+    await hostAgent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ regoPlate: 'NEW123' });
+    const underReview = await page();
+    expect(underReview.vehicle.status).toBe('UNDER_REVIEW');
+    expect(underReview.upcomingBookings.map((booking: { ref: string }) => booking.ref)).toEqual([
+      request.ref,
+      confirmed.ref,
+    ]);
+
+    // Rejected: the bookings stay, listed for staff to cancel, and the request can't be accepted.
+    await staff.post(`/api/v1/admin/vehicles/${vehicle.id}/reject`).send({ notes: 'Not the same car.' });
+    const rejected = await page();
+    expect(rejected.vehicle.status).toBe('REJECTED');
+    expect(rejected.upcomingBookings).toHaveLength(2);
+    const accept = await hostAgent.post(`/api/v1/bookings/${request.ref}/accept`);
+    expect(accept.status).toBe(409);
+    expect(accept.body.error.code).toBe('VEHICLE_SUSPENDED');
+  });
+
+  it('lists nothing for a new listing’s first review', async () => {
+    const host = await createHost();
+    const vehicle = await createVehicle(host._id, { status: 'UNDER_REVIEW' });
+    await createStaff();
+    const staff = await staffAgent();
+    expect((await staff.get(`/api/v1/admin/vehicles/${vehicle.id}`)).body.upcomingBookings).toBeUndefined();
+  });
+});

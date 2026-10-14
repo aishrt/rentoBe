@@ -1,13 +1,14 @@
-import type { Types } from 'mongoose';
+import mongoose, { type Types } from 'mongoose';
 import { formatNzAddress } from '../../lib/format.js';
 import type { NzAddress } from '../../lib/model-fields.js';
 import { nzTripDays } from '../../lib/nz-time.js';
 import { payLinkPath } from '../payments/extra-charges.service.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
+import { bookingEarnings } from '../hosts/earnings.service.js';
 import { bookingPayment } from '../payments/booking-payment.js';
 import { PaymentModel, type Payment, type Refund } from '../payments/payment.model.js';
 import { PayoutModel, type Payout } from '../payouts/payout.model.js';
-import { expectedBankDate, gstIn, hostPartOf } from '../payouts/payouts.service.js';
+import { expectedBankDate, gstIn, hostPartOf, isPayoutSentBack } from '../payouts/payouts.service.js';
 import { ReviewModel } from '../reviews/review.model.js';
 import { UserModel, type User } from '../users/user.model.js';
 import { VehicleModel, type DeliveryOption, type Vehicle } from '../vehicles/vehicle.model.js';
@@ -60,12 +61,21 @@ export interface BookingContext {
   host: PartyUser | null;
   payment: (Payment & { _id: Id }) | null;
   /** The extra charges' own payments, for their refunds (plan §8.1, item 11). */
-  extraChargePayments: Pick<Payment, 'extraChargeId' | 'refunds'>[];
+  extraChargePayments: (Pick<Payment, 'extraChargeId' | 'refunds'> & { _id: Id })[];
   /** The booking's payouts: its trip's, or a kept fee's, and any extra charges'. */
   payouts: (Payout & { _id: Id })[];
+  /**
+   * The Host's other payouts, sent or being sent, that took something off for this booking: a refund the Host
+   * funds, or a payout already sent before it was cancelled (plan §8.1, item 15).
+   */
+  otherPayouts: Pick<Payout, 'bookingId' | 'deductions'>[];
+  /** The references of the other bookings the payouts' deductions name, by booking id. */
+  refs: Map<string, string>;
   guestStats: { rating: { avg: number; count: number }; tripCount: number };
   /** The GST rate in settings, for a commission not worked out on a payout yet. */
   gstRatePct: number;
+  /** The commission in settings, for an extra charge without a payout yet. */
+  commissionPct: number;
 }
 
 const PARTY_FIELDS =
@@ -73,26 +83,55 @@ const PARTY_FIELDS =
 
 /** Everything a booking view needs besides the booking itself. */
 export async function loadBookingContext(booking: BookingRecord): Promise<BookingContext> {
-  const [vehicle, guest, host, payment, extraChargePayments, reviews, trips, payouts, settings] =
-    await Promise.all([
-      VehicleModel.findById(booking.vehicleId)
-        .select('slug deliveryOptions suburb city photos fuelType')
-        .lean(),
-      UserModel.findById(booking.guestId).select(PARTY_FIELDS).lean<PartyUser>(),
-      UserModel.findById(booking.hostId).select(PARTY_FIELDS).lean<PartyUser>(),
-      // The payment that made the booking, not a second one given back (plan §8.1).
-      bookingPayment(booking).then((found) => found?.toObject() ?? null),
-      PaymentModel.find({ bookingId: booking._id, type: 'EXTRA_CHARGE' })
-        .select('extraChargeId refunds')
-        .lean(),
-      ReviewModel.aggregate<{ avg: number; count: number }>([
-        { $match: { subjectId: booking.guestId, direction: 'HOST_TO_GUEST', status: 'PUBLISHED' } },
-        { $group: { _id: null, avg: { $avg: '$overall' }, count: { $sum: 1 } } },
-      ]),
-      BookingModel.countDocuments({ guestId: booking.guestId, status: 'COMPLETED' }),
-      PayoutModel.find({ bookingId: booking._id }).lean<(Payout & { _id: Id })[]>(),
-      getPlatformSettings(),
-    ]);
+  const [
+    vehicle,
+    guest,
+    host,
+    payment,
+    extraChargePayments,
+    reviews,
+    trips,
+    payouts,
+    otherPayouts,
+    settings,
+  ] = await Promise.all([
+    VehicleModel.findById(booking.vehicleId)
+      .select('slug deliveryOptions suburb city photos fuelType')
+      .lean(),
+    UserModel.findById(booking.guestId).select(PARTY_FIELDS).lean<PartyUser>(),
+    UserModel.findById(booking.hostId).select(PARTY_FIELDS).lean<PartyUser>(),
+    // The payment that made the booking, not a second one given back (plan §8.1).
+    bookingPayment(booking).then((found) => found?.toObject() ?? null),
+    PaymentModel.find({ bookingId: booking._id, type: 'EXTRA_CHARGE' })
+      .select('extraChargeId refunds')
+      .lean<BookingContext['extraChargePayments']>(),
+    ReviewModel.aggregate<{ avg: number; count: number }>([
+      { $match: { subjectId: booking.guestId, direction: 'HOST_TO_GUEST', status: 'PUBLISHED' } },
+      { $group: { _id: null, avg: { $avg: '$overall' }, count: { $sum: 1 } } },
+    ]),
+    BookingModel.countDocuments({ guestId: booking.guestId, status: 'COMPLETED' }),
+    PayoutModel.find({ bookingId: booking._id }).lean<(Payout & { _id: Id })[]>(),
+    PayoutModel.find({
+      hostId: booking.hostId,
+      bookingId: mongoose.trusted({ $ne: booking._id }),
+      'deductions.bookingId': booking._id,
+      status: mongoose.trusted({ $ne: 'CANCELLED' }),
+      $or: [{ status: 'PAID' }, { deductionsReservedAt: mongoose.trusted({ $exists: true }) }],
+    })
+      .select('bookingId deductions')
+      .lean(),
+    getPlatformSettings(),
+  ]);
+  const named = [
+    ...payouts.flatMap((payout) => payout.deductions.map((deduction) => deduction.bookingId)),
+    ...otherPayouts.map((payout) => payout.bookingId),
+  ].filter((id): id is Id => id !== undefined && !id.equals(booking._id));
+  const others =
+    named.length > 0
+      ? await BookingModel.find({ _id: mongoose.trusted({ $in: named }) })
+          .select('ref')
+          .lean()
+      : [];
   return {
     vehicle,
     guest,
@@ -100,11 +139,14 @@ export async function loadBookingContext(booking: BookingRecord): Promise<Bookin
     payment,
     extraChargePayments,
     payouts,
+    otherPayouts,
+    refs: new Map(others.map((other) => [other._id.toString(), other.ref])),
     guestStats: {
       rating: { avg: Math.round((reviews[0]?.avg ?? 0) * 100) / 100, count: reviews[0]?.count ?? 0 },
       tripCount: trips,
     },
     gstRatePct: settings.fees.gstRatePct,
+    commissionPct: settings.fees.hostCommissionPct,
   };
 }
 
@@ -160,29 +202,38 @@ function party(
   };
 }
 
+/** Statuses whose booking earns the Host something, as the earnings page counts them. */
+const EARNING: BookingStatus[] = ['CONFIRMED', 'ACTIVE', 'COMPLETED', 'CANCELLED'];
+
 /**
  * What the Host earns from the booking, and where its payout stands (plan §8.1, item 19). The commission is
  * the one the trip's payout was made with (as on the payout and its email, plan §8.1, item 22); before there's
  * one, the rental and delivery less the Host's payout. The Guest's service fee isn't the Host's to see.
+ *
+ * Once confirmed, `earnings` is the booking's row on the earnings page and statement: what it earned net. What
+ * was paid for it can differ: its payouts also settled what the Host owed for other bookings (`settled`, added
+ * back), other payouts may have taken this booking's refunds or a payout already sent (`settledElsewhere`), and
+ * some may still be owed (`owed`) or still to be paid (the payout's status).
  */
 function payoutView(booking: BookingRecord, context: BookingContext) {
-  const main = context.payouts.find(
-    (payout) => payout.type !== 'EXTRA_CHARGE' && payout.status !== 'CANCELLED',
-  );
-  const trip = context.payouts.find((payout) => payout.type === 'TRIP' && payout.status !== 'CANCELLED');
+  const live = context.payouts.filter((payout) => payout.status !== 'CANCELLED');
+  // A cancelled booking's own payout is its kept fee's; otherwise the trip's.
+  const main =
+    (booking.status === 'CANCELLED' && live.find((payout) => payout.type === 'CANCELLATION_FEE')) ||
+    live.find((payout) => payout.type !== 'EXTRA_CHARGE');
+  const trip = live.find((payout) => payout.type === 'TRIP');
   const commission =
     trip?.commissionCents ??
     booking.price.subtotalCents + booking.price.deliveryCents - booking.price.hostPayoutCents;
+  const paidPayouts = context.payouts.filter((payout) => payout.status === 'PAID');
   // What actually reached the Host: transfers less any taken back for refunds (plan §8.1, item 15).
-  const paid = context.payouts
-    .filter((payout) => payout.status === 'PAID')
-    .reduce(
-      (sum, payout) =>
-        sum +
-        payout.amountCents -
-        (payout.reversals ?? []).reduce((reversed, reversal) => reversed + reversal.amountCents, 0),
-      0,
-    );
+  const paid = paidPayouts.reduce(
+    (sum, payout) =>
+      sum +
+      payout.amountCents -
+      (payout.reversals ?? []).reduce((reversed, reversal) => reversed + reversal.amountCents, 0),
+    0,
+  );
   // The booking's refunds and its extra charges', oldest first (plan §8.1, items 11 and 15).
   const refunds = [
     ...(context.payment?.refunds ?? []).map((refund) => ({ refund, extraCharge: false })),
@@ -192,11 +243,59 @@ function payoutView(booking: BookingRecord, context: BookingContext) {
   ]
     .filter(({ refund }) => refund.status !== 'FAILED')
     .sort((a, b) => a.refund.createdAt.getTime() - b.refund.createdAt.getTime());
+
+  const earns = EARNING.includes(booking.status);
+  const row =
+    earns &&
+    bookingEarnings(
+      booking,
+      [
+        ...(context.payment ? [context.payment] : []),
+        ...context.extraChargePayments.map((payment) => ({ ...payment, type: 'EXTRA_CHARGE' as const })),
+      ],
+      live,
+      { commissionPct: context.commissionPct, gstPct: context.gstRatePct },
+    );
+  const ref = (id: Id | undefined) => (id ? context.refs.get(id.toString()) : undefined);
+  // What this booking's paid payouts settled for other bookings: Host cancellation fees, refunds, payouts sent.
+  const settled = paidPayouts.flatMap((payout) =>
+    payout.deductions
+      .filter(
+        (deduction) => deduction.type !== 'HOST_FUNDED_REFUND' || !deduction.bookingId?.equals(booking._id),
+      )
+      .map((deduction) => ({
+        type: deduction.type,
+        amountCents: deduction.amountCents,
+        ...(ref(deduction.bookingId) && { bookingRef: ref(deduction.bookingId) }),
+        ...(isPayoutSentBack(deduction.stripeRefundId) && { payoutSent: true }),
+      })),
+  );
+  // What the Host's other payouts took off for this booking.
+  const settledElsewhere = context.otherPayouts.flatMap((payout) =>
+    payout.deductions
+      .filter((deduction) => deduction.bookingId?.equals(booking._id))
+      .map((deduction) => ({
+        amountCents: deduction.amountCents,
+        bookingRef: ref(payout.bookingId) ?? '',
+        ...(isPayoutSentBack(deduction.stripeRefundId) && { payoutSent: true }),
+      })),
+  );
+  // Still owed for this booking, to come off the Host's next payout.
+  const owedLines = (context.host?.hostProfile?.refundsOwed ?? []).filter((owed) =>
+    owed.bookingId.equals(booking._id),
+  );
+  const owedOf = (sent: boolean) =>
+    owedLines
+      .filter((owed) => isPayoutSentBack(owed.stripeRefundId) === sent)
+      .reduce((sum, owed) => sum + owed.amountCents, 0);
+  const owed = { refundsCents: owedOf(false), payoutSentCents: owedOf(true) };
+
   return {
     hostPayoutCents: booking.price.hostPayoutCents,
     commissionCents: commission,
     commissionGstCents: trip?.commissionGstCents ?? gstIn(commission, context.gstRatePct),
     ...(main && {
+      type: main.type,
       status: main.status,
       ...(main.holdReason && { holdReason: main.holdReason }),
       scheduledFor: main.scheduledFor.toISOString(),
@@ -209,6 +308,22 @@ function payoutView(booking: BookingRecord, context: BookingContext) {
       }),
     }),
     ...(paid > 0 && { paidCents: paid }),
+    ...(row && {
+      earnings: {
+        rentalCents: row.rentalCents,
+        deliveryCents: row.deliveryCents,
+        extraChargesCents: row.extraChargesCents,
+        keptFeeCents: row.keptFeeCents,
+        commissionCents: row.commissionCents,
+        commissionGstCents: row.commissionGstCents,
+        hostFundedRefundsCents: row.hostFundedRefundsCents,
+        hostCancellationFeeCents: row.hostCancellationFeeCents,
+        netCents: row.netCents,
+      },
+    }),
+    ...(settled.length > 0 && { settled }),
+    ...(settledElsewhere.length > 0 && { settledElsewhere }),
+    ...((owed.refundsCents > 0 || owed.payoutSentCents > 0) && { owed }),
     ...(refunds.length > 0 && {
       refunds: refunds.map(({ refund, extraCharge }) => ({
         amountCents: refund.amountCents,
@@ -217,6 +332,7 @@ function payoutView(booking: BookingRecord, context: BookingContext) {
         // What the Host pays back for it; a cancellation's own refund was settled by the policy instead.
         ...(refund.fundedBy === 'HOST' &&
           refund.kind !== 'CANCELLATION' && { hostCents: hostPartOf(refund) }),
+        ...(refund.kind === 'CANCELLATION' && { cancellation: true }),
         ...(extraCharge && { extraCharge: true }),
       })),
     }),
@@ -236,7 +352,12 @@ function extraChargeView(
   const refundedCents =
     charge.status === 'SUCCEEDED'
       ? payments
-          .filter((payment) => payment.extraChargeId?.equals(charge._id!))
+          // The payment that paid it: a second one, given back in full, doesn't make the charge refunded.
+          .filter((payment) =>
+            charge.paymentId
+              ? payment._id.equals(charge.paymentId)
+              : payment.extraChargeId?.equals(charge._id!),
+          )
           .flatMap((payment) => payment.refunds ?? [])
           .filter((refund) => refund.status !== 'FAILED')
           .reduce((sum, refund) => sum + refund.amountCents, 0)
@@ -352,6 +473,17 @@ export function toBookingView(
   const cancelledBySelf =
     booking.cancelledBy && booking.cancelledBy.equals(booking.guestId) ? 'GUEST' : undefined;
   const cancellationRefund = booking.cancelledAt ? latestRefund(context, 'CANCELLATION') : undefined;
+  // Refunds staff made before the cancellation, which came off what it could give back.
+  const earlierRefundCents = booking.cancelledAt
+    ? (context.payment?.refunds ?? [])
+        .filter(
+          (refund) =>
+            refund.status !== 'FAILED' &&
+            refund.kind !== 'CANCELLATION' &&
+            refund.createdAt <= booking.cancelledAt!,
+        )
+        .reduce((sum, refund) => sum + refund.amountCents, 0)
+    : 0;
 
   return {
     id: booking._id.toString(),
@@ -449,11 +581,16 @@ export function toBookingView(
             booking.refundCents > 0 &&
             cancellationRefund && { refundStatus: cancellationRefund.status }),
           ...(booking.cancellationFeeCents !== undefined && { feeCents: booking.cancellationFeeCents }),
+          ...(earlierRefundCents > 0 && { earlierRefundCents }),
           ...(viewer !== 'GUEST' &&
             booking.hostShareCents !== undefined && { hostShareCents: booking.hostShareCents }),
+          // Less any part an admin waived (plan §8.1, item 10), as the earnings page counts it.
           ...(viewer !== 'GUEST' &&
             booking.hostCancellationFeeCents !== undefined && {
-              hostFeeCents: booking.hostCancellationFeeCents,
+              hostFeeCents: Math.max(
+                0,
+                booking.hostCancellationFeeCents - (booking.hostCancellationFeeWaivedCents ?? 0),
+              ),
             }),
         }
       : null,
@@ -465,7 +602,9 @@ export function toBookingView(
     }),
     actions: {
       pay: viewer === 'GUEST' && booking.status === 'PAYMENT_PENDING' && holdLive,
-      cancel: (viewer === 'GUEST' || viewer === 'HOST') && booking.status === 'CONFIRMED',
+      // The Host can't once the trip should have started: support decides a Host no-show (plan §8.2).
+      cancel:
+        booking.status === 'CONFIRMED' && (viewer === 'GUEST' || (viewer === 'HOST' && !startedAlready)),
       withdraw: viewer === 'GUEST' && booking.status === 'PENDING',
       accept: viewer === 'HOST' && hostAnswers(booking) && requestLive && !startedAlready,
       decline: viewer === 'HOST' && hostAnswers(booking),

@@ -1,18 +1,24 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
-  HeadObjectCommand,
   NoSuchKey,
-  NotFound,
   PutObjectCommand,
   S3Client,
+  S3ServiceException,
 } from '@aws-sdk/client-s3';
 import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
 import { isHeif } from '../src/integrations/storage/images.js';
-import { createS3Storage, fileLink, verifyPrivateLink } from '../src/integrations/storage/storage.js';
+import {
+  createS3Storage,
+  fileLink,
+  linkSecondsLeft,
+  privateLink,
+  verifyPrivateLink,
+} from '../src/integrations/storage/storage.js';
 
 const VEHICLE = 'vehicles/64f000000000000000000001';
 const PHOTOS = `${VEHICLE}/photos`;
@@ -28,6 +34,15 @@ interface Stored {
   cacheControl?: string;
 }
 
+/** What S3 answers a write with If-None-Match: * when something is already there. */
+const preconditionFailed = () =>
+  new S3ServiceException({
+    name: 'PreconditionFailed',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 412 },
+    message: 'At least one of the pre-conditions you specified did not hold',
+  });
+
 /** An S3 driver whose bucket is a Map, so it runs without AWS. Signing works offline with test keys. */
 function fakeS3() {
   const objects = new Map<string, Stored>();
@@ -37,9 +52,19 @@ function fakeS3() {
   });
   vi.spyOn(client, 'send').mockImplementation((async (command: unknown) => {
     const input = (
-      command as { input: { Key: string; Body?: Buffer; ContentType?: string; CacheControl?: string } }
+      command as {
+        input: {
+          Key: string;
+          Body?: Buffer;
+          ContentType?: string;
+          CacheControl?: string;
+          CopySource?: string;
+          IfNoneMatch?: string;
+        };
+      }
     ).input;
     const object = objects.get(input.Key);
+    if (input.IfNoneMatch === '*' && object) throw preconditionFailed();
     if (command instanceof PutObjectCommand) {
       objects.set(input.Key, {
         body: input.Body!,
@@ -48,13 +73,15 @@ function fakeS3() {
       });
       return {};
     }
+    if (command instanceof CopyObjectCommand) {
+      const source = objects.get(input.CopySource!.replace(/^rv-media-test\//, ''));
+      if (!source) throw new NoSuchKey({ message: 'No such key', $metadata: { httpStatusCode: 404 } });
+      objects.set(input.Key, { ...source });
+      return {};
+    }
     if (command instanceof GetObjectCommand) {
       if (!object) throw new NoSuchKey({ message: 'No such key', $metadata: { httpStatusCode: 404 } });
       return { Body: { transformToByteArray: async () => new Uint8Array(object.body) } };
-    }
-    if (command instanceof HeadObjectCommand) {
-      if (!object) throw new NotFound({ message: 'Not Found', $metadata: { httpStatusCode: 404 } });
-      return {};
     }
     if (command instanceof DeleteObjectCommand) {
       objects.delete(input.Key);
@@ -97,8 +124,9 @@ describe('S3 uploads', () => {
       ]),
     );
 
+    // A private file waits where nobody reads it, and the bucket's rule for incoming/ clears it if unused.
     const document = await target(storage, true, 'application/pdf');
-    expect(document.key).toMatch(new RegExp(`^private/${DOCUMENTS}/[0-9a-f-]{36}\\.pdf$`));
+    expect(document.key).toMatch(new RegExp(`^incoming/private/${DOCUMENTS}/[0-9a-f-]{36}\\.pdf$`));
   });
 
   it('stores upright WebP copies of a photo, without its metadata, and drops the original', async () => {
@@ -175,6 +203,10 @@ describe('S3 uploads', () => {
     await expect(confirm(neverSent.key)).rejects.toMatchObject({ code: 'UPLOAD_NOT_FOUND' });
     const missingDocument = await target(storage, true, 'application/pdf');
     await expect(confirm(missingDocument.key, true)).rejects.toMatchObject({ code: 'UPLOAD_NOT_FOUND' });
+    // A private file already attached, by the path its link shows.
+    await expect(confirm(`private/${DOCUMENTS}/${randomUUID()}.pdf`, true)).rejects.toMatchObject({
+      code: 'UPLOAD_NOT_FOUND',
+    });
 
     const notAPhoto = await target(storage, false, 'image/jpeg');
     objects.set(notAPhoto.key, { body: Buffer.from('not a photo') });
@@ -186,24 +218,102 @@ describe('S3 uploads', () => {
     const pdf = await target(storage, true, 'application/pdf');
     objects.set(pdf.key, { body: Buffer.from('%PDF-1.4 test') });
     const stored = await storage.confirmUpload({ folder: DOCUMENTS, isPrivate: true, ref: pdf.key });
-    const path = pdf.key.slice('private/'.length);
+    const path = pdf.key.slice('incoming/private/'.length);
     expect(stored).toBe(`s3:${path}`);
+    // Moved: kept in private/, gone from incoming/.
+    expect([...objects.keys()]).toEqual([`private/${path}`]);
 
     const link = new URL(fileLink(stored));
     expect(link.pathname).toBe(`/api/v1/files/private/${path}`);
     expect(verifyPrivateLink(path, link.searchParams.get('e')!, link.searchParams.get('s')!)).toBe(true);
     const download = new URL((await storage.downloadUrl(path))!);
     expect(download.host).toBe('rv-media-test.s3.ap-southeast-2.amazonaws.com');
-    expect(download.pathname).toBe(`/${pdf.key}`);
+    expect(download.pathname).toBe(`/private/${path}`);
     expect(download.searchParams.get('X-Amz-Expires')).toBe('60');
+    // While the link to the API works, the S3 link does too, and the browser may keep the file that long.
+    const longer = new URL((await storage.downloadUrl(path, 900))!);
+    expect(longer.searchParams.get('X-Amz-Expires')).toBe('900');
+    expect(longer.searchParams.get('response-cache-control')).toBe('private, max-age=900');
 
     const photo = await target(storage, true, 'image/heic');
     objects.set(photo.key, { body: await heic() });
     const jpeg = await storage.confirmUpload({ folder: DOCUMENTS, isPrivate: true, ref: photo.key });
-    expect(jpeg).toBe(`s3:${photo.key.slice('private/'.length).replace('.heic', '.jpg')}`);
+    expect(jpeg).toBe(`s3:${photo.key.slice('incoming/private/'.length).replace('.heic', '.jpg')}`);
     const converted = objects.get(`private/${jpeg.slice('s3:'.length)}`)!;
     expect(converted.contentType).toBe('image/jpeg');
     expect(await sharp(converted.body).metadata()).toMatchObject({ format: 'jpeg', width: 320, height: 240 });
     expect(objects.has(photo.key)).toBe(false);
+  });
+
+  it('attaches a private upload once, even twice at the same moment', async () => {
+    const { objects, storage } = fakeS3();
+    const confirm = (ref: string) => storage.confirmUpload({ folder: DOCUMENTS, isPrivate: true, ref });
+
+    const pdf = await target(storage, true, 'application/pdf');
+    objects.set(pdf.key, { body: Buffer.from('%PDF-1.4 test') });
+    await confirm(pdf.key);
+    await expect(confirm(pdf.key)).rejects.toMatchObject({ status: 400, code: 'UPLOAD_NOT_FOUND' });
+
+    const both = await target(storage, true, 'image/jpeg');
+    objects.set(both.key, { body: Buffer.from('jpeg') });
+    const results = await Promise.allSettled([confirm(both.key), confirm(both.key)]);
+    expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+
+    const heicTwice = await target(storage, true, 'image/heic');
+    objects.set(heicTwice.key, { body: await heic() });
+    const heics = await Promise.allSettled([confirm(heicTwice.key), confirm(heicTwice.key)]);
+    expect(heics.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+  });
+
+  it('stores a shared photo without where it was taken, upright, with a smaller copy', async () => {
+    const { objects, storage } = fakeS3();
+    const folder = 'bookings/64f000000000000000000001/messages';
+    const upload = await storage.createUpload({
+      folder,
+      isPrivate: true,
+      contentType: 'image/jpeg',
+      userId: 'u1',
+    });
+    // 2400×1600 on its side (EXIF orientation 6), with a GPS position.
+    const jpeg = await sharp({ create: { width: 2400, height: 1600, channels: 3, background: '#2050c0' } })
+      .jpeg()
+      .withExif({ IFD0: { Make: 'Phone' }, IFD3: { GPSLatitudeRef: 'S', GPSLatitude: '36/1 50/1 0/1' } })
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+    expect((await sharp(jpeg).metadata()).exif).toBeDefined();
+    objects.set(upload.key, { body: jpeg });
+
+    const shared = await storage.confirmSharedPhoto({ folder, ref: upload.key, previewWidth: 800 });
+    const id = upload.key.split('/').at(-1)!.replace('.jpg', '');
+    expect(shared).toEqual({ url: `s3:${folder}/${id}.jpg`, previewUrl: `s3:${folder}/${id}-800.webp` });
+    expect(objects.has(upload.key)).toBe(false);
+
+    const photo = await sharp(objects.get(`private/${folder}/${id}.jpg`)!.body).metadata();
+    expect(photo).toMatchObject({ format: 'jpeg', width: 1600, height: 2400 });
+    expect(photo.exif).toBeUndefined();
+    expect(photo.orientation).toBeUndefined();
+    const preview = await sharp(objects.get(`private/${folder}/${id}-800.webp`)!.body).metadata();
+    expect(preview).toMatchObject({ format: 'webp', width: 533, height: 800 });
+    expect(preview.exif).toBeUndefined();
+
+    await expect(
+      storage.confirmSharedPhoto({ folder, ref: upload.key, previewWidth: 800 }),
+    ).rejects.toMatchObject({ code: 'UPLOAD_NOT_FOUND' });
+  });
+});
+
+describe('private links', () => {
+  it('stay the same for 10 minutes, and work for 10 to 20', () => {
+    const at = Date.UTC(2026, 9, 14, 1, 2, 3);
+    const first = new URL(privateLink('s3:bookings/b/messages/a.jpg', undefined, at));
+    const later = new URL(privateLink('s3:bookings/b/messages/a.jpg', undefined, at + 5 * 60_000));
+    expect(later.href).toBe(first.href);
+    const expires = first.searchParams.get('e')!;
+    // 01:10 is the next step, and the link works 10 minutes after it.
+    expect(Number(expires) * 1000).toBe(Date.UTC(2026, 9, 14, 1, 20, 0));
+    expect(linkSecondsLeft(expires, at)).toBe(17 * 60 + 57);
+    expect(linkSecondsLeft(expires, Date.UTC(2026, 9, 14, 2))).toBe(0);
+    const next = new URL(privateLink('s3:bookings/b/messages/a.jpg', undefined, at + 8 * 60_000));
+    expect(next.searchParams.get('e')).not.toBe(expires);
   });
 });

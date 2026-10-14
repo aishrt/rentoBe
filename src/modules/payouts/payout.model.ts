@@ -70,6 +70,11 @@ export interface Payout {
    * amount, and a payout cancelled unpaid gives them back.
    */
   deductionsReservedAt?: Date;
+  /**
+   * A cancelled TRIP payout: when the Host-funded refunds that were to come off it were made owed instead, so
+   * they're owed once only.
+   */
+  ownRefundsOwedAt?: Date;
   /** Payouts made before reversals existed have none stored: read with `?? []`. */
   reversals: PayoutReversal[];
   createdAt: Date;
@@ -117,6 +122,7 @@ const payoutSchema = new Schema<Payout>(
     paidAt: Date,
     deductions: { type: [deductionSchema], default: [] },
     deductionsReservedAt: Date,
+    ownRefundsOwedAt: Date,
     reversals: { type: [reversalSchema], default: [] },
   },
   { timestamps: true },

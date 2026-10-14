@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withTransaction } from '../src/db.js';
 import { stripe } from '../src/integrations/stripe.js';
+import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { confirmBooking, endBooking } from '../src/modules/bookings/booking-transitions.js';
 import { expirePaymentHold, expireRequest } from '../src/modules/bookings/booking.service.js';
@@ -323,6 +324,7 @@ describe('Host-funded refunds', () => {
       .send({ amountCents: 5_000, reason: 'Car was not cleaned', fundedBy: 'HOST' });
     expect(await refundsOwed(host._id)).toEqual([]);
 
+    // The trip's payout is cancelled with the Host's share of the refund still to come off it.
     await withTransaction((session) =>
       endBooking(
         booking,
@@ -330,10 +332,10 @@ describe('Host-funded refunds', () => {
           to: 'CANCELLED',
           from: ['CONFIRMED'],
           cancellation: {
-            reason: 'PLATFORM',
-            refundCents: 28_870,
-            feeCents: 0,
-            hostShareCents: 0,
+            reason: 'GUEST_CANCELLED',
+            refundCents: 4_500,
+            feeCents: 28_870 - 4_500,
+            hostShareCents: 16_000,
             hostFeeCents: 0,
           },
         },
@@ -344,8 +346,147 @@ describe('Host-funded refunds', () => {
     expect(await refundsOwed(host._id)).toEqual([
       expect.objectContaining({ stripeRefundId: 're_1', amountCents: 4_000, bookingId: booking._id }),
     ]);
+    // Once only, however often the payout is cancelled.
+    await PayoutModel.updateOne({ _id: payout._id }, { $set: { status: 'HELD', holdReason: 'INCIDENT' } });
+    expect(await runPayout(payout.id)).toBe('skipped');
+    expect(await refundsOwed(host._id)).toEqual([expect.objectContaining({ amountCents: 4_000 })]);
   });
 
+  it('cost the Host nothing once a cancellation gives the Guest everything back', async () => {
+    const { host, booking, payment, payout } = await trip();
+    await createStaff();
+    const admin = await staffAgent();
+    await admin
+      .post(`/api/v1/admin/bookings/${booking.ref}/refunds`)
+      .send({ amountCents: 5_000, reason: 'Car was not cleaned', fundedBy: 'HOST' });
+
+    // A platform cancellation refunds the other $288.70: the Guest has all $338.70 back.
+    const preview = await admin
+      .get(`/api/v1/admin/bookings/${booking.ref}/cancellation-preview`)
+      .query({ reason: 'PLATFORM' });
+    expect(preview.body).toMatchObject({ refundCents: 28_870, hostShareCents: 0 });
+    expect(preview.body.message).toContain(
+      'The Host pays $40.00 less towards the earlier Host-funded refunds',
+    );
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${booking.ref}/cancel`)
+      .send({ reason: 'PLATFORM', note: 'The car failed its WOF' });
+    expect(cancelled.status).toBe(200);
+
+    expect((await PayoutModel.findById(payout._id).lean())!.status).toBe('CANCELLED');
+    expect(await PayoutModel.countDocuments({ bookingId: booking._id, type: 'CANCELLATION_FEE' })).toBe(0);
+    expect(await refundsOwed(host._id)).toEqual([]);
+    expect((await PaymentModel.findById(payment._id).lean())!.refunds[0]).toMatchObject({
+      stripeRefundId: 're_1',
+      hostCents: 0,
+      hostReliefCents: 4_000,
+    });
+    // The Host's booking page and earnings say the same: nothing earned, nothing owed.
+    const agent = await signIn(host.email);
+    const view = (await agent.get(`/api/v1/bookings/${booking.ref}`)).body.booking;
+    expect(view.payout.refunds[0]).toMatchObject({ amountCents: 5_000, hostCents: 0 });
+    expect((await agent.get('/api/v1/host/earnings')).body.bookings).toEqual([]);
+    const audit = await AuditLogModel.findOne({ action: 'booking.platform-cancellation' }).lean();
+    expect(audit!.after).toMatchObject({ hostShareCents: 0, hostRefundReliefCents: 4_000 });
+  });
+});
+
+describe('a Guest cancellation after a Host-funded refund (plan §8.1, item 15)', () => {
+  const FLEXIBLE = {
+    code: 'FLEXIBLE',
+    name: 'Flexible',
+    summary: 'Full refund up to 24 hours before pickup, then 50%.',
+    refunds: [
+      { minHoursBefore: 24, refundPct: 100 },
+      { minHoursBefore: 0, refundPct: 50 },
+    ],
+  };
+
+  /** A confirmed trip under the Flexible policy starting in 12 hours (half back), with staff signed in. */
+  async function soon() {
+    const host = await createHost();
+    await UserModel.updateOne(
+      { _id: host._id },
+      { $set: { 'hostProfile.payoutsEnabled': true, 'hostProfile.stripeAccountId': 'acct_host' } },
+    );
+    const guest = await createUser({ email: 'kiri@example.co.nz' });
+    const vehicle = await createVehicle(host._id);
+    const startAt = new Date(Date.now() + 12 * HOUR_MS);
+    const booking = await createBookingRecord(
+      { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
+      {
+        status: 'PAYMENT_PENDING',
+        startAt,
+        endAt: new Date(startAt.getTime() + 3 * DAY_MS),
+        cancellationPolicy: 'FLEXIBLE',
+        cancellationTerms: FLEXIBLE,
+      },
+    );
+    const payment = await createPaymentRecord(booking);
+    await withTransaction((session) => confirmBooking(booking, payment, session));
+    await createStaff();
+    const admin = await staffAgent();
+    const refund = (amountCents: number, fundedBy = 'HOST') =>
+      admin
+        .post(`/api/v1/admin/bookings/${booking.ref}/refunds`)
+        .send({ amountCents, reason: 'The car wasn’t clean', fundedBy });
+    const cancel = async () =>
+      (await signIn(guest.email)).post(`/api/v1/bookings/${booking.ref}/cancel`).send({});
+    return { host, booking, payment, refund, cancel };
+  }
+
+  const keptFeePayout = (bookingId: unknown) =>
+    PayoutModel.findOne({ bookingId, type: 'CANCELLATION_FEE' }).lean();
+
+  it('leaves the refund with the Host when the Guest doesn’t get everything back', async () => {
+    const { host, booking, refund, cancel } = await soon();
+    expect((await refund(5_000)).status).toBe(200);
+    // The policy's $191.85 still fits in the $288.70 left: the $50 came out of the $146.85 kept.
+    const cancelled = await cancel();
+    expect(cancelled.body.booking.cancellation).toMatchObject({ refundCents: 19_185, feeCents: 9_685 });
+    expect((await BookingModel.findById(booking._id).lean())!.hostShareCents).toBe(10_680);
+    expect((await keptFeePayout(booking._id))!.amountCents).toBe(10_680);
+    expect(await refundsOwed(host._id)).toEqual([
+      expect.objectContaining({ stripeRefundId: 're_1', amountCents: 4_000 }),
+    ]);
+    const row = (await (await signIn(host.email)).get('/api/v1/host/earnings')).body.bookings[0];
+    expect(row).toMatchObject({ keptFeeCents: 13_350, hostFundedRefundsCents: 4_000, netCents: 6_680 });
+  });
+
+  it('never leaves the Host below nothing when the Guest gets everything back', async () => {
+    const { host, booking, payment, refund, cancel } = await soon();
+    // $150 back, the Host's share $120: then the policy's $191.85 is more than the $188.70 left.
+    expect((await refund(15_000)).status).toBe(200);
+    const cancelled = await cancel();
+    expect(cancelled.body.booking.cancellation).toMatchObject({ refundCents: 18_870, feeCents: 0 });
+    // Nothing kept, so no share for the Host, and nothing owed for the refund the Guest got back anyway.
+    expect((await BookingModel.findById(booking._id).lean())!.hostShareCents).toBe(0);
+    expect(await keptFeePayout(booking._id)).toBeNull();
+    expect(await refundsOwed(host._id)).toEqual([]);
+    expect((await PaymentModel.findById(payment._id).lean())!.refunds[0]).toMatchObject({
+      hostCents: 0,
+      hostReliefCents: 12_000,
+    });
+    expect((await (await signIn(host.email)).get('/api/v1/host/earnings')).body.bookings).toEqual([]);
+  });
+
+  it('shares what the cancellation gave back anyway among the earlier refunds', async () => {
+    const { host, booking, refund, cancel } = await soon();
+    // $10 funded by the Host ($8 their share) and $140 by Rento Vroom: $3.15 of the $150 was given back anyway.
+    expect((await refund(1_000)).status).toBe(200);
+    expect((await refund(14_000, 'PLATFORM')).status).toBe(200);
+    await cancel();
+    // The platform's own refund doesn't touch the Host's share; the Host pays their $8 less 2.1 %.
+    expect((await BookingModel.findById(booking._id).lean())!.hostShareCents).toBe(10_680);
+    expect(await refundsOwed(host._id)).toEqual([
+      expect.objectContaining({ stripeRefundId: 're_1', amountCents: 783 }),
+    ]);
+    const row = (await (await signIn(host.email)).get('/api/v1/host/earnings')).body.bookings[0];
+    expect(row).toMatchObject({ hostFundedRefundsCents: 783, netCents: 10_680 - 783 });
+  });
+});
+
+describe('Host-funded refunds in reports', () => {
   it('count only the Host’s share as theirs in the staff reports', async () => {
     const { booking } = await trip();
     await createStaff();

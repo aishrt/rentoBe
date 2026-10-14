@@ -1,5 +1,9 @@
 import { env } from '../../env.js';
-import { recordUnreadNotice, unreadMessagesFor } from '../../modules/messages/messages.service.js';
+import {
+  UNREAD_EMAIL_DELAY_MS,
+  recordUnreadNotice,
+  unreadMessagesFor,
+} from '../../modules/messages/messages.service.js';
 import { notify } from '../../modules/notifications/notify.js';
 import { syncIdentity } from '../../modules/users/identity.service.js';
 import { oneClickUnsubscribeUrl, unsubscribeUrl } from '../../modules/users/notification-prefs.js';
@@ -11,8 +15,10 @@ const SNIPPET_LENGTH = 160;
 /**
  * `messages.unreadEmail` (plan §4.3): 10 minutes after a message, if the recipient still hasn't read the
  * conversation, they're emailed, and texted if they chose that in their notification preferences. One
- * notice per streak of unread messages: after one, the next waits 12 hours unless they read it in between.
- * Nothing goes once they've blocked the sender.
+ * notice per streak of unread messages: after one, the next waits 12 hours unless they read it in between,
+ * and a message sent meanwhile is announced when those 12 hours are up. Nothing goes until an unread
+ * message is 10 minutes old (an earlier streak's job finds only newer ones once the reader has caught up),
+ * nor once they've blocked the sender.
  */
 export async function unreadMessageEmailJob(
   { threadId, recipientId }: { threadId: string; recipientId: string },
@@ -21,6 +27,8 @@ export async function unreadMessageEmailJob(
   const now = new Date();
   const unread = await unreadMessagesFor(threadId, recipientId, now);
   if (!unread?.noticeSince || unread.blockedSender) return;
+  // Only newer messages, sent since the reader caught up: their own job announces them in time.
+  if (now.getTime() - unread.oldestAt.getTime() < UNREAD_EMAIL_DELAY_MS) return;
   const { booking, viewer, count, latest, noticeSince } = unread;
   const senderId = viewer === 'GUEST' ? booking.hostId : booking.guestId;
   const [recipient, sender] = await Promise.all([

@@ -1,8 +1,10 @@
 import mongoose, { type Types } from 'mongoose';
 import type { z } from 'zod';
+import { CSV_BOM, csvText } from '../../lib/csv.js';
 import { HttpError } from '../../lib/http-error.js';
 import { NZ_TIME_ZONE, nzDate, nzDayEnd, nzDayStart } from '../../lib/nz-time.js';
 import { BookingModel } from '../bookings/booking.model.js';
+import { madeBookingFilter } from '../bookings/made-bookings.js';
 import { PaymentModel, type Refund } from '../payments/payment.model.js';
 import { PayoutModel } from '../payouts/payout.model.js';
 import { UserModel } from '../users/user.model.js';
@@ -135,16 +137,22 @@ function sumOf(days: DayFigures[]): DayFigures {
   return sum;
 }
 
-/** Whether a refund gives back money this report counts, and with it the GST in it. */
+/**
+ * Whether a refund gives back money this report counts, and with it the GST in it. A cancellation's own refund
+ * and a late or second payment's never do, whatever the booking's status: a second payment on a booking still
+ * going ahead was never counted. A cancelled booking counts the fee kept, which is what the Guest had paid less
+ * the refunds made before the cancellation and its own (bookings/booking.service.ts, afterEarlierRefunds): only
+ * a refund made after it gives part of the fee back.
+ */
 function givesBackCounted(
   paymentType: string,
-  bookingStatus: string | undefined,
-  refund: Pick<Refund, 'kind' | 'reason'>,
+  booking: { status?: string; cancelledAt?: Date } | undefined,
+  refund: Pick<Refund, 'kind' | 'reason' | 'createdAt'>,
 ) {
+  if (uncountedRefund(refund)) return false;
   if (paymentType === 'EXTRA_CHARGE') return true;
-  if (bookingStatus && TRIP_STATUSES.includes(bookingStatus)) return true;
-  // A cancelled booking counts the fee kept: a later refund gives part of it back.
-  return bookingStatus === 'CANCELLED' && !uncountedRefund(refund);
+  if (booking?.status && TRIP_STATUSES.includes(booking.status)) return true;
+  return booking?.status === 'CANCELLED' && (!booking.cancelledAt || refund.createdAt >= booking.cancelledAt);
 }
 
 /** Extra charges paid in the range, with the commission the platform kept on each (plan §5). */
@@ -197,10 +205,10 @@ async function refundsSent(range: ReportRange) {
   const bookings = await BookingModel.find({
     _id: mongoose.trusted({ $in: payments.map((payment) => payment.bookingId) }),
   })
-    .select('status')
+    .select('status cancelledAt')
     .lean();
   return payments.flatMap((payment) => {
-    const status = bookings.find((booking) => booking._id.equals(payment.bookingId))?.status;
+    const booking = bookings.find((candidate) => candidate._id.equals(payment.bookingId));
     return (payment.refunds ?? [])
       .filter(
         (refund) =>
@@ -210,7 +218,7 @@ async function refundsSent(range: ReportRange) {
         day: nzDate(refund.createdAt),
         amountCents: refund.amountCents,
         platformCents: platformPartOf(refund),
-        givenBack: givesBackCounted(payment.type, status, refund),
+        givenBack: givesBackCounted(payment.type, booking, refund),
       }));
   });
 }
@@ -308,7 +316,8 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
 
 /**
  * Booking revenue (spec §18): what Guests paid for trips, extra charges and kept fees, less the refunds of that
- * money (a cancellation's own refund is already out of the fee kept, and a late payment's was never counted).
+ * money (a cancellation's own refund, and any made before it, are already out of the fee kept, and a late or
+ * second payment's was never counted). For each booking it comes to what the platform keeps of what was paid.
  */
 const bookingRevenue = (sum: DayFigures) =>
   sum.tripsCents + sum.extraChargesCents + sum.keptFeesCents - sum.givenBackCents;
@@ -328,7 +337,8 @@ export async function platformReport(
   const [settings, byStatus, confirmed, completed, cancelled, payouts, days] = await Promise.all([
     getPlatformSettings(),
     BookingModel.aggregate<{ _id: string; count: number }>([
-      { $match: { createdAt: { $gte: range.start, $lt: range.end }, status: { $ne: 'PAYMENT_PENDING' } } },
+      // Not a checkout still open, nor one that ended unpaid (abandoned, replaced or timed out).
+      { $match: { createdAt: { $gte: range.start, $lt: range.end }, ...madeBookingFilter() } },
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ]),
     BookingModel.countDocuments({
@@ -392,11 +402,7 @@ export async function platformReport(
 // CSV exports -------------------------------------------------------------------------------------------------
 
 const dollars = (cents: number | undefined) => ((cents ?? 0) / 100).toFixed(2);
-/** A text cell, quoted when needed, and never read as a spreadsheet formula. */
-const text = (value: string | undefined) => {
-  const safe = /^[=+\-@\t\r]/.test(value ?? '') ? `'${value}` : (value ?? '');
-  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-};
+const text = csvText;
 const day = (instant: Date | undefined) => (instant ? nzDate(instant) : '');
 
 async function names(ids: Id[]) {
@@ -419,10 +425,7 @@ async function refsFor(ids: Id[]) {
 type Csv = { header: string[]; rows: string[][] };
 
 async function bookingsCsv(range: ReportRange): Promise<Csv> {
-  const bookings = await BookingModel.find({
-    startAt: within(range),
-    status: mongoose.trusted({ $ne: 'PAYMENT_PENDING' }),
-  })
+  const bookings = await BookingModel.find({ startAt: within(range), ...madeBookingFilter() })
     .sort({ startAt: 1 })
     .lean();
   const name = await names(bookings.flatMap((booking) => [booking.guestId, booking.hostId]));
@@ -726,5 +729,8 @@ export async function exportReport(query: z.infer<typeof exportQuerySchema>) {
   const range = reportRange(query.from, query.to);
   const { header, rows } = await EXPORTS[query.type](range);
   const csv = [header.join(','), ...rows.map((row) => row.join(','))].join('\r\n');
-  return { filename: `rento-vroom-${query.type}-${query.from}-to-${query.to}.csv`, csv: `\uFEFF${csv}\r\n` };
+  return {
+    filename: `rento-vroom-${query.type}-${query.from}-to-${query.to}.csv`,
+    csv: `${CSV_BOM}${csv}\r\n`,
+  };
 }

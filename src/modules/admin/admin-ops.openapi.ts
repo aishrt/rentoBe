@@ -28,6 +28,7 @@ import {
   adminSiteFooterSchema,
   adminStatusEditSchema,
   adminUserResponseSchema,
+  adminUserUpdateSchema,
   adminUsersResponseSchema,
   adminVehicleSuspensionSchema,
   auditQuerySchema,
@@ -54,6 +55,7 @@ import {
   reportRangeSchema,
   resolveReportSchema,
   reviewChoicesResponseSchema,
+  riskQueueQuerySchema,
   riskQueueSchema,
   staffTicketReplySchema,
   staffTicketResponseSchema,
@@ -206,8 +208,39 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     method: 'get',
     path: '/admin/risk',
     summary: 'Staff: people with risk flags to review',
+    description:
+      'Most open flags first, then the longest waiting; 25 a page, with nextPage when there are more.',
+    query: riskQueueQuerySchema,
     response: riskQueueSchema,
-    errors: [401, 403],
+    errors: [400, 401, 403],
+  });
+  add({
+    method: 'patch',
+    path: '/admin/users/{id}',
+    summary: 'Staff: correct a person’s name, date of birth or email (a privacy request)',
+    description:
+      'After checking the details, e.g. against their ID (plan §14). Changes a name or date of birth a passed identity check has locked, noted in the audit log, which has each change before and after with the reason. A new email is marked unverified and a confirmation link sent to it; the old address is told. 409 EMAIL_TAKEN, ACCOUNT_CLOSED; 403 OWN_RECORD for their own account, FORBIDDEN for a staff account unless the admin.',
+    params: id,
+    body: adminUserUpdateSchema,
+    response: adminUserResponseSchema,
+    errors: [400, 401, 403, 404, 409],
+  });
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/users/{id}/export',
+    tags: ['Admin'],
+    summary: 'Staff: download a copy of a person’s information (a privacy request)',
+    description:
+      'A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Any staff member, audit-logged; 403 OWN_RECORD for their own account.',
+    security: signedIn,
+    request: { params: id },
+    responses: {
+      200: {
+        description: 'The JSON file',
+        content: { 'application/json': { schema: z.record(z.string(), z.unknown()) } },
+      },
+      ...errorResponses(401, 403, 404),
+    },
   });
 
   // Bookings and cars
@@ -365,11 +398,13 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
   add({
     method: 'patch',
     path: '/admin/support/tickets/{ref}',
-    summary: 'Staff: change a ticket’s status, or take it',
+    summary: 'Staff: change a ticket’s status, take it, or hand it to someone',
+    description:
+      'Whoever is handed the ticket is notified; it is in the audit log. Not to someone the ticket is about (409 OWN_RECORD), nor to anyone who isn’t active staff (409 NOT_STAFF).',
     params: ref,
     body: ticketUpdateSchema,
     response: staffTicketResponseSchema,
-    errors: [400, 401, 403, 404],
+    errors: [400, 401, 403, 404, 409],
   });
 
   // Moderation

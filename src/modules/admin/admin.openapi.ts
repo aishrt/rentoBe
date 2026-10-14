@@ -29,7 +29,7 @@ export function registerAdminPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: approve or reject a driver licence checked by hand',
     description:
-      'Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`). Rejecting releases them with their card authorisations. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check; 403 OWN_RECORD for a support member’s own licence.',
+      'Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`) or the licence doesn’t meet the rules for that trip (`licenceNotEligible`). Rejecting releases every request of the person’s with its card authorisation, and alerts support to each confirmed trip, whose check-in is then refused. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check; 403 OWN_RECORD for a support member’s own licence.',
     security: signedIn,
     request: { params: z.object({ id: z.string() }), body: jsonBody(licenceReviewSchema) },
     responses: {

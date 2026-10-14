@@ -6,6 +6,7 @@ import { localFilePath, localUploadRoot } from '../../integrations/storage/local
 import {
   MAX_UPLOAD_BYTES,
   getStorage,
+  linkSecondsLeft,
   readUploadToken,
   verifyPrivateLink,
 } from '../../integrations/storage/storage.js';
@@ -151,19 +152,23 @@ export function filesRouter() {
   const router = Router();
 
   // Private documents open only through a signed link that expires. In S3, the file itself is behind a
-  // one-minute S3 link made when the signed link is opened.
+  // short-lived S3 link made when the signed link is opened.
   router.get('/private/*key', async (req, res) => {
     const key = (req.params.key as unknown as string[]).join('/');
     const { e, s } = req.query;
     if (typeof e !== 'string' || typeof s !== 'string' || !verifyPrivateLink(key, e, s)) {
       throw new HttpError(403, 'LINK_EXPIRED', 'This link has expired. Open the document again.');
     }
-    const download = await getStorage().downloadUrl(key);
+    // A link stays the same for 10 minutes or more (privateLink), so the browser keeps the file, in its own
+    // cache only, while the link works, rather than downloading it again each time a page refreshes.
+    const left = linkSecondsLeft(e);
+    const cacheControl = `private, max-age=${left}`;
+    const download = await getStorage().downloadUrl(key, left);
     if (download) {
-      res.set('Cache-Control', 'private, no-store').redirect(302, download);
+      res.set('Cache-Control', cacheControl).redirect(302, download);
       return;
     }
-    await sendLocalFile(res, key, 'private, no-store');
+    await sendLocalFile(res, key, cacheControl);
   });
 
   // Listing and profile photos are public once uploaded; documents never are.

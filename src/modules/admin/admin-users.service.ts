@@ -10,9 +10,12 @@ import { recordAudit } from '../audit/audit.service.js';
 import { SessionModel } from '../auth/session.model.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
 import { confirmAfterSuspension } from '../bookings/booking.service.js';
+import { madeBookingFilter } from '../bookings/made-bookings.js';
 import { notify } from '../notifications/notify.js';
 import { disconnectUser } from '../../realtime/realtime.js';
+import { PayoutModel } from '../payouts/payout.model.js';
 import { releaseHeldPayouts } from '../payouts/payouts.service.js';
+import { releaseAssignedWork } from '../staff/staff.service.js';
 import { accountClosure } from '../users/privacy.service.js';
 import { deleteProfilePhotoFile } from '../users/profile-photo.service.js';
 import { UserModel, type Role, type User } from '../users/user.model.js';
@@ -128,7 +131,7 @@ export async function userDetail(userId: string): Promise<z.infer<typeof adminUs
   const [bookings, upcoming, vehicles] = await Promise.all([
     BookingModel.find({
       $or: [{ guestId: user._id }, { hostId: user._id }],
-      status: mongoose.trusted({ $ne: 'PAYMENT_PENDING' }),
+      ...madeBookingFilter(),
     })
       .sort({ startAt: -1 })
       .limit(20)
@@ -199,7 +202,8 @@ function guardTarget(target: UserRecord, staffId: string, staffRoles: readonly R
 
 /**
  * POST /admin/users/{id}/suspend (plan §8.2, user suspended): they're signed out and can't sign in, their
- * listings are hidden and their payouts held. Their upcoming bookings come back for staff to decide.
+ * listings are hidden and their payouts held. Their upcoming bookings come back for staff to decide. A staff
+ * member's open requests and cases go back to the team.
  */
 export async function suspendUser(
   staffId: string,
@@ -217,13 +221,25 @@ export async function suspendUser(
   disconnectUser(user._id.toString());
   await VehicleModel.updateMany({ hostId: user._id }, { $set: { hostSuspended: true } });
   forget('vehicles:featured');
+  // Held at once, so neither staff nor the Host see them as on their way. One being sent already goes; the
+  // transfer job holds any other when its time comes. Lifting the suspension releases them.
+  const held = await PayoutModel.updateMany(
+    { hostId: user._id, status: 'SCHEDULED', deductionsReservedAt: mongoose.trusted({ $exists: false }) },
+    { $set: { status: 'HELD', holdReason: 'SUSPENDED' } },
+  );
+  const unassigned = isStaff(effectiveRoles(user)) ? await releaseAssignedWork(user._id, staffId) : undefined;
   await recordAudit({
     actorId: staffId,
     action: 'user.suspended',
     entity: 'user',
     entityId: user._id.toString(),
     before: { status: user.status },
-    after: { status: 'SUSPENDED', reason },
+    after: {
+      status: 'SUSPENDED',
+      reason,
+      ...(held.modifiedCount > 0 && { payoutsHeld: held.modifiedCount }),
+      ...(unassigned && { unassigned }),
+    },
     ...(ip && { ip }),
   });
   await notify({
@@ -331,8 +347,10 @@ export async function closeAccount(
   const user = await findUser(userId);
   guardTarget(user, staffId, staffRoles);
   if (user.closedAt) throw new HttpError(409, 'ALREADY_CLOSED', 'This account is already closed.');
-  const closure = await accountClosure(userId);
-  if (!closure.allowed) throw new HttpError(409, 'CLOSURE_BLOCKED', closure.blockers[0]!.message);
+  const closure = await accountClosure(userId, 'STAFF');
+  if (!closure.allowed) {
+    throw new HttpError(409, 'CLOSURE_BLOCKED', closure.blockers.map((blocker) => blocker.message).join(' '));
+  }
   const now = new Date();
   // The "Account closed" email (plan §7) goes to the address the member had, queued before it's anonymised:
   // notify() sends nothing to a closed account.
@@ -480,15 +498,42 @@ async function recordWaiver(hostId: Types.ObjectId, waivedCents: number) {
   }
 }
 
-/** GET /admin/risk: people with risk flags waiting for review, most flags first (plan §9, Days 20–22). */
-export async function riskQueue() {
-  const users = await UserModel.find({
-    riskFlags: mongoose.trusted({ $elemMatch: { clearedAt: { $exists: false } } }),
-  })
-    .limit(200)
-    .lean<UserRecord[]>();
-  return users
-    .map((user) => ({
+/**
+ * GET /admin/risk: people with risk flags waiting for review, most flags first, then the longest waiting
+ * (plan §9, Days 20–22), a page at a time. Sorted in the database, so nobody drops off the end of the queue.
+ */
+export async function riskQueue(page = 1) {
+  const match = { riskFlags: { $elemMatch: { clearedAt: { $exists: false } } } };
+  const [users, total] = await Promise.all([
+    UserModel.aggregate<UserRecord>([
+      { $match: match },
+      {
+        $addFields: {
+          openFlags: {
+            $filter: {
+              input: '$riskFlags',
+              as: 'flag',
+              cond: { $not: [{ $gt: ['$$flag.clearedAt', null] }] },
+            },
+          },
+        },
+      },
+      {
+        $addFields: {
+          openFlagCount: { $size: '$openFlags' },
+          oldestFlagAt: { $min: '$openFlags.createdAt' },
+        },
+      },
+      { $sort: { openFlagCount: -1, oldestFlagAt: 1, _id: 1 } },
+      { $skip: (page - 1) * PAGE_SIZE },
+      // One more than a page, to know whether there's another.
+      { $limit: PAGE_SIZE + 1 },
+      { $project: { openFlags: 0, openFlagCount: 0, oldestFlagAt: 0 } },
+    ]),
+    UserModel.countDocuments({ riskFlags: mongoose.trusted(match.riskFlags) }),
+  ]);
+  return {
+    users: users.slice(0, PAGE_SIZE).map((user) => ({
       ...row(user),
       flags: user.riskFlags
         .filter((flag) => !flag.clearedAt)
@@ -498,6 +543,9 @@ export async function riskQueue() {
           ...(flag.detail && { detail: flag.detail }),
           createdAt: flag.createdAt.toISOString(),
         })),
-    }))
-    .sort((a, b) => b.flags.length - a.flags.length);
+    })),
+    total,
+    page,
+    ...(users.length > PAGE_SIZE && { nextPage: page + 1 }),
+  };
 }

@@ -379,30 +379,53 @@ describe('extra charges', () => {
     return parts;
   }
 
-  it('charge extra kilometres to the saved card and pay the Host their share', async () => {
-    const { booking, guest } = await completedTrip();
+  /** The extra-km charge from the readings: 800 km driven, 750 included, so 50 extra at 35 cents. */
+  async function charged(bookingId: string) {
+    await tripExtraChargesJob({ bookingId }, context);
+    return (await BookingModel.findById(bookingId))!.extraCharges[0]!;
+  }
+
+  /** Stripe creating the charge's PaymentIntent, unconfirmed, as `pi_extra`. */
+  const created = () =>
     vi.spyOn(client.paymentIntents, 'create').mockImplementation(
       async (params) =>
         ({
           id: 'pi_extra',
-          status: 'succeeded',
+          status: 'requires_payment_method',
           amount: params.amount,
         }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
     );
-    await tripExtraChargesJob({ bookingId: booking.id }, context);
-    const charged = (await BookingModel.findById(booking._id))!.extraCharges;
-    // 800 km driven, 750 included: 50 extra at 35 cents.
-    expect(charged).toEqual([
-      expect.objectContaining({ type: 'EXTRA_KM', amountCents: 1750, status: 'PENDING' }),
-    ]);
+  const confirmed = (status = 'succeeded') =>
+    ({ id: 'pi_extra', status, amount: 1750 }) as unknown as Stripe.Response<Stripe.PaymentIntent>;
 
-    expect(await collectExtraCharge(booking.id, charged[0]!._id!.toString(), 1)).toBe('paid');
+  it('charge extra kilometres to the saved card and pay the Host their share', async () => {
+    const { booking, guest } = await completedTrip();
+    const create = created();
+    // The payment is on record before the card is charged, so whatever happens to it is applied.
+    const confirm = vi.spyOn(client.paymentIntents, 'confirm').mockImplementation(async () => {
+      expect(await PaymentModel.findOne({ stripePaymentIntentId: 'pi_extra' })).toMatchObject({
+        status: 'PENDING',
+      });
+      return confirmed();
+    });
+    const charge = await charged(booking.id);
+    expect(charge).toMatchObject({ type: 'EXTRA_KM', amountCents: 1750, status: 'PENDING' });
+
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('paid');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![1]).toMatchObject({ idempotencyKey: `extra-charge-${charge._id}` });
+    expect(confirm).toHaveBeenCalledWith(
+      'pi_extra',
+      expect.objectContaining({ payment_method: 'pm_saved', off_session: true }),
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1` },
+    );
     expect((await BookingModel.findById(booking._id))!.extraCharges[0]).toMatchObject({
       status: 'SUCCEEDED',
     });
     expect(await PaymentModel.findOne({ type: 'EXTRA_CHARGE' })).toMatchObject({
       status: 'SUCCEEDED',
       amountCents: 1750,
+      succeededAt: expect.any(Date),
     });
     expect(await PayoutModel.findOne({ bookingId: booking._id, type: 'EXTRA_CHARGE' })).toMatchObject({
       grossCents: 1750,
@@ -416,19 +439,22 @@ describe('extra charges', () => {
 
   it('send the Guest a link to pay when the saved card is declined', async () => {
     const { booking, guest } = await completedTrip();
-    vi.spyOn(client.paymentIntents, 'create').mockRejectedValue(
+    created();
+    vi.spyOn(client.paymentIntents, 'confirm').mockRejectedValue(
       new Stripe.errors.StripeCardError({
         message: 'Your card was declined.',
         type: 'card_error',
-        payment_intent: { id: 'pi_declined', status: 'requires_payment_method' } as Stripe.PaymentIntent,
+        payment_intent: { id: 'pi_extra', status: 'requires_payment_method' } as Stripe.PaymentIntent,
       }),
     );
-    await tripExtraChargesJob({ bookingId: booking.id }, context);
-    const charge = (await BookingModel.findById(booking._id))!.extraCharges[0]!;
+    const charge = await charged(booking.id);
     expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('failed');
 
-    const payment = await PaymentModel.findOne({ stripePaymentIntentId: 'pi_declined' });
+    // The same PaymentIntent waits on the pay link: no second one is made for it.
+    expect(client.paymentIntents.create).toHaveBeenCalledTimes(1);
+    const payment = await PaymentModel.findOne({ stripePaymentIntentId: 'pi_extra' });
     expect(payment).toMatchObject({ status: 'FAILED', failureReason: 'Your card was declined.' });
+    expect(await PaymentModel.countDocuments({ type: 'EXTRA_CHARGE' })).toBe(1);
     const told = await NotificationModel.findOne({
       userId: guest._id,
       type: 'EXTRA_CHARGE_FAILED',
@@ -441,6 +467,83 @@ describe('extra charges', () => {
     await agent.post('/api/v1/auth/login').send({ email: 'kiri@example.co.nz', password: PASSWORD });
     const link = await agent.get(`/api/v1/payments/${payment!.id}`);
     expect(link.body.payment).toMatchObject({ amountCents: 1750, status: 'DUE', bookingRef: booking.ref });
+
+    // Tomorrow's try confirms the same PaymentIntent with the saved card again.
+    vi.mocked(client.paymentIntents.confirm).mockResolvedValue(confirmed());
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 2)).toBe('paid');
+    expect(client.paymentIntents.create).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(client.paymentIntents.confirm).mock.calls.at(-1)).toEqual([
+      'pi_extra',
+      expect.anything(),
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-2` },
+    ]);
+  });
+
+  it('record a charge Stripe took although its answer was lost, without a second PaymentIntent', async () => {
+    const { booking } = await completedTrip();
+    created();
+    vi.spyOn(client.paymentIntents, 'confirm').mockRejectedValue(
+      new Stripe.errors.StripeConnectionError({ message: 'Request timed out', type: 'api_error' }),
+    );
+    const charge = await charged(booking.id);
+    // retrieve (beforeEach) says it succeeded.
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('paid');
+    expect(client.paymentIntents.create).toHaveBeenCalledTimes(1);
+    expect(await PaymentModel.find({ type: 'EXTRA_CHARGE' }).lean()).toEqual([
+      expect.objectContaining({ stripePaymentIntentId: 'pi_extra', status: 'SUCCEEDED' }),
+    ]);
+    expect(await NotificationModel.countDocuments({ type: 'EXTRA_CHARGE_FAILED' })).toBe(0);
+  });
+
+  it('try again with the same keys after an error that may not have charged, sending no pay link', async () => {
+    const { booking } = await completedTrip();
+    created();
+    vi.spyOn(client.paymentIntents, 'confirm').mockRejectedValue(
+      new Stripe.errors.StripeAPIError({ message: 'Something went wrong', type: 'api_error' }),
+    );
+    vi.mocked(client.paymentIntents.retrieve).mockImplementation(
+      async (id) =>
+        ({
+          id,
+          status: 'requires_payment_method',
+          payment_method: 'pm_saved',
+        }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
+    );
+    const charge = await charged(booking.id);
+    await expect(collectExtraCharge(booking.id, charge._id!.toString(), 1)).rejects.toThrow(
+      'Something went wrong',
+    );
+    expect(await PaymentModel.findOne({ type: 'EXTRA_CHARGE' })).toMatchObject({
+      stripePaymentIntentId: 'pi_extra',
+      status: 'PENDING',
+    });
+    expect(await NotificationModel.countDocuments({ type: 'EXTRA_CHARGE_FAILED' })).toBe(0);
+
+    // The job runs again: the same PaymentIntent, confirmed under the same key.
+    vi.mocked(client.paymentIntents.confirm).mockResolvedValue(confirmed());
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('paid');
+    expect(client.paymentIntents.create).toHaveBeenCalledTimes(1);
+    const keys = vi.mocked(client.paymentIntents.confirm).mock.calls.map((call) => call[2]);
+    expect(keys).toEqual([
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1` },
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1` },
+    ]);
+    expect(await PaymentModel.countDocuments({ type: 'EXTRA_CHARGE' })).toBe(1);
+  });
+
+  it('hold extra kilometres above the daily review limit for staff, who are alerted', async () => {
+    const { booking } = await completedTrip();
+    await createStaff();
+    // A reading with an extra digit: 450,000 km.
+    await ConditionReportModel.updateOne(
+      { bookingId: booking._id, stage: 'CHECK_OUT' },
+      { $set: { odometer: 450000 } },
+    );
+    await tripExtraChargesJob({ bookingId: booking.id }, context);
+    expect((await BookingModel.findById(booking._id))!.extraCharges).toEqual([]);
+    expect(await NotificationModel.findOne({ type: 'EXTRA_KM_REVIEW', channel: 'IN_APP' })).toMatchObject({
+      payload: { link: `/admin/bookings/${booking.ref}#handover` },
+    });
   });
 });
 
@@ -655,6 +758,16 @@ describe('Host-funded refunds', () => {
     expect(refunded.status).toBe(200);
     expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'THIS_PAYOUT' });
     expect(await refundsOwed(parts.host._id)).toEqual([]);
+    // The Host is told it comes off the payout still to be sent.
+    const told = await NotificationModel.findOne({
+      userId: parts.host._id,
+      type: 'HOST_REFUND_RECOVERED',
+      channel: 'IN_APP',
+    }).lean();
+    expect(told!.payload).toMatchObject({
+      title: `$40.00 of a $50.00 refund for ${parts.booking.ref} comes off your payout for it`,
+      body: '$40.00 comes off your payout for this booking, still to be sent, shown as its own line.',
+    });
 
     expect(await runPayout(parts.payout.id)).toBe('paid');
     const paid = await PayoutModel.findById(parts.payout._id);
@@ -849,5 +962,76 @@ describe('earnings with extra charges', () => {
       commissionCents: 5340 + 300,
       netCents: 21360 + 1450,
     });
+  });
+});
+
+describe('payout holds', () => {
+  /** Runs `meanwhile` as the payout's holds are checked: something happening at that moment. */
+  const whileChecking = (meanwhile: () => Promise<void>, held: boolean) =>
+    vi.spyOn(IncidentModel, 'exists').mockImplementationOnce((async () => {
+      await meanwhile();
+      return held ? { _id: new mongoose.Types.ObjectId() } : null;
+    }) as unknown as typeof IncidentModel.exists);
+
+  it('never bring back a payout cancelled meanwhile, nor replace a hold staff placed', async () => {
+    const parts = await trip();
+    const { booking, payout, host } = parts;
+    await checkIn(booking._id, host._id);
+    // Cancelled as the incident hold was found.
+    whileChecking(async () => {
+      await PayoutModel.updateOne({ _id: payout._id }, { $set: { status: 'CANCELLED' } });
+    }, true);
+    expect(await runPayout(payout.id)).toBe('skipped');
+    expect((await PayoutModel.findById(payout._id).lean())!.status).toBe('CANCELLED');
+
+    // Held by staff as the incident hold was found: it stays theirs to release.
+    const other = await anotherTrip(parts);
+    whileChecking(async () => {
+      await PayoutModel.updateOne(
+        { _id: other.payout._id },
+        { $set: { status: 'HELD', holdReason: 'MANUAL' } },
+      );
+    }, true);
+    expect(await runPayout(other.payout.id)).toBe('skipped');
+    expect(await PayoutModel.findById(other.payout._id).lean()).toMatchObject({
+      status: 'HELD',
+      holdReason: 'MANUAL',
+    });
+  });
+
+  it('placed by staff as the payout is checked stop it being sent', async () => {
+    const { booking, payout, host } = await trip();
+    await checkIn(booking._id, host._id);
+    whileChecking(async () => {
+      await PayoutModel.updateOne({ _id: payout._id }, { $set: { status: 'HELD', holdReason: 'MANUAL' } });
+    }, false);
+    expect(await runPayout(payout.id)).toBe('skipped');
+    expect(transfers).toHaveLength(0);
+    expect(await PayoutModel.findById(payout._id).lean()).toMatchObject({
+      status: 'HELD',
+      holdReason: 'MANUAL',
+    });
+  });
+
+  it('can’t be placed, released or retried while the payout is being sent', async () => {
+    const { payout } = await trip();
+    await PayoutModel.updateOne({ _id: payout._id }, { $set: { deductionsReservedAt: new Date() } });
+    await createStaff();
+    const admin = await staffAgent();
+    const held = await admin
+      .post(`/api/v1/admin/payouts/${payout.id}/hold`)
+      .send({ reason: 'Checking the damage claim' });
+    expect(held.status).toBe(409);
+    expect(held.body.error).toMatchObject({
+      code: 'PAYOUT_IN_FLIGHT',
+      message: expect.stringMatching(/being sent to Stripe right now/),
+    });
+    for (const action of ['release', 'retry']) {
+      const refused = await admin.post(`/api/v1/admin/payouts/${payout.id}/${action}`);
+      expect(refused.status).toBe(409);
+      expect(refused.body.error.code).toBe('PAYOUT_IN_FLIGHT');
+    }
+    expect((await PayoutModel.findById(payout._id).lean())!.status).toBe('SCHEDULED');
+    expect(await AuditLogModel.countDocuments({ entity: 'payout' })).toBe(0);
   });
 });

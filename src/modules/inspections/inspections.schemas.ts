@@ -101,7 +101,7 @@ export const conditionReportSchema = z
     photos: z.array(
       z.object({
         angle: z.enum(INSPECTION_ANGLES),
-        url: z.string().meta({ description: 'A private link that works for 10 minutes' }),
+        url: z.string().meta({ description: 'A private link that works for at least 10 minutes' }),
         takenBy: party,
         takenAt: z.iso.datetime(),
         exifTakenAt: z.iso.datetime().optional().meta({
@@ -140,6 +140,10 @@ export const handoverSchema = z
     fuelPolicy: z.enum(['SAME_LEVEL', 'FULL']),
     requiredAngles: z.array(z.enum(INSPECTION_ANGLES)),
     checkInOpensAt: z.iso.datetime().meta({ description: 'Check-in opens 2 hours before the start' }),
+    checkInClosesAt: z.iso.datetime().meta({
+      description:
+        'The end time: check-in is closed after it (409 CHECK_IN_CLOSED), and support sorts out the booking',
+    }),
     checkIn: conditionReportSchema.nullable(),
     checkOut: conditionReportSchema.nullable(),
     damageWindowEndsAt: z.iso.datetime().optional().meta({
@@ -172,3 +176,49 @@ export const handoverSchema = z
 export type HandoverView = z.infer<typeof handoverSchema>;
 
 export const handoverResponseSchema = z.object({ handover: handoverSchema }).meta({ id: 'HandoverResponse' });
+
+/**
+ * Staff correct a condition report's reading (plan §8.2): an odometer or fuel level mistyped, read again from
+ * the dashboard photo. The note goes in the audit log.
+ */
+export const readingCorrectionSchema = z
+  .object({
+    stage: z.enum(INSPECTION_STAGES).meta({ description: 'Which report: CHECK_IN or CHECK_OUT' }),
+    odometer: z
+      .number({ error: 'Enter the odometer reading' })
+      .int({ error: 'Odometer readings are whole kilometres' })
+      .min(0)
+      .max(2_000_000)
+      .optional(),
+    fuelOrBatteryPct: percent.optional(),
+    note: z
+      .string()
+      .trim()
+      .min(3, { error: 'Say why it’s corrected, e.g. read again from the dashboard photo' })
+      .max(500)
+      .meta({ description: 'Why, for the audit log' }),
+  })
+  .refine((value) => value.odometer !== undefined || value.fuelOrBatteryPct !== undefined, {
+    error: 'Enter the corrected odometer or fuel reading',
+    path: ['odometer'],
+  })
+  .meta({ id: 'ReadingCorrectionRequest' });
+export type ReadingCorrectionInput = z.infer<typeof readingCorrectionSchema>;
+
+/** What staff charging or correcting the extra kilometres did, in words for them. */
+export const extraKmViewSchema = z
+  .object({
+    outcome: z.enum(['CHARGED', 'UNCHANGED', 'NONE', 'OVERCHARGED', 'HELD']).meta({
+      description:
+        'CHARGED: a charge (or what more is due) is being collected; UNCHANGED: the charge stands; NONE: nothing to charge; OVERCHARGED: more was paid than is due (refundCents to refund); HELD: above the daily review limit',
+    }),
+    amountCents: z.number().int().optional(),
+    refundCents: z.number().int().optional(),
+    message: z.string(),
+  })
+  .meta({ id: 'ExtraKmResult' });
+export type ExtraKmView = z.infer<typeof extraKmViewSchema>;
+
+export const staffHandoverResponseSchema = z
+  .object({ handover: handoverSchema, extraKm: extraKmViewSchema.optional() })
+  .meta({ id: 'StaffHandoverResponse' });

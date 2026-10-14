@@ -153,6 +153,11 @@ export interface HostProfile {
   payoutRequirements?: string[];
   /** Business days Stripe takes to pay the Host's bank after a transfer, from their account. */
   payoutDelayDays?: number;
+  /**
+   * When the payout state above was true at Stripe: the `account.updated` event's time, or when the account was
+   * read. Stripe doesn't send events in order, so an older one is ignored (plan §8.1, item 20).
+   */
+  payoutStateAt?: Date;
   bio?: string;
   /** Share of booking requests answered, 0–100. */
   responseRate?: number;
@@ -423,6 +428,7 @@ const userSchema = new Schema<User>(
           payoutsEnabled: { type: Boolean, default: false },
           payoutRequirements: { type: [String], default: undefined },
           payoutDelayDays: { type: Number, min: 0 },
+          payoutStateAt: Date,
           bio: { type: String, maxlength: 1000 },
           responseRate: { type: Number, min: 0, max: 100 },
           tripCount: { type: Number, min: 0, default: 0 },

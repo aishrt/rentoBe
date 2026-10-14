@@ -263,9 +263,10 @@ export async function scheduleHostReminders(now = new Date()) {
 export async function runHostReminders(now = new Date()): Promise<number> {
   await scheduleHostReminders(now);
   let sent = 0;
-  // Suspended cars too: staff may let their booked trips go ahead, which still need valid documents.
+  // Every car that is, or was, listed: suspended ones too (staff may let their booked trips go ahead), and live
+  // ones whose key details are being checked again, which keep their bookings (plan §8.2).
   const vehicles = await VehicleModel.find({
-    status: mongoose.trusted({ $in: ['ACTIVE', 'INACTIVE', 'SUSPENDED'] }),
+    status: mongoose.trusted({ $nin: ['DRAFT', 'REJECTED'] }),
   }).lean<VehicleRecord[]>();
   /** Each car's latest odometer reading, for the RUC checks. */
   const odometers = new Map<string, number | null>();

@@ -16,11 +16,15 @@ import {
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { bookingPayment } from '../payments/booking-payment.js';
 import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
-import { tripPayoutOnCancel } from '../payouts/payouts.service.js';
+import { hostPartOf, tripPayoutOnCancel } from '../payouts/payouts.service.js';
 import { ReviewModel } from '../reviews/review.model.js';
 import { checkBookingVelocity } from '../risk/risk-signals.js';
 import { alertStaff } from '../staff/staff-alerts.js';
-import { eligibilityProblems, verificationInReview } from '../users/driver-licence.service.js';
+import {
+  eligibilityProblems,
+  licenceProblemsForTrip,
+  verificationInReview,
+} from '../users/driver-licence.service.js';
 import { UserModel, type Role } from '../users/user.model.js';
 import { isStaff } from '../users/user.service.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
@@ -151,7 +155,7 @@ export async function createBooking(
 
   // Verification at checkout (plan §6.1, §8.2): mobile, licence and the identity check. A check in review
   // turns an Instant Book into a request.
-  const problems = eligibilityProblems(guest, settings, trip.endAt, now);
+  const problems = eligibilityProblems(guest, settings, trip.endAt, now, trip.startAt);
   if (problems.length > 0) {
     throw new HttpError(409, 'VERIFICATION_REQUIRED', problems[0]!.message, {
       verification: problems.map((problem) => problem.code).join(','),
@@ -689,37 +693,100 @@ const justChanged = (status: BookingDocument['status'], by: 'GUEST' | 'HOST' | '
         : 'This request was accepted and paid for a moment ago. Please refresh: it can still be cancelled under the cancellation policy.',
   );
 
+/** An earlier Host-funded refund whose Host share a cancellation lowers (plan §8.1, item 15). */
+interface RefundRelief {
+  refundId: Types.ObjectId;
+  /** What the Host still pays for it. */
+  hostCents: number;
+  /** What the cancellation took off their share of it. */
+  reliefCents: number;
+}
+
 /** A cancellation's outcome once the payment's earlier refunds are counted. */
 interface PaidOutcome extends CancellationOutcome {
   /** Refunds already made on the payment (staff may part-refund a confirmed trip), failed ones aside. */
   earlierRefundCents: number;
   /** The policy's refund, before the earlier refunds came off it. */
   policyRefundCents: number;
+  /** Earlier Host-funded refunds whose Host share the cancellation lowers, and what that comes to in all. */
+  reliefs: RefundRelief[];
+  reliefCents: number;
 }
 
 /**
  * Earlier refunds come off what a cancellation can still give back (plan §8.1, items 10 and 15): the refund
  * is the policy's, up to what's left of the payment, and what's kept is what the Guest has still paid after
- * it. The Host's share of the kept fee stays the policy's: an earlier refund the Host funded is recovered from
- * them once (it's owed when the trip's payout is cancelled), and one the platform funded is its own cost.
+ * it. One the platform funded is its own cost, so the Host's share of the kept fee stays the policy's. One the
+ * Host funded is "a policy refund of rental the Host would otherwise receive", so the Host's net from the
+ * booking is their share of the kept fee less their share of those refunds, and never below nothing:
+ * - the part of the earlier refunds the policy's refund would have given back anyway (what the cap on the
+ *   refund absorbed, shared among them pro rata) costs the Host nothing: all of it for a Host or platform
+ *   cancellation or a 100 % tier;
+ * - what's left for the Host to pay never goes past their share of the kept fee: if it would, the two cancel
+ *   out, and the Host gets no share and pays nothing more.
+ * Each refund's new Host share is recorded on it at cancellation, so earnings, the booking page and payouts
+ * use the same figure.
  */
 function afterEarlierRefunds(outcome: CancellationOutcome, payment: PaymentDocument | null): PaidOutcome {
-  const earlierRefundCents = (payment?.refunds ?? [])
-    .filter((refund) => refund.status !== 'FAILED')
-    .reduce((sum, refund) => sum + refund.amountCents, 0);
+  const live = (payment?.refunds ?? []).filter((refund) => refund.status !== 'FAILED');
+  const earlierRefundCents = live.reduce((sum, refund) => sum + refund.amountCents, 0);
   if (!payment || earlierRefundCents === 0) {
-    return { ...outcome, earlierRefundCents, policyRefundCents: outcome.refundCents };
+    return {
+      ...outcome,
+      earlierRefundCents,
+      policyRefundCents: outcome.refundCents,
+      reliefs: [],
+      reliefCents: 0,
+    };
   }
   const left = Math.max(0, payment.amountCents - earlierRefundCents);
   const refundCents = Math.min(outcome.refundCents, left);
+  const absorbed = Math.min(earlierRefundCents, outcome.refundCents - refundCents);
+  let parts = live
+    .filter((refund) => refund.fundedBy === 'HOST' && refund.kind !== 'CANCELLATION' && refund._id)
+    .map((refund) => {
+      const was = hostPartOf(refund);
+      return {
+        refundId: refund._id!,
+        was,
+        now: Math.round((was * (earlierRefundCents - absorbed)) / earlierRefundCents),
+      };
+    });
+  let hostShareCents = outcome.hostShareCents;
+  const stillOwed = parts.reduce((sum, part) => sum + part.now, 0);
+  if (stillOwed > 0 && stillOwed >= hostShareCents) {
+    hostShareCents = 0;
+    parts = parts.map((part) => ({ ...part, now: 0 }));
+  }
+  const reliefs = parts
+    .filter((part) => part.now < part.was)
+    .map((part) => ({ refundId: part.refundId, hostCents: part.now, reliefCents: part.was - part.now }));
   return {
     ...outcome,
     refundCents,
     feeCents: left - refundCents,
+    hostShareCents,
     earlierRefundCents,
     policyRefundCents: outcome.refundCents,
+    reliefs,
+    reliefCents: reliefs.reduce((sum, relief) => sum + relief.reliefCents, 0),
   };
 }
+
+/**
+ * A confirmed trip whose start time has passed (plan §8.2): a Guest who cancels now hasn't turned up, so it's
+ * a Guest cancellation at the start time, like a no-show; the Host can't cancel it any more, as a Host no-show
+ * is one only once support confirms it.
+ */
+const afterStart = (booking: BookingDocument, now: Date) =>
+  booking.status === 'CONFIRMED' && booking.startAt <= now;
+
+const hostTripStarted = () =>
+  new HttpError(
+    409,
+    'TRIP_STARTED',
+    "The trip's start time has passed, so it can't be cancelled here. If the guest hasn't turned up, or you can't provide the car, contact support.",
+  );
 
 /** What a cancellation would do, for the actor's role (plan §11: cancellation-preview). */
 async function outcomeFor(booking: BookingDocument, viewer: Viewer, now: Date): Promise<PaidOutcome | null> {
@@ -728,9 +795,13 @@ async function outcomeFor(booking: BookingDocument, viewer: Viewer, now: Date): 
   if (viewer === 'GUEST') {
     if (booking.status === 'PAYMENT_PENDING') outcome = noCharge('ABANDON_CHECKOUT', booking, now);
     if (booking.status === 'PENDING') outcome = noCharge('WITHDRAW_REQUEST', booking, now);
-    if (booking.status === 'CONFIRMED') outcome = guestCancellation(booking, settings, now);
+    if (booking.status === 'CONFIRMED') {
+      outcome = guestCancellation(booking, settings, afterStart(booking, now) ? booking.startAt : now);
+    }
   }
-  if (viewer === 'HOST' && booking.status === 'CONFIRMED') outcome = hostCancellation(booking, settings, now);
+  if (viewer === 'HOST' && booking.status === 'CONFIRMED' && !afterStart(booking, now)) {
+    outcome = hostCancellation(booking, settings, now);
+  }
   if (!outcome) return null;
   return afterEarlierRefunds(outcome, booking.status === 'CONFIRMED' ? await bookingPayment(booking) : null);
 }
@@ -758,7 +829,9 @@ export async function cancellationPreview(
       message:
         viewer === 'HOST' && booking.status === 'PENDING'
           ? 'Decline the request instead: declining carries no fee.'
-          : "This booking can't be cancelled here. Please contact support.",
+          : viewer === 'HOST' && afterStart(booking, now)
+            ? hostTripStarted().message
+            : "This booking can't be cancelled here. Please contact support.",
     };
   }
   const policy = booking.cancellationTerms
@@ -777,8 +850,14 @@ export async function cancellationPreview(
     outcome.hostFeeCents > 0
       ? ` A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off your next payout.`
       : '';
+  // After the pick-up time it counts as not turning up (plan §8.2: a no-show is a cancellation at the start).
+  const noShow =
+    viewer === 'GUEST' && afterStart(booking, now)
+      ? 'Cancelling after the pick-up time counts as not turning up, so the refund is worked out as at the pick-up time. '
+      : '';
   const message =
-    outcome.kind === 'WITHDRAW_REQUEST'
+    noShow +
+    (outcome.kind === 'WITHDRAW_REQUEST'
       ? 'Your card authorisation will be released. Nothing is charged.'
       : outcome.kind === 'ABANDON_CHECKOUT'
         ? "The dates you're holding will be released. Nothing has been charged."
@@ -792,7 +871,7 @@ export async function cancellationPreview(
               ? `You'll get a full refund of ${formatDollars(outcome.refundCents)}.${earlier}`
               : outcome.refundCents === 0
                 ? `Under ${policy}, this cancellation isn't refundable.${earlier}`
-                : `Under ${policy} you'll get ${formatDollars(outcome.refundCents)} back; ${formatDollars(outcome.feeCents)} is kept.${earlier}`;
+                : `Under ${policy} you'll get ${formatDollars(outcome.refundCents)} back; ${formatDollars(outcome.feeCents)} is kept.${earlier}`);
   return {
     allowed: true,
     kind: outcome.kind,
@@ -812,7 +891,7 @@ export async function cancellationPreview(
  */
 async function carryOut(
   booking: BookingDocument,
-  outcome: CancellationOutcome,
+  outcome: PaidOutcome,
   input: {
     by: string;
     cancelledBy: 'GUEST' | 'HOST' | 'SUPPORT';
@@ -832,7 +911,12 @@ async function carryOut(
   const uncaptured = booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING';
   // The trip's payout: one being sent this moment is neither cancelled nor paid twice, so the cancellation waits
   // for it; one already paid is settled against the Host's share of the kept fee (plan §8.1, items 15 and 16).
-  const tripPayout = uncaptured ? null : await tripPayoutOnCancel(booking._id, outcome.hostShareCents);
+  const tripPayout = uncaptured
+    ? null
+    : await tripPayoutOnCancel(booking._id, outcome.hostShareCents, {
+        reliefCents: outcome.reliefCents,
+        now,
+      });
   if (tripPayout?.state === 'IN_FLIGHT') throw payoutInFlight();
   let refund: RefundRecord | undefined;
   if (uncaptured) {
@@ -852,6 +936,20 @@ async function carryOut(
   const applied: CancellationOutcome = { ...outcome, refundCents: refund?.amountCents ?? 0 };
 
   const cancelled = await withTransaction(async (session) => {
+    // The Host's share of earlier Host-funded refunds as the cancellation leaves it (afterEarlierRefunds), before
+    // the trip's payout is cancelled and what was to come off it is owed instead.
+    for (const relief of payment && !uncaptured ? outcome.reliefs : []) {
+      await PaymentModel.updateOne(
+        { _id: payment!._id },
+        {
+          $set: {
+            'refunds.$[earlier].hostCents': relief.hostCents,
+            'refunds.$[earlier].hostReliefCents': relief.reliefCents,
+          },
+        },
+        { arrayFilters: [{ 'earlier._id': relief.refundId }], session },
+      );
+    }
     const ended = await endBooking(
       booking,
       outcome.kind === 'ABANDON_CHECKOUT'
@@ -921,10 +1019,12 @@ async function carryOut(
         {
           session,
           released: uncaptured,
+          reason: input.reason,
           ...(tripPayout?.state === 'PAID' && {
             tripPayoutSentCents: tripPayout.paidCents,
             hostOwesCents: tripPayout.owedCents,
           }),
+          ...(outcome.reliefCents > 0 && { hostRefundReliefCents: outcome.reliefCents }),
         },
       );
     }
@@ -944,6 +1044,11 @@ async function carryOut(
       feeCents: outcome.feeCents,
       hostFeeCents: outcome.hostFeeCents,
       ...(uncaptured && { authorisationReleased: true }),
+      // What the Host no longer pays towards earlier Host-funded refunds (plan §8.1, item 15).
+      ...(outcome.reliefCents > 0 && {
+        hostShareCents: outcome.hostShareCents,
+        hostRefundReliefCents: outcome.reliefCents,
+      }),
       // Staff give a reason and a note (plan §8.2).
       ...(input.cancelledBy === 'SUPPORT' && { reason: input.reason, note: input.note }),
     },
@@ -954,17 +1059,23 @@ async function carryOut(
   return cancelled;
 }
 
-/** POST /bookings/{id}/cancel by the Guest or the Host (plan §8.2). */
+/**
+ * POST /bookings/{id}/cancel by the Guest or the Host (plan §8.2). `expectedRefundCents`: the refund the
+ * preview showed. When the refund worked out now is less (the full-refund cut-off passed while the dialog was
+ * open, say), nothing is cancelled: 409 REFUND_CHANGED with the new figure, to confirm again (plan §11: the
+ * refund and fee are shown before the user confirms).
+ */
 export async function cancelBooking(
   booking: BookingDocument,
   viewer: Viewer,
   actorId: string,
-  note?: string,
+  { note, expectedRefundCents }: { note?: string; expectedRefundCents?: number } = {},
   now = new Date(),
 ) {
   if (viewer === 'HOST' && booking.status === 'PENDING') {
     throw new HttpError(409, 'USE_DECLINE', 'Decline the request instead: declining carries no fee.');
   }
+  if (viewer === 'HOST' && afterStart(booking, now)) throw hostTripStarted();
   const outcome = await outcomeFor(booking, viewer, now);
   if (!outcome)
     throw new HttpError(
@@ -972,6 +1083,15 @@ export async function cancelBooking(
       'NOT_CANCELLABLE',
       "This booking can't be cancelled here. Please contact support.",
     );
+  if (expectedRefundCents !== undefined && outcome.refundCents < expectedRefundCents) {
+    const fresh = await cancellationPreview(booking, viewer, now);
+    throw new HttpError(
+      409,
+      'REFUND_CHANGED',
+      `The refund has changed since you opened this: it's now ${formatDollars(outcome.refundCents)}, not ${formatDollars(expectedRefundCents)}. Check it, then confirm again.`,
+      { expectedRefundCents: fresh.message },
+    );
+  }
   const reason =
     outcome.kind === 'WITHDRAW_REQUEST'
       ? 'REQUEST_WITHDRAWN'
@@ -1034,7 +1154,11 @@ async function adminOutcome(
         : platformCancellation(booking, now);
   const paid = afterEarlierRefunds(outcome, await bookingPayment(booking));
   // The trip's payout is being sent this moment (a trip under way): the cancellation waits for it.
-  if ((await tripPayoutOnCancel(booking._id, paid.hostShareCents)).state === 'IN_FLIGHT') {
+  const trip = await tripPayoutOnCancel(booking._id, paid.hostShareCents, {
+    reliefCents: paid.reliefCents,
+    now,
+  });
+  if (trip.state === 'IN_FLIGHT') {
     throw payoutInFlight();
   }
   return paid;
@@ -1130,13 +1254,21 @@ export async function adminCancellationPreview(
     refundCents < outcome.policyRefundCents
       ? ` That's ${formatDollars(outcome.policyRefundCents)} under the policy, less what was already refunded.`
       : '';
+  // Earlier Host-funded refunds the Guest gets back under this cancellation anyway cost the Host less.
+  const relief =
+    outcome.reliefCents > 0
+      ? ` The Host pays ${formatDollars(outcome.reliefCents)} less towards the earlier Host-funded refunds, as this cancellation gives the Guest that back anyway.`
+      : '';
   // The Host's share of the kept fee is the policy's, so after an earlier refund it can be more than is kept.
   const hostShare =
     outcome.hostShareCents <= outcome.feeCents
       ? `, of which the Host gets ${formatDollars(outcome.hostShareCents)}`
       : `, and the Host gets ${formatDollars(outcome.hostShareCents)}`;
   // The trip's payout already went (a no-show after the Host's check-in): settled against their share.
-  const trip = await tripPayoutOnCancel(booking._id, outcome.hostShareCents);
+  const trip = await tripPayoutOnCancel(booking._id, outcome.hostShareCents, {
+    reliefCents: outcome.reliefCents,
+    now,
+  });
   const sent =
     trip.state !== 'PAID'
       ? ''
@@ -1147,10 +1279,10 @@ export async function adminCancellationPreview(
           : ` The Host’s trip payout of ${formatDollars(trip.paidCents)} was already sent, which is their share.`;
   const message =
     outcome.kind === 'GUEST_CANCELLATION'
-      ? `A Guest cancellation at the start time, under ${policy}: the Guest gets ${formatDollars(refundCents)} back${outcome.feeCents > 0 || outcome.hostShareCents > 0 ? ` and ${formatDollars(outcome.feeCents)} is kept${outcome.hostShareCents > 0 ? hostShare : ''}` : ''}.${capped}${sent}`
+      ? `A Guest cancellation at the start time, under ${policy}: the Guest gets ${formatDollars(refundCents)} back${outcome.feeCents > 0 || outcome.hostShareCents > 0 ? ` and ${formatDollars(outcome.feeCents)} is kept${outcome.hostShareCents > 0 ? hostShare : ''}` : ''}.${capped}${relief}${sent}`
       : outcome.kind === 'HOST_CANCELLATION'
-        ? `A Host cancellation: the Guest gets ${formatDollars(refundCents)} back, a full refund.${capped} ${outcome.hostFeeCents > 0 ? `A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off the Host’s next payout.` : 'The Host cancellation fee in the settings is $0.'}${sent}`
-        : `The Guest gets ${formatDollars(refundCents)} back, a full refund, and the Host pays no fee.${capped}${sent}`;
+        ? `A Host cancellation: the Guest gets ${formatDollars(refundCents)} back, a full refund.${capped} ${outcome.hostFeeCents > 0 ? `A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off the Host’s next payout.` : 'The Host cancellation fee in the settings is $0.'}${relief}${sent}`
+        : `The Guest gets ${formatDollars(refundCents)} back, a full refund, and the Host pays no fee.${capped}${relief}${sent}`;
   return {
     ...base,
     allowed: true,
@@ -1302,7 +1434,9 @@ export async function expireRequest(
  * Support has decided a Guest's verification (plan §8.2): their identity check or their licence. Approved:
  * once neither waits for support any more, each booking that waited is confirmed by capturing its
  * authorisation, unless its Host still has to accept the request; while the other part still waits, the
- * bookings keep waiting for it. Rejected: each is ended and its authorisation released.
+ * bookings keep waiting for it. One the Guest's licence no longer qualifies for (plan §3: it expires before
+ * the trip ends, say) keeps waiting too, for the Guest to update it or support to cancel it. Rejected: each is
+ * ended and its authorisation released.
  */
 export async function resolveVerificationReview(
   guestId: string,
@@ -1313,16 +1447,21 @@ export async function resolveVerificationReview(
 ): Promise<VerificationOutcome> {
   const result = { confirmed: [] as string[], waitingForHost: [] as string[], released: [] as string[] };
   const carSuspended: string[] = [];
+  const licenceNotEligible: string[] = [];
   const waiting = await BookingModel.find({
     guestId,
     status: 'PENDING',
     'verificationReview.status': 'PENDING',
   }).sort({ createdAt: 1 });
-  if (decision === 'APPROVE' && waiting.length > 0) {
-    const guest = await UserModel.findById(guestId).select('identityVerification driverLicence').lean();
-    if (guest && verificationInReview(guest, await getPlatformSettings())) {
-      return { ...result, stillInReview: waiting.map((booking) => booking.ref) };
-    }
+  const guest =
+    decision === 'APPROVE' && waiting.length > 0
+      ? await UserModel.findById(guestId)
+          .select('phoneVerifiedAt dob identityVerification driverLicence')
+          .lean()
+      : null;
+  const settings = guest ? await getPlatformSettings() : null;
+  if (guest && settings && verificationInReview(guest, settings)) {
+    return { ...result, stillInReview: waiting.map((booking) => booking.ref) };
   }
 
   for (const booking of waiting) {
@@ -1333,6 +1472,10 @@ export async function resolveVerificationReview(
       (booking.startAt <= now || (booking.requestExpiresAt && booking.requestExpiresAt <= now))
     ) {
       if (await expireRequest(booking.id, now, { force: true })) result.released.push(booking.ref);
+      continue;
+    }
+    if (guest && settings && licenceProblemsForTrip(guest, settings, booking, now).length > 0) {
+      licenceNotEligible.push(booking.ref);
       continue;
     }
     const decided = await BookingModel.findOneAndUpdate(
@@ -1377,5 +1520,9 @@ export async function resolveVerificationReview(
     }
   }
   forget('vehicles:featured');
-  return { ...result, ...(carSuspended.length > 0 && { carSuspended }) };
+  return {
+    ...result,
+    ...(carSuspended.length > 0 && { carSuspended }),
+    ...(licenceNotEligible.length > 0 && { licenceNotEligible }),
+  };
 }

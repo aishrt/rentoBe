@@ -5,6 +5,7 @@ import { forget } from '../src/lib/memo.js';
 import { parseNzDateTime } from '../src/lib/nz-time.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
 import { ReviewModel } from '../src/modules/reviews/review.model.js';
+import { publicHost } from '../src/modules/vehicles/vehicles.service.js';
 import { createHost, createVehicle, nzDay } from './fixtures.js';
 import { FRONTEND_ORIGIN, createUser, testApp } from './helpers.js';
 
@@ -267,5 +268,17 @@ describe('Quote', () => {
     const backwards = await quote(vehicle.id, { start: nzDay(5), end: nzDay(4) });
     expect(backwards.status).toBe(400);
     expect(backwards.body.error.fields.end).toBe('Return needs to be after pick-up');
+  });
+});
+
+describe('A listing’s host', () => {
+  it('gives the year they joined in New Zealand, as their profile does', () => {
+    // 1 am on New Year's Day in New Zealand is still the year before in UTC.
+    const host = {
+      _id: new mongoose.Types.ObjectId(),
+      firstName: 'Hana',
+      createdAt: new Date('2025-12-31T12:00:00Z'),
+    };
+    expect(publicHost(host).joinedYear).toBe(2026);
   });
 });

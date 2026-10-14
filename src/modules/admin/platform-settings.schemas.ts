@@ -60,6 +60,8 @@ export const DECISION_KEYS = [
   'company',
   'bookingRules',
   'verificationServices',
+  /** The retention periods wait for the client's legal adviser (plan §16, item 11). */
+  'retentionAndRisk',
 ] as const;
 export type DecisionKey = (typeof DECISION_KEYS)[number];
 
@@ -156,6 +158,11 @@ export const platformSettingsSchema = z.object({
     damageReportWindowHours: count,
     /** A message thread becomes read-only this long after the trip ends. */
     threadReadOnlyDays: count,
+    /**
+     * Extra kilometres above this many a trip day aren't charged automatically: staff check the readings
+     * first (a mistyped odometer reading), then charge or correct them.
+     */
+    extraKmReviewAboveKmPerDay: z.number().int().min(1),
   }),
   search: z.object({
     maxTripDays: z.number().int().min(1),
@@ -166,19 +173,23 @@ export const platformSettingsSchema = z.object({
         path: ['default'],
       }),
   }),
-  /** Proposed periods, to be confirmed by the client's legal adviser (plan §14). */
+  /**
+   * Proposed periods, to be confirmed by the client's legal adviser (plan §14). Each has a floor, so a
+   * mistyped value can't have the daily retention job delete the audit log or trip evidence: NZ business
+   * and tax records are kept 7 years, and audit logs as long.
+   */
   retention: z.object({
-    financialRecordsYears: count,
-    idImagesDays: count,
-    tripRecordsYears: count,
-    auditLogYears: count,
+    financialRecordsYears: z.number().int().min(7, { error: 'Keep financial records at least 7 years' }),
+    idImagesDays: z.number().int().min(1),
+    tripRecordsYears: z.number().int().min(1),
+    auditLogYears: z.number().int().min(7, { error: 'Keep audit logs at least 7 years' }),
   }),
-  /** When suspicious activity raises a risk flag for admins (plan §14). */
+  /** When suspicious activity raises a risk flag for admins (plan §14). 0 would flag everyone. */
   risk: z.object({
-    failedPaymentsPerDay: count,
-    bookingsPerDay: count,
-    reportsBeforeFlag: count,
-    hostCancellationsPer90Days: count,
+    failedPaymentsPerDay: z.number().int().min(1),
+    bookingsPerDay: z.number().int().min(1),
+    reportsBeforeFlag: z.number().int().min(1),
+    hostCancellationsPer90Days: z.number().int().min(1),
   }),
   /** Non-urgent SMS in these NZ hours wait until the end (plan §7). */
   sms: z.object({ quietHoursStart: timeOfDay, quietHoursEnd: timeOfDay }),

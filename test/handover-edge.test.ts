@@ -1,6 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { stat } from 'node:fs/promises';
+import { describe, expect, it, vi } from 'vitest';
+import { localFilePath } from '../src/integrations/storage/local-files.js';
+import type { JobContext } from '../src/jobs/handlers/index.js';
+import { startCheckJob } from '../src/jobs/handlers/trip-jobs.js';
+import { JobModel } from '../src/jobs/job.model.js';
+import { enqueue } from '../src/jobs/queue.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
-import { REQUIRED_INSPECTION_ANGLES } from '../src/modules/inspections/condition-report.model.js';
+import {
+  ConditionReportModel,
+  REQUIRED_INSPECTION_ANGLES,
+} from '../src/modules/inspections/condition-report.model.js';
+import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent } from './helpers.js';
@@ -20,18 +30,21 @@ async function signIn(email: string) {
   return agent;
 }
 
-async function trip() {
+async function trip(
+  startAt = new Date(Date.now() + HOUR_MS),
+  endAt = new Date(startAt.getTime() + 3 * DAY_MS),
+) {
   const host = await createHost();
   const guest = await createUser({ email: 'kiri@example.co.nz' });
   await UserModel.updateOne({ _id: guest._id }, { $set: { emailVerifiedAt: new Date() } });
   const vehicle = await createVehicle(host._id);
-  const startAt = new Date(Date.now() + HOUR_MS);
   const booking = await createBookingRecord(
     { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
-    { startAt, endAt: new Date(startAt.getTime() + 3 * DAY_MS) },
+    { startAt, endAt },
   );
   return {
     booking,
+    guest,
     guestAgent: await signIn('kiri@example.co.nz'),
     hostAgent: await signIn('hana@example.co.nz'),
   };
@@ -152,5 +165,160 @@ describe('flagging damage', () => {
       (photo: { angle: string; takenBy: string }) => photo.takenBy === 'HOST',
     );
     expect(added.map((photo: { angle: string }) => photo.angle)).toEqual(['DAMAGE']);
+  });
+});
+
+/** A check-in by the Host with these photos. */
+const checkIn = (agent: Agent, ref: string, shots: object[]) =>
+  agent
+    .post(`/api/v1/bookings/${ref}/inspections`)
+    .send({ stage: 'CHECK_IN', odometer: 45000, fuelOrBatteryPct: 80, photos: shots });
+const checkOut = (agent: Agent, ref: string, shots: object[]) =>
+  agent
+    .post(`/api/v1/bookings/${ref}/inspections`)
+    .send({ stage: 'CHECK_OUT', odometer: 45100, fuelOrBatteryPct: 80, photos: shots });
+
+describe('inspection photos', () => {
+  it('are each attached once: not sent again for check-out, nor one photo for every angle', async () => {
+    const { booking, guestAgent, hostAgent } = await trip();
+    const shots = await photos(hostAgent, booking.ref);
+
+    // One upload for all 8 angles.
+    const oneForAll = await checkIn(
+      hostAgent,
+      booking.ref,
+      shots.map((shot) => ({ ...shot, key: shots[0]!.key })),
+    );
+    expect(oneForAll.status).toBe(400);
+    expect(oneForAll.body.error.fields.photos).toMatch(/twice/);
+
+    // Refused without using any of them up: the same uploads still record the check-in.
+    expect((await checkIn(hostAgent, booking.ref, shots)).status).toBe(201);
+
+    // The check-in's uploads, sent again as the check-out's.
+    const reused = await checkOut(guestAgent, booking.ref, shots);
+    expect(reused.status).toBe(400);
+    expect(reused.body.error.code).toBe('UPLOAD_NOT_FOUND');
+    // Nor by the path a photo's link shows.
+    const handover = (await guestAgent.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover;
+    const linked = handover.checkIn.photos.map((photo: { angle: string; url: string }) => ({
+      angle: photo.angle,
+      key: new URL(photo.url).pathname.replace('/api/v1/files/private/', ''),
+      takenAt: new Date().toISOString(),
+    }));
+    expect((await checkOut(guestAgent, booking.ref, linked)).body.error.code).toBe('UPLOAD_NOT_FOUND');
+    // A failed attempt deletes what it attached, so its uploads need sending again.
+    const fresh = await photos(guestAgent, booking.ref);
+    const mixed = await checkOut(guestAgent, booking.ref, [...fresh.slice(1), linked[0]]);
+    expect(mixed.body.error.code).toBe('UPLOAD_NOT_FOUND');
+    expect((await checkOut(guestAgent, booking.ref, fresh)).body.error.code).toBe('UPLOAD_NOT_FOUND');
+    const again = await photos(guestAgent, booking.ref);
+    expect((await checkOut(guestAgent, booking.ref, again)).status).toBe(201);
+  });
+
+  it('can’t be older than check-in, or for check-out older than the check-in', async () => {
+    const { booking, guestAgent, hostAgent } = await trip();
+    const shots = await photos(hostAgent, booking.ref);
+    // Check-in opened an hour ago (2 hours before the start); the front was taken 2 hours ago.
+    const early = await checkIn(hostAgent, booking.ref, [
+      { ...shots[0], takenAt: new Date(Date.now() - 2 * HOUR_MS).toISOString() },
+      ...shots.slice(1),
+    ]);
+    expect(early.status).toBe(400);
+    expect(early.body.error).toMatchObject({
+      code: 'PHOTOS_TOO_EARLY',
+      message: 'Some photos were taken before check-in opened. Please take them again.',
+      fields: { photos: 'Take again: front' },
+    });
+    // A clock a few minutes slow is fine.
+    const done = await checkIn(hostAgent, booking.ref, [
+      { ...shots[0], takenAt: new Date(Date.now() - HOUR_MS - 2 * 60_000).toISOString() },
+      ...shots.slice(1),
+    ]);
+    expect(done.status).toBe(201);
+
+    const back = await photos(guestAgent, booking.ref);
+    const old = await checkOut(guestAgent, booking.ref, [
+      ...back.slice(0, 7),
+      { ...back[7], takenAt: new Date(Date.now() - HOUR_MS).toISOString() },
+    ]);
+    expect(old.body.error).toMatchObject({
+      code: 'PHOTOS_TOO_EARLY',
+      message: 'Some photos were taken before the check-in. Please take them again.',
+      fields: { photos: 'Take again: dashboard' },
+    });
+  });
+});
+
+describe('check-in timing', () => {
+  const context = { log: { info: vi.fn(), warn: vi.fn() } } as unknown as JobContext;
+
+  it('answers 409 to the second of two check-ins at the same moment, and deletes its photos', async () => {
+    const { booking, guestAgent } = await trip();
+    const shots = await photos(guestAgent, booking.ref);
+    // The Host's check-in lands between the Guest's own check and its save.
+    await ConditionReportModel.create({
+      bookingId: booking._id,
+      stage: 'CHECK_IN',
+      odometer: 45000,
+      fuelOrBatteryPct: 80,
+    });
+    vi.spyOn(ConditionReportModel, 'find').mockReturnValueOnce({ lean: async () => [] } as never);
+    const late = await checkIn(guestAgent, booking.ref, shots);
+    expect(late.status).toBe(409);
+    expect(late.body.error).toMatchObject({ code: 'NOT_CHECK_IN', message: 'Check-in is already done.' });
+    // Its photos went with it.
+    const name = shots[0]!.key.split('/').at(-1);
+    await expect(stat(localFilePath(`bookings/${booking.id}/inspections/${name}`))).rejects.toThrow();
+  });
+
+  it('closes at the end time: support sorts out the booking', async () => {
+    const { booking, hostAgent } = await trip(
+      new Date(Date.now() - 3 * DAY_MS),
+      new Date(Date.now() - HOUR_MS),
+    );
+    const handover = (await hostAgent.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover;
+    expect(handover.actions.checkIn).toBe(false);
+    expect(handover.checkInClosesAt).toBe(booking.endAt.toISOString());
+    const shots = await photos(hostAgent, booking.ref);
+    const closed = await checkIn(hostAgent, booking.ref, shots);
+    expect(closed.status).toBe(409);
+    expect(closed.body.error.code).toBe('CHECK_IN_CLOSED');
+    expect(closed.body.error.message).toMatch(/contact support/);
+  });
+
+  it('checks a late check-in the Guest never confirms from when it was done', async () => {
+    const { booking, guest, hostAgent } = await trip(new Date(Date.now() - 3 * HOUR_MS));
+    const id = booking.id as string;
+    // The start checks, already run or still queued.
+    await enqueue(
+      'trip.startCheck',
+      { bookingId: id, hoursAfter: 2 },
+      { runAt: new Date(Date.now() + HOUR_MS), uniqueKey: `trip.startCheck:2:${id}`, refId: id },
+    );
+    const shots = await photos(hostAgent, booking.ref);
+    expect((await checkIn(hostAgent, booking.ref, shots)).status).toBe(201);
+
+    const jobs = await JobModel.find({ type: 'trip.startCheck', refId: id }).sort({ runAt: 1 }).lean();
+    expect(jobs.find((job) => job.uniqueKey === `trip.startCheck:2:${id}`)!.status).toBe('CANCELLED');
+    const queued = jobs.filter((job) => job.status === 'QUEUED');
+    expect(queued.map((job) => job.uniqueKey)).toEqual([
+      `trip.startCheck:1:checked-in:${id}`,
+      `trip.startCheck:2:checked-in:${id}`,
+    ]);
+    expect(queued[0]!.runAt.getTime()).toBeGreaterThan(Date.now() + HOUR_MS - 60_000);
+    expect(queued[1]!.runAt.getTime()).toBeGreaterThan(Date.now() + 2 * HOUR_MS - 60_000);
+
+    await startCheckJob({ bookingId: id, hoursAfter: 1 }, context);
+    expect(
+      await NotificationModel.findOne({ type: 'CHECK_IN_UNCONFIRMED', userId: guest._id, channel: 'IN_APP' }),
+    ).not.toBeNull();
+  });
+
+  it('runs the usual start checks for a check-in before the start', async () => {
+    const { booking, hostAgent } = await trip();
+    const shots = await photos(hostAgent, booking.ref);
+    expect((await checkIn(hostAgent, booking.ref, shots)).status).toBe(201);
+    expect(await JobModel.countDocuments({ type: 'trip.startCheck', refId: booking.id })).toBe(0);
   });
 });

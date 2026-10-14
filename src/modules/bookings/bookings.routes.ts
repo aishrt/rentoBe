@@ -106,11 +106,14 @@ export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: tr
 
   // Cancels, or withdraws a request that's waiting for the Host (plan §8.2).
   router.post('/:id/cancel', async (req, res) => {
-    const { reason } = validate(cancelBookingSchema, req.body ?? {});
+    const { reason, expectedRefundCents } = validate(cancelBookingSchema, req.body ?? {});
     const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
     if (viewer === 'STAFF')
       throw new HttpError(403, 'FORBIDDEN', 'Staff cancel bookings from the staff portal.');
-    const cancelled = await cancelBooking(booking, viewer, req.auth!.userId, reason);
+    const cancelled = await cancelBooking(booking, viewer, req.auth!.userId, {
+      note: reason,
+      expectedRefundCents,
+    });
     res.json({ booking: await bookingView(cancelled, viewer) });
   });
 

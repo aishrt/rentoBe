@@ -96,7 +96,8 @@ export const vehiclePatchSchema = z
     petFriendly: z.boolean().optional(),
     childSeat: z.boolean().optional(),
     damageNotes: nullable(z.string().trim().max(1000)),
-    // Step 2: document dates (the files are uploaded separately).
+    // Step 2: document dates (the files are uploaded separately). On a car staff have approved, a later date
+    // waits for staff to verify a document showing it (`pendingExpiries`); an earlier one applies at once.
     regoExpiry: date.optional(),
     wofExpiry: nullable(date),
     cofExpiry: nullable(date),
@@ -206,6 +207,13 @@ export const hostVehicleSchema = z
     regoExpiry: date.optional(),
     wofExpiry: date.optional(),
     cofExpiry: date.optional(),
+    pendingExpiries: z
+      .object({ regoExpiry: date.optional(), wofExpiry: date.optional(), cofExpiry: date.optional() })
+      .optional()
+      .meta({
+        description:
+          'On an approved car: later expiry dates the Host entered, waiting for staff to verify a document of that type showing them. Search and booking use the dates above until then',
+      }),
     rucValidToKm: z.number().optional(),
     ownerIsHost: z.boolean(),
     pricing: z

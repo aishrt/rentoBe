@@ -4,7 +4,9 @@ import { formatNzDateTime, formatNzdExact } from '../../lib/format.js';
 import { requestOutcomeHeadings, type RequestOutcome } from '../../emails/templates/booking-emails.js';
 import { notify } from '../notifications/notify.js';
 import { alertStaff } from '../staff/staff-alerts.js';
+import type { CancellationReason } from './booking.model.js';
 import type { CancellationOutcome } from './policies.js';
+import { isLastMinute } from './trip-jobs.js';
 import {
   awaitsVerification,
   toBookingView,
@@ -205,6 +207,9 @@ export async function notifyConfirmed(
         sms: {
           body: `Rento Vroom: ${guestName} has booked your ${booking.vehicleSnapshot.title}, ${shortDates(booking)}. Details: ${hostBookingUrl(booking)}`,
           whileBooking: { id: booking._id, statuses: ['CONFIRMED', 'ACTIVE'] },
+          // A trip starting within 3 hours can't wait for the end of quiet hours (plan §7); otherwise a
+          // text held past the start is no use.
+          ...(isLastMinute(booking.startAt) ? { urgent: true } : { expiresAt: booking.startAt }),
         },
       }),
       dedupeKey: `BOOKING_CONFIRMED:${booking._id.toString()}:host`,
@@ -302,14 +307,20 @@ export async function notifyCancelled(
   {
     session,
     released = false,
+    reason,
     tripPayoutSentCents,
     hostOwesCents,
+    hostRefundReliefCents,
   }: Options & {
     released?: boolean;
+    /** Why it was cancelled, so each party is told (plan §8.2: each labelled): a no-show, say. */
+    reason?: CancellationReason;
     /** The trip's payout already went to the Host (a no-show after their check-in): what it was. */
     tripPayoutSentCents?: number;
     /** What of it comes off their next payout, beyond their share of the kept fee. */
     hostOwesCents?: number;
+    /** What the Host no longer pays towards earlier refunds they funded: the Guest got it back here anyway. */
+    hostRefundReliefCents?: number;
   } = {},
 ) {
   const id = booking._id.toString();
@@ -335,6 +346,7 @@ export async function notifyCancelled(
           firstName: context.guest?.firstName ?? 'there',
           audience: 'GUEST',
           cancelledBy,
+          ...(reason && { reason }),
           ...(withdrawn && { withdrawn: true }),
           ...(released && !withdrawn && { released: true }),
           ...(outcome.refundCents > 0 && { refund: formatNzdExact(outcome.refundCents) }),
@@ -367,11 +379,13 @@ export async function notifyCancelled(
             firstName: context.host?.firstName ?? 'there',
             audience: 'HOST',
             cancelledBy,
+            ...(reason && { reason }),
             ...(withdrawn && { withdrawn: true }),
             ...(outcome.hostShareCents > 0 && { hostShare: formatNzdExact(outcome.hostShareCents) }),
             ...(outcome.hostFeeCents > 0 && { hostFee: formatNzdExact(outcome.hostFeeCents) }),
             ...(sent && { tripPayoutSent: formatNzdExact(tripPayoutSentCents) }),
             ...(hostOwesCents && { hostOwes: formatNzdExact(hostOwesCents) }),
+            ...(hostRefundReliefCents && { hostRefundRelief: formatNzdExact(hostRefundReliefCents) }),
             url: hostBookingUrl(booking),
           },
         },

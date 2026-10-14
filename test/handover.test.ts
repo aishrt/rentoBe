@@ -143,6 +143,61 @@ describe('check-in', () => {
     expect(unverified.body.error.code).toBe('EMAIL_NOT_VERIFIED');
   });
 
+  it('refuses to start a trip the guest’s licence doesn’t cover, saying why to each side', async () => {
+    const { booking, guestAgent, hostAgent, guest } = await trip();
+    const licence = (overrides: object) =>
+      UserModel.updateOne(
+        { _id: guest._id },
+        {
+          $set: {
+            dob: new Date('1990-04-21T00:00:00+12:00'),
+            driverLicence: {
+              numberHash: 'hash',
+              numberEnding: '456',
+              country: 'NZ',
+              class: 'NZ_FULL',
+              issuedAt: new Date('2012-05-01T00:00:00+12:00'),
+              expiry: new Date(Date.now() + 30 * DAY_MS),
+              status: 'APPROVED',
+              ...overrides,
+            },
+          },
+        },
+      );
+    const checkIn = async (agent: Agent) => {
+      const shots = await photos(agent, booking.ref);
+      return agent.post(`/api/v1/bookings/${booking.ref}/inspections`).send({
+        stage: 'CHECK_IN',
+        odometer: 1000,
+        fuelOrBatteryPct: 50,
+        photos: shots,
+      });
+    };
+
+    // It runs out the day after pick-up, before the trip ends.
+    await licence({ expiry: new Date(Date.now() + DAY_MS) });
+    const expiring = await checkIn(guestAgent);
+    expect(expiring.status).toBe(409);
+    expect(expiring.body.error).toMatchObject({
+      code: 'LICENCE_NOT_ELIGIBLE',
+      message: expect.stringMatching(/^Your driver licence can’t be used for this trip: it expires before/),
+    });
+    // Turned down by support, or a class that isn't accepted: the host hears it too.
+    await licence({ status: 'REJECTED' });
+    const rejected = await checkIn(hostAgent);
+    expect(rejected.body.error).toMatchObject({
+      code: 'LICENCE_NOT_ELIGIBLE',
+      message: expect.stringMatching(/^The guest’s driver licence can’t be used for this trip \(our team/),
+    });
+    await licence({ class: 'NZ_RESTRICTED' });
+    expect((await checkIn(guestAgent)).body.error.code).toBe('LICENCE_NOT_ELIGIBLE');
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('CONFIRMED');
+
+    // Valid for the whole trip: it starts.
+    await licence({});
+    expect((await checkIn(guestAgent)).status).toBe(201);
+  });
+
   it('keeps when a chosen photo says it was taken and where the device was, and shows the place to staff only', async () => {
     const { booking, hostAgent, guestAgent } = await trip();
     const shots = await photos(hostAgent, booking.ref);
@@ -511,5 +566,116 @@ describe('check-out', () => {
       checkOut: { odometer: 46000, completedBySupport: true },
     });
     expect(completed.body.handover.kilometres).toBeUndefined();
+  });
+});
+
+describe('extra kilometres after check-out (plan §3, §8.2)', () => {
+  /** The Host checked in at 45,000 km and the Guest checked out at `odometer`. */
+  async function checkedOut(odometer = 45800) {
+    const parts = await trip();
+    const checkInShots = await photos(parts.hostAgent, parts.booking.ref);
+    await parts.hostAgent.post(`/api/v1/bookings/${parts.booking.ref}/inspections`).send({
+      stage: 'CHECK_IN',
+      odometer: 45000,
+      fuelOrBatteryPct: 80,
+      photos: checkInShots,
+    });
+    const checkOutShots = await photos(parts.guestAgent, parts.booking.ref);
+    const done = await parts.guestAgent.post(`/api/v1/bookings/${parts.booking.ref}/inspections`).send({
+      stage: 'CHECK_OUT',
+      odometer,
+      fuelOrBatteryPct: 80,
+      photos: checkOutShots,
+    });
+    expect(done.status).toBe(201);
+    return parts;
+  }
+
+  const extraKmJob = (bookingId: string) =>
+    JobModel.findOne({ type: 'trip.extraCharges', refId: bookingId }).lean();
+  const runJob = (bookingId: string) =>
+    tripExtraChargesJob({ bookingId }, {
+      log: { info: () => undefined, warn: () => undefined },
+    } as unknown as JobContext);
+
+  it('are charged once the other party confirms the check-out, or when the damage-report window closes', async () => {
+    const { booking, hostAgent } = await checkedOut();
+    // 48 hours by default, from the check-out.
+    const queued = await extraKmJob(booking.id);
+    expect(queued!.status).toBe('QUEUED');
+    expect(queued!.runAt.getTime()).toBeGreaterThan(Date.now() + 47 * HOUR_MS);
+
+    const confirmed = await hostAgent.post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/confirm`);
+    expect(confirmed.status).toBe(200);
+    expect((await extraKmJob(booking.id))!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('lets staff with the refunds permission correct a mistyped reading, which works the charge out again', async () => {
+    const { booking, guest } = await checkedOut();
+    await runJob(booking.id);
+    expect((await BookingModel.findById(booking._id).lean())!.extraCharges).toEqual([
+      expect.objectContaining({ type: 'EXTRA_KM', amountCents: 1750, status: 'PENDING' }),
+    ]);
+    await createStaff('mere@example.co.nz', 'SUPPORT');
+    const support = await staffAgent('mere@example.co.nz');
+    const correct = (agent: Agent, body: object) =>
+      agent.post(`/api/v1/admin/bookings/${booking.ref}/readings`).send(body);
+    const note = 'Read again from the dashboard photo';
+    expect((await correct(support, { stage: 'CHECK_OUT', odometer: 45900, note })).status).toBe(403);
+
+    await createStaff();
+    const admin = await staffAgent();
+    expect(
+      (await correct(admin, { stage: 'CHECK_OUT', odometer: 45900 })).body.error.fields.note,
+    ).toBeDefined();
+    const lower = await correct(admin, { stage: 'CHECK_OUT', odometer: 44000, note });
+    expect(lower.status).toBe(400);
+    expect(lower.body.error.fields.odometer).toMatch(/45,000/);
+
+    // 900 km driven: 150 extra, so $52.50 in place of $17.50.
+    const fixed = await correct(admin, { stage: 'CHECK_OUT', odometer: 45900, note });
+    expect(fixed.status).toBe(200);
+    expect(fixed.body.handover.checkOut.odometer).toBe(45900);
+    expect(fixed.body.extraKm).toMatchObject({ outcome: 'CHARGED', amountCents: 5250 });
+    expect((await BookingModel.findById(booking._id).lean())!.extraCharges).toEqual([
+      expect.objectContaining({ amountCents: 1750, status: 'CANCELLED' }),
+      expect.objectContaining({ type: 'EXTRA_KM', amountCents: 5250, status: 'PENDING' }),
+    ]);
+    expect(
+      await AuditLogModel.findOne({ action: 'booking.reading-corrected', entityId: booking.id }).lean(),
+    ).toMatchObject({
+      before: { stage: 'CHECK_OUT', odometer: 45800 },
+      after: { stage: 'CHECK_OUT', odometer: 45900, note },
+    });
+    expect(
+      await NotificationModel.findOne({
+        userId: guest._id,
+        type: 'EXTRA_CHARGE_CANCELLED',
+        channel: 'IN_APP',
+      }),
+    ).toMatchObject({ payload: { title: `Charge corrected for ${booking.ref}` } });
+
+    // Paid already, then corrected down: the difference is left for staff to refund.
+    await BookingModel.updateOne(
+      { _id: booking._id, 'extraCharges.amountCents': 5250 },
+      { $set: { 'extraCharges.$.status': 'SUCCEEDED' } },
+    );
+    const down = await correct(admin, { stage: 'CHECK_OUT', odometer: 45800, note });
+    expect(down.body.extraKm).toMatchObject({ outcome: 'OVERCHARGED', refundCents: 3500 });
+    expect((await BookingModel.findById(booking._id).lean())!.extraCharges).toHaveLength(2);
+  });
+
+  it('lets staff charge them now, as for one held above the daily review limit', async () => {
+    const { booking } = await checkedOut();
+    await createStaff();
+    const admin = await staffAgent();
+    const charged = await admin.post(`/api/v1/admin/bookings/${booking.ref}/extra-km`);
+    expect(charged.status).toBe(200);
+    expect(charged.body.extraKm).toMatchObject({ outcome: 'CHARGED', amountCents: 1750 });
+    // The job that would have charged it later has nothing left to do.
+    expect((await extraKmJob(booking.id))!.status).toBe('CANCELLED');
+    const again = await admin.post(`/api/v1/admin/bookings/${booking.ref}/extra-km`);
+    expect(again.body.extraKm).toMatchObject({ outcome: 'UNCHANGED' });
+    expect((await BookingModel.findById(booking._id).lean())!.extraCharges).toHaveLength(1);
   });
 });

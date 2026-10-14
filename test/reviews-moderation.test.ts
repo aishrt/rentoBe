@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { ReviewModel } from '../src/modules/reviews/review.model.js';
 import { memberReviews, moderateReview, myReviews } from '../src/modules/reviews/reviews.service.js';
 import { UserModel } from '../src/modules/users/user.model.js';
@@ -59,6 +60,107 @@ describe('moderating a review', () => {
     expect(await ReviewModel.findById(review._id).lean()).toMatchObject({
       status: 'HIDDEN',
       moderation: { state: 'HIDDEN' },
+    });
+  });
+
+  it('tells a held review’s author what the team decided, in their own reviews tab', async () => {
+    const { host, guest, booking } = await completedTrip(1);
+    const staff = await createStaff();
+    const held = { state: 'HELD', reason: 'Contains contact details or a link' };
+    const scores = { overall: 4, communication: 4, pickupReturn: 4 };
+    const byHost = await ReviewModel.create({
+      bookingId: booking._id,
+      authorId: host._id,
+      subjectId: guest._id,
+      direction: 'HOST_TO_GUEST',
+      ...scores,
+      care: 4,
+      body: 'Text me on 021 123 4567',
+      status: 'AWAITING_REVEAL',
+      moderation: held,
+    });
+    const notices = (userId: unknown) =>
+      NotificationModel.find({ userId, type: 'REVIEW_MODERATED', channel: 'IN_APP' }).lean();
+
+    // The Host's is cleared before the Guest has reviewed: it waits for the reveal.
+    await moderateReview(staff.id, byHost.id, 'CLEAR', 'A business line');
+    expect((await notices(host._id)).map((notice) => notice.payload)).toEqual([
+      {
+        title: 'Your review of Kiri passed our check',
+        body: 'It’s published once you’ve both reviewed the trip, or when the time to review closes.',
+        link: '/account/reviews?tab=written&as=host',
+      },
+    ]);
+
+    // The Guest's is hidden, with why.
+    const byGuest = await ReviewModel.create({
+      bookingId: booking._id,
+      vehicleId: booking.vehicleId,
+      authorId: guest._id,
+      subjectId: host._id,
+      direction: 'GUEST_TO_HOST',
+      ...scores,
+      cleanliness: 4,
+      body: 'Email me at kiri@example.co.nz',
+      status: 'AWAITING_REVEAL',
+      moderation: held,
+    });
+    await moderateReview(staff.id, byGuest.id, 'HIDE', 'Shares an email address');
+    expect((await notices(guest._id)).map((notice) => notice.payload)).toEqual([
+      {
+        title: 'Your review of Hana won’t be published',
+        body: 'Our team hid it: Shares an email address',
+        link: '/account/reviews?tab=written',
+      },
+    ]);
+
+    // Restored later: it's no longer a held review, so nothing more is sent about it.
+    await moderateReview(staff.id, byGuest.id, 'CLEAR', 'The address was a business one');
+    expect(await notices(guest._id)).toHaveLength(1);
+  });
+
+  it('tells the author their held review is published when the team clears it', async () => {
+    const { host, guest, booking } = await completedTrip(1);
+    const staff = await createStaff();
+    const review = await ReviewModel.create({
+      bookingId: booking._id,
+      vehicleId: booking.vehicleId,
+      authorId: guest._id,
+      subjectId: host._id,
+      direction: 'GUEST_TO_HOST',
+      overall: 5,
+      communication: 5,
+      pickupReturn: 5,
+      cleanliness: 5,
+      body: 'Visit www.example.com',
+      status: 'AWAITING_REVEAL',
+      moderation: { state: 'HELD', reason: 'Contains contact details or a link' },
+    });
+    // The Host reviewed too, so clearing it publishes both.
+    await ReviewModel.create({
+      bookingId: booking._id,
+      authorId: host._id,
+      subjectId: guest._id,
+      direction: 'HOST_TO_GUEST',
+      overall: 5,
+      communication: 5,
+      pickupReturn: 5,
+      care: 5,
+      status: 'AWAITING_REVEAL',
+      moderation: { state: 'CLEAR' },
+    });
+
+    await moderateReview(staff.id, review.id, 'CLEAR', 'A harmless link');
+    const [notice] = await NotificationModel.find({ userId: guest._id, type: 'REVIEW_MODERATED' }).lean();
+    expect(notice!.payload).toMatchObject({
+      title: 'Your review of Hana is published',
+      link: '/account/reviews?tab=written',
+    });
+    // Hana hears about it in the Host area.
+    const [published] = await NotificationModel.find({ userId: host._id, type: 'REVIEW_PUBLISHED' }).lean();
+    expect(published!.payload).toMatchObject({
+      title: 'Kiri reviewed you',
+      link: '/account/reviews?as=host',
     });
   });
 });

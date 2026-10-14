@@ -37,6 +37,7 @@ import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
 import { startRealtime, userRoom } from '../src/realtime/realtime.js';
 import { encrypt } from '../src/lib/encryption.js';
 import { createBookingRecord, createHost, createPaymentRecord, createVehicle, nzDay } from './fixtures.js';
+import { timePasses } from './message-fixtures.js';
 import {
   FRONTEND_ORIGIN,
   PASSWORD,
@@ -1095,12 +1096,13 @@ describe('unread-message emails and unsubscribing', () => {
     expect((await UserModel.findById(user._id).lean())!.notificationPrefs.unreadMessageEmail).toBe(false);
   });
 
-  /** Kiri messages Hana about their booking: the unread-message job for Hana. */
+  /** Kiri messages Hana about their booking, 11 minutes ago: the unread-message job for Hana. */
   async function unreadForHost() {
     const { host, booking } = await trip();
     const guestAgent = await signIn('kiri@example.co.nz');
     await guestAgent.post(`/api/v1/threads/${booking.ref}/messages`).send({ body: 'Is 10 am OK?' });
     const job = await JobModel.findOne({ type: 'messages.unreadEmail' }).lean();
+    await timePasses();
     return { host, booking, payload: job!.payload as { threadId: string; recipientId: string } };
   }
 

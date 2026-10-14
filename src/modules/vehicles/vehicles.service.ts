@@ -3,7 +3,7 @@ import { logger } from '../../integrations/logger.js';
 import { areaMapLink, fetchAreaMap, type MapImage } from '../../integrations/maps/area-map.js';
 import { HttpError } from '../../lib/http-error.js';
 import { memo } from '../../lib/memo.js';
-import { addNzDays, parseNzDateTime } from '../../lib/nz-time.js';
+import { addNzDays, parseNzDateTime, toNzWallClock } from '../../lib/nz-time.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { busyRanges } from '../availability/availability.service.js';
 import { evaluateTrip, listingTier } from '../bookings/trip.service.js';
@@ -43,7 +43,8 @@ export function publicHost(host: HostFields) {
     tripCount: host.hostProfile?.tripCount ?? 0,
     ...(host.hostProfile?.responseRate !== undefined && { responseRate: host.hostProfile.responseRate }),
     verified: host.identityVerification?.status === 'APPROVED',
-    joinedYear: host.createdAt.getFullYear(),
+    // The year in New Zealand, as on the member's profile.
+    joinedYear: toNzWallClock(host.createdAt).year,
     ...(host.hostProfile?.bio && { bio: host.hostProfile.bio }),
   };
 }

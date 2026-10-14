@@ -195,7 +195,8 @@ async function publish(reviews: ReviewRecord[], now: Date): Promise<number> {
       type: 'REVIEW_PUBLISHED',
       title: `${author?.firstName ?? 'Someone'} reviewed you`,
       body: `${published.overall} out of 5 stars.`,
-      link: '/account/reviews',
+      // A Guest's review is about the Host, who reads it in the Host area.
+      link: published.direction === 'GUEST_TO_HOST' ? '/account/reviews?as=host' : '/account/reviews',
       dedupeKey: `REVIEW_PUBLISHED:${published._id.toString()}`,
     });
   }
@@ -464,6 +465,20 @@ export async function myReviews(userId: string, now = new Date()) {
  * they joined). A closed or suspended account isn't shown.
  */
 export async function memberReviews(memberId: string) {
+  const { member, profile } = await findMemberProfile(memberId);
+  const reviews = await ReviewModel.find({ subjectId: member._id, status: 'PUBLISHED' })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .lean<ReviewRecord[]>();
+  return { profile, reviews: await toViews(reviews, undefined, false, { publicView: true }) };
+}
+
+/** GET /users/{id}/profile: a member's public profile alone (plan §11), under the same rules. */
+export async function memberProfile(memberId: string) {
+  return { profile: (await findMemberProfile(memberId)).profile };
+}
+
+async function findMemberProfile(memberId: string) {
   if (!mongoose.isValidObjectId(memberId))
     throw new HttpError(404, 'NOT_FOUND', "We couldn't find that member.");
   const member = await UserModel.findById(memberId)
@@ -476,12 +491,9 @@ export async function memberReviews(memberId: string) {
     { $group: { _id: null, avg: { $avg: '$overall' }, count: { $sum: 1 } } },
   ]);
   const guestTrips = await BookingModel.countDocuments({ guestId: member._id, status: 'COMPLETED' });
-  const reviews = await ReviewModel.find({ subjectId: member._id, status: 'PUBLISHED' })
-    .sort({ createdAt: -1 })
-    .limit(50)
-    .lean<ReviewRecord[]>();
   const host = member.hostProfile?.status === 'APPROVED' ? member.hostProfile : undefined;
   return {
+    member,
     profile: {
       id: member._id.toString(),
       firstName: member.firstName,
@@ -502,7 +514,6 @@ export async function memberReviews(memberId: string) {
         },
       }),
     },
-    reviews: await toViews(reviews, undefined, false, { publicView: true }),
   };
 }
 
@@ -579,5 +590,32 @@ export async function moderateReview(
     ...(ip && { ip }),
   });
   const fresh = await ReviewModel.findById(review._id).lean<ReviewRecord>();
+  // The author was shown their review "being checked by our team": they hear what the team decided.
+  if (review.moderation.state === 'HELD') await notifyHeldReviewDecided(fresh!, reason);
   return (await toViews([fresh!], undefined, true))[0]!;
+}
+
+/** Tells a held review's author that it's published (or will be with the other side's), or hidden and why. */
+async function notifyHeldReviewDecided(review: ReviewRecord, reason: string) {
+  const subject = await UserModel.findById(review.subjectId).select('firstName').lean();
+  const yours = subject ? `Your review of ${subject.firstName}` : 'Your review';
+  const hidden = review.status === 'HIDDEN';
+  const published = review.status === 'PUBLISHED';
+  await notify({
+    userId: review.authorId,
+    type: 'REVIEW_MODERATED',
+    title: hidden
+      ? `${yours} won’t be published`
+      : published
+        ? `${yours} is published`
+        : `${yours} passed our check`,
+    body: hidden
+      ? `Our team hid it: ${reason}`
+      : published
+        ? 'Our team checked it, and it’s on Rento Vroom now.'
+        : 'It’s published once you’ve both reviewed the trip, or when the time to review closes.',
+    // Their reviews tab, in the Host area for a Host's review of their Guest.
+    link: `/account/reviews?tab=written${review.direction === 'HOST_TO_GUEST' ? '&as=host' : ''}`,
+    dedupeKey: `REVIEW_MODERATED:${review._id.toString()}`,
+  });
 }

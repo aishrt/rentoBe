@@ -1,4 +1,4 @@
-import type { ClientSession } from 'mongoose';
+import mongoose, { type ClientSession } from 'mongoose';
 import Stripe from 'stripe';
 import { env } from '../../env.js';
 import { stripe } from '../../integrations/stripe.js';
@@ -8,7 +8,7 @@ import { notify } from '../notifications/notify.js';
 import { UserModel, type HostProfile } from '../users/user.model.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { PayoutModel } from './payout.model.js';
-import { releaseHeldPayouts } from './payouts.service.js';
+import { isPayoutSentBack, releaseHeldPayouts } from './payouts.service.js';
 
 /*
  * Payout setup with Stripe Connect Express (plan §8.1, items 8 and 20): the Host gives Stripe their bank
@@ -51,16 +51,23 @@ export interface PayoutAccountView {
   feesOwedCents: number;
   /** Host-funded refunds made after a booking's payout, still to come off one (plan §8.1, item 15). */
   refundsOwedCents: number;
+  /** Trip payouts sent before their booking was cancelled, less the Host's share of the kept fee, still owed. */
+  payoutsOwedCents: number;
 }
 
 export function payoutAccountView(profile: Partial<HostProfile> | undefined): PayoutAccountView {
+  const owed = (sent: boolean) =>
+    (profile?.refundsOwed ?? [])
+      .filter((refund) => isPayoutSentBack(refund.stripeRefundId) === sent)
+      .reduce((sum, refund) => sum + refund.amountCents, 0);
   return {
     connected: Boolean(profile?.stripeAccountId),
     payoutsEnabled: Boolean(profile?.payoutsEnabled),
     requirements: profile?.payoutRequirements ?? [],
     ...(profile?.payoutDelayDays !== undefined && { bankDays: profile.payoutDelayDays }),
     feesOwedCents: profile?.feesOwedCents ?? 0,
-    refundsOwedCents: (profile?.refundsOwed ?? []).reduce((sum, refund) => sum + refund.amountCents, 0),
+    refundsOwedCents: owed(false),
+    payoutsOwedCents: owed(true),
   };
 }
 
@@ -80,29 +87,45 @@ async function findHost(hostId: string) {
 /**
  * Applies a Stripe account's state (from `account.updated`, or read when the Host comes back from Stripe):
  * whether payouts can be sent and what's missing. Payouts held for the setup are released, and listings
- * waiting for it go live. Pass the webhook's transaction when there is one.
+ * waiting for it go live. Pass the webhook's transaction when there is one, and when the state was true at
+ * Stripe (`at`: the event's time): Stripe doesn't send events in order, so a state older than the one already
+ * applied is ignored, and an old "disabled" can't hold payouts again after a newer "enabled".
  */
-export async function applyAccountState(account: Stripe.Account, session?: ClientSession): Promise<void> {
+export async function applyAccountState(
+  account: Stripe.Account,
+  session?: ClientSession,
+  at = new Date(),
+): Promise<void> {
   const host = await UserModel.findOne({ 'hostProfile.stripeAccountId': account.id })
     .select('firstName hostProfile')
     .session(session ?? null);
   if (!host?.hostProfile) return;
+  if (host.hostProfile.payoutStateAt && at < host.hostProfile.payoutStateAt) return;
   const enabled = Boolean(account.payouts_enabled) && account.capabilities?.transfers === 'active';
   const wasEnabled = host.hostProfile.payoutsEnabled;
   const due = [...(account.requirements?.currently_due ?? []), ...(account.requirements?.past_due ?? [])];
   const delay = account.settings?.payouts?.schedule?.delay_days;
 
-  await UserModel.updateOne(
-    { _id: host._id },
+  const applied = await UserModel.updateOne(
+    {
+      _id: host._id,
+      // A newer state applied meanwhile wins.
+      $or: [
+        { 'hostProfile.payoutStateAt': mongoose.trusted({ $exists: false }) },
+        { 'hostProfile.payoutStateAt': mongoose.trusted({ $lte: at }) },
+      ],
+    },
     {
       $set: {
         'hostProfile.payoutsEnabled': enabled,
         'hostProfile.payoutRequirements': requirementWords(due),
+        'hostProfile.payoutStateAt': at,
         ...(typeof delay === 'number' && { 'hostProfile.payoutDelayDays': delay }),
       },
     },
     { session },
   );
+  if (applied.matchedCount === 0) return;
 
   if (enabled && !wasEnabled) {
     await releaseHeldPayouts({ hostId: host._id }, 'PAYOUT_SETUP', { session });
@@ -228,7 +251,11 @@ export async function onboardingLink(hostId: string): Promise<{ url: string }> {
 export async function syncPayoutAccount(hostId: string): Promise<PayoutAccountView> {
   const host = await findHost(hostId);
   const accountId = host.hostProfile!.stripeAccountId;
-  if (accountId) await applyAccountState(await stripe().accounts.retrieve(accountId));
+  if (accountId) {
+    // What's read is at least as new as the moment we asked, to the second (as Stripe dates its events).
+    const at = new Date(Math.floor(Date.now() / 1000) * 1000);
+    await applyAccountState(await stripe().accounts.retrieve(accountId), undefined, at);
+  }
   const fresh = await UserModel.findById(hostId).select('hostProfile').lean();
   return payoutAccountView(fresh?.hostProfile);
 }

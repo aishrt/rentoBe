@@ -277,6 +277,14 @@ export function RequestExpiredHostEmail({
 export interface BookingCancelledProps extends TripBasics {
   audience: 'GUEST' | 'HOST';
   cancelledBy: 'GUEST' | 'HOST' | 'SUPPORT';
+  /** Why it was cancelled (plan §8.2: each labelled), e.g. a no-show recorded by support. */
+  reason?:
+    | 'GUEST_CANCELLED'
+    | 'HOST_CANCELLED'
+    | 'REQUEST_WITHDRAWN'
+    | 'GUEST_NO_SHOW'
+    | 'HOST_NO_SHOW'
+    | 'PLATFORM';
   /** Guest: what's refunded. */
   refund?: string;
   /** Guest: what's kept under the cancellation policy. */
@@ -289,13 +297,42 @@ export interface BookingCancelledProps extends TripBasics {
   tripPayoutSent?: string;
   /** Host: what of that payout comes off their next one, beyond their share of the kept fee. */
   hostOwes?: string;
+  /** Host: what they no longer pay towards a refund they funded earlier, as the guest got it back here anyway. */
+  hostRefundRelief?: string;
   /** A request withdrawn before the Host answered: nothing was booked or charged. */
   withdrawn?: boolean;
   /** Guest: support cancelled a request, or a booking waiting for verification: the card's hold is released. */
   released?: boolean;
 }
 
+/** Why a booking was cancelled, after "… cancelled booking RV-… for the car" (plan §8.2). */
+function cancelledWhy({ reason, audience, cancelledBy }: BookingCancelledProps): string {
+  const guest = audience === 'GUEST';
+  switch (reason) {
+    case 'GUEST_NO_SHOW':
+      return guest
+        ? ' as a no-show: the car wasn’t picked up at the pick-up time, so the cancellation policy applies as at that time'
+        : ' as a no-show: the guest didn’t turn up at the pick-up time';
+    case 'HOST_NO_SHOW':
+      return guest
+        ? ' because your host couldn’t provide the car'
+        : ' because the car wasn’t available at the pick-up time. It counts as a Host cancellation';
+    case 'HOST_CANCELLED':
+      if (cancelledBy !== 'SUPPORT') return '';
+      return guest
+        ? ' for your host, who couldn’t provide the car'
+        : ' on your behalf. It counts as a Host cancellation';
+    case 'PLATFORM':
+      return guest || cancelledBy !== 'SUPPORT' ? '' : '. It doesn’t count as a Host cancellation';
+    default:
+      return '';
+  }
+}
+
 export function BookingCancelledEmail(props: BookingCancelledProps) {
+  // A Host cancellation, or a Host no-show, always refunds the Guest in full (plan §7, §8.1 item 10).
+  const hostAtFault =
+    props.cancelledBy === 'HOST' || props.reason === 'HOST_CANCELLED' || props.reason === 'HOST_NO_SHOW';
   const who =
     props.cancelledBy === 'SUPPORT'
       ? 'our support team'
@@ -329,7 +366,8 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
     <EmailLayout preview={`Booking ${props.ref} for the ${props.vehicleTitle} is cancelled.`}>
       <EmailHeading>Booking cancelled</EmailHeading>
       <EmailText>
-        Kia ora {props.firstName}, {who} cancelled booking {props.ref} for the {props.vehicleTitle}.
+        Kia ora {props.firstName}, {who} cancelled booking {props.ref} for the {props.vehicleTitle}
+        {cancelledWhy(props)}.
       </EmailText>
       <EmailDetails
         rows={[
@@ -342,8 +380,7 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
       />
       {props.audience === 'GUEST' && props.refund && (
         <EmailText>
-          {/* A Host cancellation always refunds the Guest in full (plan §7, §8.1 item 10). */}
-          {props.cancelledBy === 'HOST' ? `You get a full refund of ${props.refund}. ` : ''}
+          {hostAtFault ? `You get a full refund of ${props.refund}. ` : ''}
           Refunds go back to the card you paid with and usually show within 5–10 working days.
         </EmailText>
       )}
@@ -358,6 +395,12 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
           Your payout for this trip, {props.tripPayoutSent}, was already sent. You keep your share of the fee
           from it
           {props.hostOwes ? `, and the rest, ${props.hostOwes}, comes off your next payout.` : '.'}
+        </EmailText>
+      )}
+      {props.audience === 'HOST' && props.hostRefundRelief && (
+        <EmailText>
+          You pay {props.hostRefundRelief} less towards the refund you funded earlier: the guest gets that
+          money back under this cancellation anyway.
         </EmailText>
       )}
       {props.audience === 'HOST' && <EmailText>The dates are free again on your calendar.</EmailText>}

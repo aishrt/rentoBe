@@ -15,6 +15,12 @@ export const PHOTO_WIDTHS = [800, 1600] as const;
 /** A member's profile photo: shown at most 80 px across (the member page), so one copy is enough. */
 export const PROFILE_PHOTO_WIDTHS = [400] as const;
 
+/**
+ * A message photo's smaller copy, which the conversation shows (at most 256 px across); tapping it opens
+ * the photo itself.
+ */
+export const MESSAGE_PREVIEW_WIDTH = 800;
+
 /** Documents stay sharp enough to read the small print, but no larger. */
 const DOCUMENT_MAX_PX = 4000;
 
@@ -66,6 +72,34 @@ export async function photoVariants(
           .toBuffer(),
       })),
     );
+  } catch {
+    throw unreadable();
+  }
+}
+
+/**
+ * A private photo the other party sees (a message photo): an upright JPEG with no metadata, which can say
+ * where it was taken (plan §6.2), and a smaller WebP copy `previewWidth` across to show in a conversation.
+ */
+export async function sharedPhoto(
+  buffer: Buffer,
+  previewWidth: number,
+): Promise<{ photo: Buffer; preview: Buffer }> {
+  try {
+    const open = await opener(buffer);
+    const [photo, preview] = await Promise.all([
+      open()
+        .resize({ width: DOCUMENT_MAX_PX, height: DOCUMENT_MAX_PX, fit: 'inside', withoutEnlargement: true })
+        // A screenshot's see-through parts show white, not black.
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: 85 })
+        .toBuffer(),
+      open()
+        .resize({ width: previewWidth, height: previewWidth, fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer(),
+    ]);
+    return { photo, preview };
   } catch {
     throw unreadable();
   }

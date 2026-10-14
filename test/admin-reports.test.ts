@@ -259,6 +259,166 @@ describe('the GST summary and platform fees', () => {
     expect(summary.body.report.gst).toMatchObject({ inCancellationFeesCents: 1500, givenBackCents: 300 });
   });
 
+  it('keep a second payment’s refund and the refunds before a cancellation out of revenue, as the overview does', async () => {
+    const host = await createHost();
+    const guest = await createUser();
+    const vehicle = await createVehicle(host._id);
+    const parties = { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id };
+    const now = Date.now();
+    const at = (hoursAgo: number) => new Date(now - hoursAgo * 60 * 60 * 1000);
+
+    // A trip going ahead, paid twice: the second payment was refunded in full and never counted.
+    const paidTwice = await createBookingRecord(parties, { startAt: new Date(now + DAY_MS) });
+    await createPaymentRecord(paidTwice);
+    await createPaymentRecord(paidTwice, {
+      status: 'REFUNDED',
+      refunds: [
+        {
+          amountCents: 33870,
+          reason: 'A second payment for a booking already paid for',
+          kind: 'LATE_PAYMENT',
+          fundedBy: 'PLATFORM',
+          status: 'SUCCEEDED',
+          createdAt: at(1),
+        },
+      ],
+    });
+
+    // $30 goodwill, then a full-refund cancellation of the $308.70 left: nothing kept, nothing to give back.
+    const allBack = await createBookingRecord(parties, {
+      status: 'CANCELLED',
+      cancelledAt: at(2),
+      cancellationReason: 'GUEST_CANCELLED',
+      cancellationFeeCents: 0,
+      refundCents: 30870,
+      hostShareCents: 0,
+    });
+    await createPaymentRecord(allBack, {
+      status: 'REFUNDED',
+      refunds: [
+        {
+          amountCents: 3000,
+          reason: 'Goodwill',
+          kind: 'STAFF',
+          fundedBy: 'PLATFORM',
+          status: 'SUCCEEDED',
+          createdAt: at(3),
+        },
+        {
+          amountCents: 30870,
+          reason: 'Cancellation (GUEST_CANCELLED)',
+          kind: 'CANCELLATION',
+          fundedBy: 'HOST',
+          status: 'SUCCEEDED',
+          createdAt: at(2),
+        },
+      ],
+    });
+
+    // $23 goodwill, a cancellation keeping $115 of the $315.70 left, then $10 more given back afterwards.
+    const kept = await createBookingRecord(parties, {
+      status: 'CANCELLED',
+      cancelledAt: at(2),
+      cancellationReason: 'GUEST_CANCELLED',
+      cancellationFeeCents: 11500,
+      refundCents: 20070,
+      hostShareCents: 6000,
+    });
+    await createPaymentRecord(kept, {
+      status: 'PARTIALLY_REFUNDED',
+      refunds: [
+        {
+          amountCents: 2300,
+          reason: 'Goodwill',
+          kind: 'STAFF',
+          fundedBy: 'PLATFORM',
+          status: 'SUCCEEDED',
+          createdAt: at(3),
+        },
+        {
+          amountCents: 20070,
+          reason: 'Cancellation (GUEST_CANCELLED)',
+          kind: 'CANCELLATION',
+          fundedBy: 'HOST',
+          status: 'SUCCEEDED',
+          createdAt: at(2),
+        },
+        {
+          amountCents: 1000,
+          reason: 'Goodwill',
+          kind: 'STAFF',
+          fundedBy: 'PLATFORM',
+          status: 'SUCCEEDED',
+          createdAt: at(1),
+        },
+      ],
+    });
+    await createStaff();
+    const admin = await staffAgent();
+    const range = { from: nzToday(-1), to: nzToday(5) };
+
+    const { report } = (await admin.get('/api/v1/admin/reports/summary').query(range)).body;
+    // What the platform keeps: the trip paid once ($338.70), nothing of the first cancellation, and of the
+    // second $338.70 − $23 − $200.70 − $10 = $105.
+    expect(report.money).toMatchObject({
+      grossBookingsCents: 33870,
+      bookingRevenueCents: 33870 + 11500 - 1000,
+      cancellationFeesKeptCents: 11500,
+      refundsCents: 33870 + 3000 + 30870 + 2300 + 20070 + 1000,
+    });
+    // Only the $10 after the cancellation gives back GST: $1.30.
+    expect(report.gst).toMatchObject({ givenBackCents: 130, inCancellationFeesCents: 1500 });
+
+    const overview = await admin.get('/api/v1/admin/dashboard').query(range);
+    expect(overview.body.figures.bookingRevenueCents).toBe(report.money.bookingRevenueCents);
+  });
+
+  it('leave checkouts that ended unpaid out of the bookings made, the Bookings CSV and the staff lists', async () => {
+    const host = await createHost();
+    const guest = await createUser();
+    const vehicle = await createVehicle(host._id);
+    const parties = { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id };
+    const history = (...statuses: string[]) =>
+      statuses.map((status) => ({ status, at: new Date() })) as never;
+    const confirmed = await createBookingRecord(parties);
+    // A request the Host didn't answer was made; a checkout left unpaid, timed out or replaced wasn't.
+    const request = await createBookingRecord(parties, {
+      status: 'EXPIRED',
+      statusHistory: history('PAYMENT_PENDING', 'PENDING', 'EXPIRED'),
+    });
+    await createBookingRecord(parties, {
+      status: 'EXPIRED',
+      statusHistory: history('PAYMENT_PENDING', 'EXPIRED'),
+    });
+    await createBookingRecord(parties, {
+      status: 'PAYMENT_PENDING',
+      statusHistory: history('PAYMENT_PENDING'),
+    });
+    await createStaff();
+    const admin = await staffAgent();
+    const range = { from: nzToday(-1), to: nzToday(20) };
+
+    const { report } = (await admin.get('/api/v1/admin/reports/summary').query(range)).body;
+    expect(report.bookings).toMatchObject({ created: 2, byStatus: { CONFIRMED: 1, EXPIRED: 1 } });
+    const csv = rows(
+      (await admin.get('/api/v1/admin/reports/export').query({ ...range, type: 'bookings' })).text,
+    );
+    expect(
+      csv
+        .slice(1)
+        .map((row) => row[0])
+        .sort(),
+    ).toEqual([confirmed.ref, request.ref].sort());
+
+    const list = (await admin.get('/api/v1/admin/bookings')).body;
+    expect(list.total).toBe(2);
+    expect((await admin.get('/api/v1/admin/bookings').query({ status: 'EXPIRED' })).body.total).toBe(1);
+    const person = (await admin.get(`/api/v1/admin/users/${guest.id}`)).body.user;
+    expect(person.bookings.map((booking: { ref: string }) => booking.ref).sort()).toEqual(
+      [confirmed.ref, request.ref].sort(),
+    );
+  });
+
   it('refuses the export for support staff', async () => {
     await createStaff('sam@example.co.nz', 'SUPPORT');
     const support = await staffAgent('sam@example.co.nz');

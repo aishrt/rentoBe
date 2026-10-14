@@ -9,8 +9,10 @@ import { HttpError } from '../../lib/http-error.js';
 import { formatNzdExact } from '../../lib/format.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { BookingModel, type Booking, type ExtraChargeType } from '../bookings/booking.model.js';
+import { recordCaseChargeChange } from '../incidents/incidents.service.js';
 import { notify } from '../notifications/notify.js';
 import { scheduleExtraChargePayout } from '../payouts/payouts.service.js';
+import { checkFailedPayments } from '../risk/risk-signals.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import { UserModel } from '../users/user.model.js';
 import { PaymentModel, type PaymentDocument } from './payment.model.js';
@@ -46,9 +48,14 @@ export interface NewExtraCharge {
    * checked in the same write so two staff charging at once can't pass it together (409 OVER_CAP otherwise).
    */
   capCents?: number;
+  /** With `capCents`: only the case's charges of these types count towards it (all of them without). */
+  capTypes?: readonly ExtraChargeType[];
 }
 
-/** Adds a charge to the booking and queues collecting it. Resolves with the charge's id. */
+/**
+ * Adds a charge to the booking and queues collecting it. Resolves with the charge's id. Pass a transaction, so
+ * the charge and its collection are saved together (a charge saved without its job would never be collected).
+ */
 export async function addExtraCharge(
   bookingId: Id | string,
   charge: NewExtraCharge,
@@ -85,6 +92,7 @@ export async function addExtraCharge(
                             ],
                           },
                           { $ne: ['$$other.status', 'CANCELLED'] },
+                          ...(charge.capTypes ? [{ $in: ['$$other.type', [...charge.capTypes]] }] : []),
                         ],
                       },
                     },
@@ -155,36 +163,49 @@ async function savedCard(booking: BookingRecord): Promise<string | undefined> {
  */
 async function chargeSucceeded(payment: PaymentDocument, session: ClientSession, now = new Date()) {
   if (payment.status === 'REFUNDED' || payment.status === 'PARTIALLY_REFUNDED') return;
+  const current = await BookingModel.findById(payment.bookingId)
+    .select('ref extraCharges._id extraCharges.status extraCharges.paymentId')
+    .session(session)
+    .lean<BookingRecord>();
+  const existing = current?.extraCharges.find((candidate) => candidate._id?.equals(payment.extraChargeId!));
   // Taken for a charge staff cancelled meanwhile (its collection was running as they cancelled it): it's
   // recorded as paid, given back in full by `payment.refundUnwanted`, and staff are told (plan §8.1, item 11).
-  const cancelled =
-    payment.status === 'CANCELLED' ||
-    Boolean(
-      await BookingModel.exists({
-        _id: payment.bookingId,
-        extraCharges: mongoose.trusted({ $elemMatch: { _id: payment.extraChargeId, status: 'CANCELLED' } }),
-      }).session(session),
-    );
+  const cancelled = payment.status === 'CANCELLED' || existing?.status === 'CANCELLED';
+  // A second payment for a charge another payment has paid already: given back in full the same way.
+  const paidTwice =
+    !cancelled &&
+    existing?.status === 'SUCCEEDED' &&
+    Boolean(existing.paymentId && !existing.paymentId.equals(payment._id));
   if (payment.status !== 'SUCCEEDED') {
     payment.status = 'SUCCEEDED';
     payment.failureReason = undefined;
     await payment.save({ session });
   }
-  if (cancelled) {
+  if (cancelled || paidTwice) {
     await enqueue(
       'payment.refundUnwanted',
-      { paymentId: payment.id, reason: 'CHARGE_CANCELLED' },
+      { paymentId: payment.id, reason: cancelled ? 'CHARGE_CANCELLED' : 'CHARGE_DUPLICATE' },
       { uniqueKey: `refund-unwanted:${payment.id}`, refId: payment.bookingId.toString(), session },
     );
-    const ref = (await BookingModel.findById(payment.bookingId).select('ref').session(session).lean())?.ref;
+    const ref = current?.ref;
+    const amount = formatNzdExact(payment.amountCents);
+    const booking = ref ?? payment.bookingId.toString();
     await alertStaff(
-      {
-        type: 'EXTRA_CHARGE_TAKEN_AFTER_CANCEL',
-        title: `A cancelled charge on ${ref ?? 'a booking'} was paid`,
-        body: `the ${formatNzdExact(payment.amountCents)} extra charge on booking ${ref ?? payment.bookingId.toString()} went through as it was being cancelled. It's being refunded in full automatically; check it in Stripe if that doesn't go through.`,
-        link: ref ? `/admin/bookings/${ref}` : '/admin/payments',
-        dedupeKey: `EXTRA_CHARGE_TAKEN_AFTER_CANCEL:${payment.id}`,
-      },
+      cancelled
+        ? {
+            type: 'EXTRA_CHARGE_TAKEN_AFTER_CANCEL',
+            title: `A cancelled charge on ${ref ?? 'a booking'} was paid`,
+            body: `the ${amount} extra charge on booking ${booking} went through as it was being cancelled. It's being refunded in full automatically; check it in Stripe if that doesn't go through.`,
+            link: ref ? `/admin/bookings/${ref}` : '/admin/payments',
+            dedupeKey: `EXTRA_CHARGE_TAKEN_AFTER_CANCEL:${payment.id}`,
+          }
+        : {
+            type: 'EXTRA_CHARGE_PAID_TWICE',
+            title: `An extra charge on ${ref ?? 'a booking'} was paid twice`,
+            body: `the ${amount} extra charge on booking ${booking} was paid a second time. The second payment is being refunded in full automatically; check it in Stripe if that doesn't go through.`,
+            link: ref ? `/admin/bookings/${ref}` : '/admin/payments',
+            dedupeKey: `EXTRA_CHARGE_PAID_TWICE:${payment.id}`,
+          },
       { session },
     );
     return;
@@ -286,8 +307,59 @@ async function chargeFailed(
 }
 
 /**
+ * The charge's PaymentIntent and its payment record, made once per charge: created under a key fixed for the
+ * charge (a retry after a timeout, or the job running twice at once, gets the same one back from Stripe) and
+ * recorded before anything is charged, so whatever happens to it (a webhook, the pay link) is applied to it.
+ * The same PaymentIntent is confirmed with the saved card and, after a decline, paid on the pay link, so the
+ * two can never both take the money.
+ */
+async function chargeIntent(booking: BookingRecord, charge: ExtraChargeRecord): Promise<PaymentDocument> {
+  const chargeId = charge._id!.toString();
+  const customer = await ensureCustomer(booking.guestId.toString());
+  const intent = await stripe().paymentIntents.create(
+    {
+      amount: charge.amountCents,
+      currency: CHARGE_CURRENCY,
+      customer,
+      // A card the Guest pays with on the pay link is saved for later charges too.
+      setup_future_usage: 'off_session',
+      automatic_payment_methods: { enabled: true },
+      description: `Rento Vroom ${booking.ref}: ${charge.description}`,
+      metadata: {
+        purpose: 'extra_charge',
+        bookingId: booking._id.toString(),
+        bookingRef: booking.ref,
+        extraChargeId: chargeId,
+      },
+    },
+    { idempotencyKey: `extra-charge-${chargeId}` },
+  );
+  try {
+    const [created] = await PaymentModel.create([
+      {
+        bookingId: booking._id,
+        type: 'EXTRA_CHARGE',
+        extraChargeId: charge._id,
+        stripePaymentIntentId: intent.id,
+        amountCents: charge.amountCents,
+        status: 'PENDING',
+      },
+    ]);
+    return created!;
+  } catch (error) {
+    // Recorded a moment ago by the same job running at the same time.
+    if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) {
+      const found = await PaymentModel.findOne({ stripePaymentIntentId: intent.id });
+      if (found) return found;
+    }
+    throw error;
+  }
+}
+
+/**
  * `extraCharge.collect`: charges one extra charge to the saved card, off-session. A decline keeps the
- * PaymentIntent for the pay link and tries again tomorrow, up to 3 times.
+ * PaymentIntent for the pay link and tries again tomorrow, up to 3 times. Any other error (a timeout, Stripe
+ * being down) is thrown, so the job runs again with the same idempotency keys and never charges twice.
  */
 export async function collectExtraCharge(
   bookingId: string,
@@ -303,91 +375,59 @@ export async function collectExtraCharge(
     type: 'EXTRA_CHARGE',
     extraChargeId: charge._id,
   }).sort({ createdAt: -1 });
-  if (existing?.status === 'SUCCEEDED') return 'skipped';
+  if (existing && PAID_STATUSES.includes(existing.status)) return 'skipped';
+  const payment = existing ?? (await chargeIntent(booking, charge));
 
   const client = stripe();
-  const customer = await ensureCustomer(booking.guestId.toString());
   const method = await savedCard(booking);
-  const metadata = {
-    purpose: 'extra_charge',
-    bookingId: booking._id.toString(),
-    bookingRef: booking.ref,
-    extraChargeId: chargeId,
-  };
-  const description = `Rento Vroom ${booking.ref}: ${charge.description}`;
   let intent: Stripe.PaymentIntent;
   let failure: string | undefined;
-  try {
-    if (!method) throw new HttpError(409, 'NO_SAVED_CARD', 'there’s no saved card for this booking');
-    // One PaymentIntent per charge: a retry confirms the same one again, so the pay link and the retries
-    // can never both take the money.
-    intent = existing
-      ? await client.paymentIntents.confirm(
-          existing.stripePaymentIntentId,
-          { payment_method: method, off_session: true },
-          { idempotencyKey: `extra-charge-${chargeId}-${attempt}` },
-        )
-      : await client.paymentIntents.create(
-          {
-            amount: charge.amountCents,
-            currency: CHARGE_CURRENCY,
-            customer,
-            payment_method: method,
-            off_session: true,
-            confirm: true,
-            description,
-            metadata,
-          },
-          { idempotencyKey: `extra-charge-${chargeId}-${attempt}` },
-        );
-  } catch (error) {
-    // A decline comes back as an error with the PaymentIntent, which the pay link then completes.
-    const declined = error instanceof Stripe.errors.StripeCardError ? error.payment_intent : undefined;
-    failure = error instanceof Error ? error.message : 'the card was declined';
-    intent =
-      declined ??
-      (existing
-        ? await client.paymentIntents.retrieve(existing.stripePaymentIntentId)
-        : await client.paymentIntents.create(
-            {
-              amount: charge.amountCents,
-              currency: CHARGE_CURRENCY,
-              customer,
-              setup_future_usage: 'off_session',
-              automatic_payment_methods: { enabled: true },
-              description,
-              metadata,
-            },
-            { idempotencyKey: `extra-charge-${chargeId}-link` },
-          ));
+  if (!method) {
+    failure = 'there’s no saved card for this booking';
+    intent = await client.paymentIntents.retrieve(payment.stripePaymentIntentId);
+  } else {
+    try {
+      intent = await client.paymentIntents.confirm(
+        payment.stripePaymentIntentId,
+        {
+          payment_method: method,
+          off_session: true,
+          return_url: `${siteUrl()}${payLinkPath(payment.id)}`,
+        },
+        { idempotencyKey: `extra-charge-${chargeId}-confirm-${attempt}` },
+      );
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeCardError) {
+        // A decline: the PaymentIntent waits for the Guest on the pay link.
+        failure = error.message || 'the card was declined';
+        intent =
+          error.payment_intent ?? (await client.paymentIntents.retrieve(payment.stripePaymentIntentId));
+      } else {
+        // Paid meanwhile on the pay link, or charged although the answer was lost: applied as paid. Anything
+        // else is tried again by the job, with the same key.
+        const current = await client.paymentIntents
+          .retrieve(payment.stripePaymentIntentId)
+          .catch(() => undefined);
+        if (current?.status !== 'succeeded') throw error;
+        intent = current;
+      }
+    }
   }
 
-  const { payment, cancelledNow } = await withTransaction(async (session) => {
-    const found = await PaymentModel.findOne({ stripePaymentIntentId: intent.id }).session(session);
-    const record =
-      found ??
-      (
-        await PaymentModel.create(
-          [
-            {
-              bookingId: booking._id,
-              type: 'EXTRA_CHARGE',
-              extraChargeId: charge._id,
-              stripePaymentIntentId: intent.id,
-              amountCents: charge.amountCents,
-              status: 'PENDING',
-            },
-          ],
-          { session },
-        )
-      )[0]!;
+  const cancelledNow = await withTransaction(async (session) => {
+    const record = (await PaymentModel.findById(payment._id).session(session)) ?? payment;
     await BookingModel.updateOne(
-      { _id: booking._id, 'extraCharges._id': charge._id },
+      {
+        _id: booking._id,
+        extraCharges: mongoose.trusted({
+          $elemMatch: { _id: charge._id, status: { $in: ['PENDING', 'FAILED'] } },
+        }),
+      },
       { $set: { 'extraCharges.$.paymentId': record._id } },
       { session },
     );
     // Staff may have cancelled the charge while it was being collected: checked again here.
-    const cancelledNow = Boolean(
+    const cancelled = Boolean(
       await BookingModel.exists({
         _id: booking._id,
         extraCharges: mongoose.trusted({ $elemMatch: { _id: charge._id, status: 'CANCELLED' } }),
@@ -396,15 +436,19 @@ export async function collectExtraCharge(
     if (intent.status === 'succeeded') {
       // A cancelled charge's payment is given back (chargeSucceeded).
       await chargeSucceeded(record, session, now);
-    } else if (cancelledNow) {
-      record.status = 'CANCELLED';
-      await record.save({ session });
+    } else if (cancelled) {
+      if (record.status === 'PENDING' || record.status === 'FAILED') {
+        record.status = 'CANCELLED';
+        await record.save({ session });
+      }
     } else if (failure) {
       record.status = 'FAILED';
       record.failureReason = failure.slice(0, 300);
       await record.save({ session });
+      // Too many failed card payments in a day raise a risk flag, as for a booking's payment (plan §14).
+      await checkFailedPayments(booking.guestId, session, now);
     }
-    return { payment: record, cancelledNow };
+    return cancelled;
   });
 
   if (intent.status === 'succeeded') return 'paid';
@@ -413,6 +457,8 @@ export async function collectExtraCharge(
     await stopIntent(intent.id).catch(() => undefined);
     return 'skipped';
   }
+  // Still with the bank: its webhook says how it ends.
+  if (intent.status === 'processing') return 'skipped';
   await chargeFailed(booking, charge, payment, failure ?? 'it needs your confirmation', attempt);
   if (attempt < MAX_ATTEMPTS) {
     await enqueue(
@@ -446,6 +492,9 @@ export async function applyExtraChargeIntent(
       payment.failureReason = intent.last_payment_error.message.slice(0, 300);
       await payment.save({ session });
     }
+    // Too many failed card payments in a day raise a risk flag, as for a booking's payment (plan §14).
+    const booking = await BookingModel.findById(payment.bookingId).select('guestId').session(session).lean();
+    if (booking) await checkFailedPayments(booking.guestId, session);
   }
 }
 
@@ -464,11 +513,13 @@ const PAID_STATUSES: PaymentDocument['status'][] = ['SUCCEEDED', 'PARTIALLY_REFU
 
 /**
  * Where a pay link's charge stands: DUE until paid; PAID (with refundedCents once part of it is given back);
- * REFUNDED once all of it is; CANCELLED when staff took it off (plan §8.1, items 6 and 11).
+ * REFUNDED once all of it is; CANCELLED when staff took it off (plan §8.1, items 6 and 11). A charge paid
+ * another way (its saved card, say, while this link's payment waited) is PAID too, so the link takes nothing.
  */
 function payLinkStatus(payment: PaymentDocument, charge: ExtraChargeRecord | undefined) {
   if (charge?.status === 'CANCELLED' || payment.status === 'CANCELLED') return 'CANCELLED' as const;
   if (payment.status === 'REFUNDED') return 'REFUNDED' as const;
+  if (charge?.status === 'SUCCEEDED') return 'PAID' as const;
   return PAID_STATUSES.includes(payment.status) ? ('PAID' as const) : ('DUE' as const);
 }
 
@@ -535,7 +586,9 @@ async function stopIntent(intentId: string): Promise<Stripe.PaymentIntent> {
  * POST /admin/bookings/{id}/extra-charges/{chargeId}/cancel: staff with the refunds permission cancel a charge
  * that hasn't been paid, a mistake or one written off after its retries (plan §8.1, items 6 and 11). Its
  * PaymentIntent and retries stop, it's no longer owed (so it no longer stops the Guest closing their account),
- * its pay link says it was cancelled, the Guest is told and the audit log records why.
+ * its pay link says it was cancelled, the Guest is told, its case (if a case added it) shows it was cancelled
+ * and the audit log records why. `corrected`: an extra-kilometre charge worked out again after staff corrected
+ * a reading, which the Guest is told instead.
  */
 export async function cancelExtraCharge(
   staffId: string,
@@ -544,6 +597,7 @@ export async function cancelExtraCharge(
   reason: string,
   ip?: string,
   now = new Date(),
+  { corrected = false }: { corrected?: boolean } = {},
 ): Promise<void> {
   const booking = await BookingModel.findById(bookingId).lean<BookingRecord>();
   const charge = mongoose.isValidObjectId(chargeId)
@@ -604,24 +658,47 @@ export async function cancelExtraCharge(
       { $set: { status: 'CANCELLED', finishedAt: now } },
       { session },
     );
-    const guest = await UserModel.findById(booking.guestId).select('firstName').session(session).lean();
     const amount = formatNzdExact(charge.amountCents);
+    // The case's history keeps every change to its charges (spec §15).
+    if (charge.incidentId) {
+      await recordCaseChargeChange(
+        charge.incidentId,
+        {
+          action: 'CHARGE_CANCELLED',
+          actorId: staffId,
+          extraChargeId: charge._id!,
+          note: `The ${amount} charge to the guest was cancelled: ${charge.description}.`,
+          now,
+        },
+        session,
+      );
+    }
+    const guest = await UserModel.findById(booking.guestId).select('firstName').session(session).lean();
     await notify(
       {
         userId: booking.guestId,
         type: 'EXTRA_CHARGE_CANCELLED',
-        title: `Charge cancelled for ${booking.ref}`,
-        body: `The ${amount} charge (${charge.description}) is cancelled. There’s nothing to pay.`,
+        title: `Charge ${corrected ? 'corrected' : 'cancelled'} for ${booking.ref}`,
+        body: corrected
+          ? `The ${amount} charge (${charge.description}) is cancelled: it’s worked out again from corrected readings.`
+          : `The ${amount} charge (${charge.description}) is cancelled. There’s nothing to pay.`,
         link: `/trips/${booking.ref}`,
         email: {
           template: 'tripNotice',
           props: {
             firstName: guest?.firstName ?? 'there',
-            heading: 'A charge for your trip is cancelled',
-            paragraphs: [
-              `We’ve cancelled the ${amount} charge for your trip in the ${booking.vehicleSnapshot.title}: ${charge.description}.`,
-              'There’s nothing to pay, and the payment link we sent you for it no longer takes payments.',
-            ],
+            heading: corrected
+              ? 'A charge for your trip is being corrected'
+              : 'A charge for your trip is cancelled',
+            paragraphs: corrected
+              ? [
+                  `We’ve cancelled the ${amount} charge for your trip in the ${booking.vehicleSnapshot.title} (${charge.description}): our team corrected the odometer readings it was worked out from.`,
+                  'If there’s still something to pay, it’s charged to your saved card and you’ll get a receipt. The payment link we sent you for the old charge no longer takes payments.',
+                ]
+              : [
+                  `We’ve cancelled the ${amount} charge for your trip in the ${booking.vehicleSnapshot.title}: ${charge.description}.`,
+                  'There’s nothing to pay, and the payment link we sent you for it no longer takes payments.',
+                ],
             rows: [
               { label: 'Booking', value: booking.ref },
               { label: 'Charge', value: charge.description },
@@ -651,29 +728,43 @@ export async function cancelExtraCharge(
   });
 }
 
+/** Why `payment.refundUnwanted` gives an extra charge's payment back. */
+export type UnwantedChargeReason = 'CHARGE_CANCELLED' | 'CHARGE_DUPLICATE';
+
 /**
- * `payment.refundUnwanted` for a charge cancelled while it was being collected (CHARGE_CANCELLED): what Stripe
- * took is refunded in full, funded by the platform, and the Guest is told (plan §8.1, item 11). Resolves whether
- * a refund was made.
+ * `payment.refundUnwanted` for an extra charge's payment nobody owes: one taken for a charge cancelled while it
+ * was being collected (CHARGE_CANCELLED), or a second payment for a charge another one had paid already
+ * (CHARGE_DUPLICATE). What Stripe took is refunded in full, funded by the platform, and the Guest is told
+ * (plan §8.1, items 11 and 14). Resolves whether a refund was made.
  */
-export async function refundCancelledCharge(paymentId: string): Promise<boolean> {
+export async function refundUnwantedCharge(
+  paymentId: string,
+  reason: UnwantedChargeReason = 'CHARGE_CANCELLED',
+): Promise<boolean> {
   const payment = await PaymentModel.findById(paymentId);
   if (!payment || payment.type !== 'EXTRA_CHARGE') return false;
   if (payment.refunds.some((refund) => refund.status !== 'FAILED')) return false;
   const booking = await BookingModel.findById(payment.bookingId).lean<BookingRecord>();
   const charge = booking?.extraCharges.find((candidate) => candidate._id?.equals(payment.extraChargeId!));
-  if (!booking || charge?.status !== 'CANCELLED') return false;
+  if (!booking || !charge) return false;
+  const unwanted =
+    reason === 'CHARGE_CANCELLED'
+      ? charge.status === 'CANCELLED'
+      : charge.status === 'SUCCEEDED' &&
+        Boolean(charge.paymentId && !charge.paymentId.equals(payment._id));
+  if (!unwanted) return false;
   const client = stripe();
   const intent = await client.paymentIntents.retrieve(payment.stripePaymentIntentId);
   if (intent.status !== 'succeeded') return false;
+  const key = reason === 'CHARGE_CANCELLED' ? 'charge-cancelled' : 'paid-twice';
   const refund = await client.refunds.create(
     {
       payment_intent: payment.stripePaymentIntentId,
       amount: payment.amountCents,
-      reason: 'requested_by_customer',
+      reason: reason === 'CHARGE_CANCELLED' ? 'requested_by_customer' : 'duplicate',
       metadata: { bookingId: booking._id.toString() },
     },
-    { idempotencyKey: `refund-${payment.id}-charge-cancelled` },
+    { idempotencyKey: `refund-${payment.id}-${key}` },
   );
   const status =
     refund.status === 'succeeded' ? 'SUCCEEDED' : refund.status === 'failed' ? 'FAILED' : 'PENDING';
@@ -682,7 +773,7 @@ export async function refundCancelledCharge(paymentId: string): Promise<boolean>
     if (!fresh || fresh.refunds.some((item) => item.stripeRefundId === refund.id)) return;
     fresh.refunds.push({
       amountCents: refund.amount,
-      reason: 'Charge cancelled',
+      reason: reason === 'CHARGE_CANCELLED' ? 'Charge cancelled' : 'Charge paid twice',
       kind: 'STAFF',
       fundedBy: 'PLATFORM',
       stripeRefundId: refund.id,
@@ -697,7 +788,7 @@ export async function refundCancelledCharge(paymentId: string): Promise<boolean>
         {
           type: 'REFUND_FAILED',
           title: 'A refund failed',
-          body: `the refund of a cancelled ${formatNzdExact(refund.amount)} charge on booking ${booking.ref} failed (${refund.failure_reason ?? 'unknown'}). Please return the money to the guest another way.`,
+          body: `the refund of ${reason === 'CHARGE_CANCELLED' ? 'a cancelled' : 'a second payment for a'} ${formatNzdExact(refund.amount)} charge on booking ${booking.ref} failed (${refund.failure_reason ?? 'unknown'}). Please return the money to the guest another way.`,
           link: `/admin/bookings/${booking.ref}`,
           dedupeKey: `REFUND_FAILED:${refund.id}`,
         },
@@ -710,9 +801,12 @@ export async function refundCancelledCharge(paymentId: string): Promise<boolean>
         userId: booking.guestId,
         type: 'REFUND_ISSUED',
         title: `${formatNzdExact(refund.amount)} refunded`,
-        body: `The charge for ${charge.description} on ${booking.ref} was cancelled, so its payment is refunded.`,
+        body:
+          reason === 'CHARGE_CANCELLED'
+            ? `The charge for ${charge.description} on ${booking.ref} was cancelled, so its payment is refunded.`
+            : `The charge for ${charge.description} on ${booking.ref} was paid twice, so the second payment is refunded.`,
         link: `/trips/${booking.ref}`,
-        dedupeKey: `REFUND_ISSUED:${payment.id}:charge-cancelled`,
+        dedupeKey: `REFUND_ISSUED:${payment.id}:${key}`,
       },
       { session },
     );

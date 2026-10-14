@@ -3,7 +3,7 @@ import { forbidden, unauthenticated } from '../lib/http-error.js';
 import { ACCESS_COOKIE } from '../modules/auth/auth.cookies.js';
 import { verifyAccessToken } from '../modules/auth/auth.tokens.js';
 import { UserModel, type Permission, type Role } from '../modules/users/user.model.js';
-import { effectiveRoles } from '../modules/users/user.service.js';
+import { effectiveRoles, isStaff } from '../modules/users/user.service.js';
 
 /** Browsers send the access token as a cookie; future mobile apps send it as a Bearer header (plan §6.1). */
 export function readAccessToken(req: Request): string | undefined {
@@ -25,17 +25,22 @@ const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
  * Suspending or closing an account deletes its sessions, but its access token stays valid for up to
- * 15 minutes. Reads may finish that time; every change is refused at once (plan §8.2: a suspended user's
- * messages, bookings and listings stop straight away). Closed accounts are suspended too.
+ * 15 minutes. A member's reads may finish that time; every change is refused at once (plan §8.2: a
+ * suspended user's messages, bookings and listings stop straight away). Closed accounts are suspended too.
+ * A token with a staff role is checked on every request, reads included, and its roles replaced with the
+ * account's current ones: a support member removed from the team, or suspended, loses staff access to
+ * bookings, cases and files at once (plan §6.2), not when the token expires. Staff are few, so it's cheap.
  */
 export const requireAuth: RequestHandler = async (req, _res, next) => {
   const token = readAccessToken(req);
   const auth = token ? verifyAccessToken(token) : null;
   if (!auth) return next(unauthenticated());
-  if (!READ_METHODS.has(req.method)) {
+  const staffToken = isStaff(auth.roles);
+  if (staffToken || !READ_METHODS.has(req.method)) {
     try {
-      const user = await UserModel.findById(auth.userId).select('status').lean();
+      const user = await UserModel.findById(auth.userId).select('email roles status').lean();
       if (!user || user.status !== 'ACTIVE') return next(unauthenticated());
+      if (staffToken) auth.roles = effectiveRoles(user);
     } catch (error) {
       return next(error);
     }

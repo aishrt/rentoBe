@@ -149,7 +149,7 @@ export const adminVehicleSchema = z
     }),
     upcomingBookings: z.array(bookingRowSchema).optional().meta({
       description:
-        'While the car is suspended: its pending, confirmed and current bookings, for staff to keep or cancel (plan §8.2)',
+        'While the car is suspended, back for review over its key details, or rejected: its pending, confirmed and current bookings, for staff to keep or cancel (plan §8.2). Rejecting a car back for review leaves them booked',
     }),
     host: z.object({
       id: z.string(),

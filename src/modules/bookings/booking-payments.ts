@@ -278,29 +278,31 @@ export async function applyPaymentIntent(
   }
 }
 
-/** Whether a car can take new bookings: not suspended by staff, and its Host not suspended (plan §8.2). */
+/**
+ * Whether a car can take new bookings: not suspended by staff, its Host not suspended (plan §8.2), and not
+ * rejected or a draft (a car rejected after a review of its key details keeps its bookings for staff, but none
+ * is confirmed on it). A car back for review keeps and confirms the bookings it has.
+ */
 export async function vehicleTakesBookings(vehicleId: BookingDocument['vehicleId'], session?: ClientSession) {
   const live = await VehicleModel.exists({
     _id: vehicleId,
-    status: mongoose.trusted({ $ne: 'SUSPENDED' }),
+    status: mongoose.trusted({ $nin: ['SUSPENDED', 'REJECTED', 'DRAFT'] }),
     hostSuspended: mongoose.trusted({ $ne: true }),
   }).session(session ?? null);
   return Boolean(live);
 }
 
 export const vehicleSuspended = () =>
-  new HttpError(
-    409,
-    'VEHICLE_SUSPENDED',
-    'This car is suspended at the moment, so it can’t take new bookings.',
-  );
+  new HttpError(409, 'VEHICLE_SUSPENDED', 'This car can’t take new bookings at the moment.');
 
 /**
  * DUPLICATE: a second payment for a booking another payment already made (the Guest paid again before the
  * first was applied), refunded in full, or released if only authorised. CHARGE_CANCELLED: an extra charge's
- * payment that went through as staff cancelled the charge, refunded in full.
+ * payment that went through as staff cancelled the charge, refunded in full. CHARGE_DUPLICATE: a second
+ * payment for an extra charge another payment had paid already, refunded in full.
  */
-export type UnwantedReason = 'DATES_TAKEN' | 'CAR_UNAVAILABLE' | 'DUPLICATE' | 'CHARGE_CANCELLED';
+export type UnwantedReason =
+  'DATES_TAKEN' | 'CAR_UNAVAILABLE' | 'DUPLICATE' | 'CHARGE_CANCELLED' | 'CHARGE_DUPLICATE';
 
 /**
  * A booking another payment just confirmed keeps no other authorisation on the card: each is recorded as
@@ -486,7 +488,10 @@ export async function releaseOtherPayments(
 ) {
   for (const other of await otherLivePayments(booking, payment)) {
     const intent = await cancelIntent(other).catch((error: unknown) => {
-      logger.warn({ err: error, paymentId: other.id }, 'Could not stop a second payment for an ended booking');
+      logger.warn(
+        { err: error, paymentId: other.id },
+        'Could not stop a second payment for an ended booking',
+      );
       return null;
     });
     if (intent) await withTransaction((session) => applyPaymentIntent(intent, session, now));

@@ -11,6 +11,7 @@ import {
   staffListSchema,
 } from '../src/modules/staff/staff.schemas.js';
 import { UserModel } from '../src/modules/users/user.model.js';
+import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent, testApp } from './helpers.js';
 
 // ADMIN_EMAIL is aroha@example.co.nz in tests (vitest.config.ts), the default of createStaff().
@@ -295,6 +296,32 @@ describe('GET /api/v1/admin/staff and DELETE /api/v1/admin/staff/:id', () => {
       .post('/api/v1/admin/staff/invites')
       .send({ email: 'sam@example.co.nz', firstName: 'Sam', lastName: 'Support' });
     expect(again.status).toBe(201);
+  });
+
+  it('takes away staff reads on member routes at once, with the access token they still hold', async () => {
+    await createStaff();
+    const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
+    const host = await createHost();
+    const guest = await createUser({ email: 'kiri@example.co.nz' });
+    const vehicle = await createVehicle(host._id);
+    const booking = await createBookingRecord({
+      guestId: guest._id,
+      hostId: host._id,
+      vehicleId: vehicle._id,
+    });
+    const samAgent = await staffAgent('sam@example.co.nz');
+    const asStaff = await samAgent.get(`/api/v1/bookings/${booking.ref}`);
+    expect(asStaff.status).toBe(200);
+    expect(asStaff.body.booking.role).toBe('STAFF');
+
+    const admin = await staffAgent();
+    expect((await admin.delete(`/api/v1/admin/staff/${sam.id}`)).status).toBe(204);
+    // Same token, no staff view of someone else's booking.
+    expect((await samAgent.get(`/api/v1/bookings/${booking.ref}`)).status).toBe(404);
+
+    // A suspended staff account can't read at all.
+    await UserModel.updateOne({ email: 'aroha@example.co.nz' }, { $set: { status: 'SUSPENDED' } });
+    expect((await admin.get(`/api/v1/bookings/${booking.ref}`)).status).toBe(401);
   });
 
   it("only removes support team members, so the admin can't be removed", async () => {

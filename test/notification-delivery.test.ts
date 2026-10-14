@@ -8,7 +8,7 @@ import { stripe } from '../src/integrations/stripe.js';
 import { consoleSmsOutbox } from '../src/integrations/sms/sms-sender.js';
 import type { JobContext } from '../src/jobs/handlers/index.js';
 import { sendNotificationJob } from '../src/jobs/handlers/notification-send.js';
-import type { JobDocument } from '../src/jobs/job.model.js';
+import { JobModel, type JobDocument } from '../src/jobs/job.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { twilioSignature } from '../src/modules/notifications/delivery-webhooks.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
@@ -308,5 +308,78 @@ describe('verification notices', () => {
       template: 'tripNotice',
       props: { heading: 'Please try your identity check again', url: expect.stringContaining('/account') },
     });
+  });
+});
+
+describe('sending again', () => {
+  async function textFor(dedupeKey: string) {
+    const user = await createUser({ email: 'hemi@example.co.nz' });
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { phone: '+64211234567', phoneVerifiedAt: new Date() } },
+    );
+    await notify({
+      userId: user._id,
+      type: 'PICKUP_REMINDER',
+      title: 'Pick-up soon',
+      sms: { body: `Text ${dedupeKey}`, urgent: true },
+      dedupeKey,
+    });
+    return (await NotificationModel.findOne({ dedupeKey, channel: 'SMS' }))!;
+  }
+
+  it('runs a failed text again from the jobs page, and never one that was sent', async () => {
+    const text = await textFor('RETRY:1');
+    // Its last attempt failed: the text is marked FAILED, and so is its job.
+    await NotificationModel.updateOne({ _id: text._id }, { $set: { status: 'FAILED', error: 'Twilio is down' } });
+    const job = (await JobModel.findOneAndUpdate(
+      { type: 'notification.send', 'payload.notificationId': text.id },
+      { $set: { status: 'FAILED', attempts: 5, lastError: 'Twilio is down' } },
+      { new: true },
+    ))!;
+    await createStaff();
+    const admin = await staffAgent();
+    const retried = await admin.post(`/api/v1/admin/jobs/${job.id}/retry`);
+    expect(retried.status).toBe(200);
+    const queued = await NotificationModel.findById(text._id).lean();
+    expect(queued).toMatchObject({ status: 'QUEUED' });
+    expect(queued).not.toHaveProperty('error');
+
+    const outbox = consoleSmsOutbox();
+    const before = outbox.length;
+    await sendNotificationJob({ notificationId: text.id }, context);
+    expect((await NotificationModel.findById(text._id))!.status).toBe('SENT');
+    expect(outbox.slice(before).map((sent) => sent.body)).toEqual(['Text RETRY:1']);
+
+    // A job that failed after its text went: running it again sends nothing more.
+    await JobModel.updateOne({ _id: job._id }, { $set: { status: 'FAILED' } });
+    expect((await admin.post(`/api/v1/admin/jobs/${job.id}/retry`)).status).toBe(200);
+    expect((await NotificationModel.findById(text._id))!.status).toBe('SENT');
+    await sendNotificationJob({ notificationId: text.id }, context);
+    expect(outbox.slice(before)).toHaveLength(1);
+  });
+
+  it('saves an event’s notifications together, so a retry still sends the text', async () => {
+    const original = NotificationModel.create.bind(NotificationModel);
+    vi.spyOn(NotificationModel, 'create')
+      .mockImplementationOnce(((...args: Parameters<typeof original>) => original(...args)) as never)
+      .mockImplementationOnce(() => {
+        throw new Error('The database went away');
+      });
+    await expect(textFor('TOGETHER:1')).rejects.toThrow('The database went away');
+    // The in-app one wasn't kept without its text.
+    expect(await NotificationModel.countDocuments({ dedupeKey: 'TOGETHER:1' })).toBe(0);
+
+    vi.mocked(NotificationModel.create).mockRestore();
+    await notify({
+      userId: (await UserModel.findOne({ email: 'hemi@example.co.nz' }))!._id,
+      type: 'PICKUP_REMINDER',
+      title: 'Pick-up soon',
+      sms: { body: 'Text TOGETHER:1', urgent: true },
+      dedupeKey: 'TOGETHER:1',
+    });
+    expect(
+      (await NotificationModel.find({ dedupeKey: 'TOGETHER:1' }).lean()).map((item) => item.channel).sort(),
+    ).toEqual(['IN_APP', 'SMS']);
   });
 });

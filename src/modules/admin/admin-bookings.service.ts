@@ -9,6 +9,7 @@ import { nzDayEnd, nzDayStart } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { AuditLogModel } from '../audit/audit-log.model.js';
 import { BookingModel, type Booking } from '../bookings/booking.model.js';
+import { madeBookingFilter } from '../bookings/made-bookings.js';
 import { refundIntent, statusAfterRefunds } from '../bookings/booking-payments.js';
 import { completeTrip, startTrip } from '../bookings/booking-transitions.js';
 import {
@@ -19,6 +20,7 @@ import {
 } from '../bookings/booking.service.js';
 import { afterTripCompleted } from '../bookings/trip-completion.js';
 import { IncidentModel } from '../incidents/incident.model.js';
+import { recordCaseChargeChange } from '../incidents/incidents.service.js';
 import { postSystemMessage } from '../messages/thread-core.js';
 import { notify } from '../notifications/notify.js';
 import { PaymentModel, type Payment } from '../payments/payment.model.js';
@@ -65,8 +67,10 @@ const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * user search does), the car, status and trip dates.
  */
 export async function listBookings(query: z.infer<typeof bookingListQuerySchema>) {
+  // Not a checkout still open, nor one that ended unpaid (abandoned, replaced or timed out).
   const filter: Record<string, unknown> = {
-    status: query.status ?? mongoose.trusted({ $ne: 'PAYMENT_PENDING' }),
+    ...madeBookingFilter(),
+    ...(query.status && { status: query.status }),
   };
   if (query.q) {
     if (/^RV-[A-Z0-9]{6}$/i.test(query.q)) {
@@ -381,6 +385,23 @@ export async function adminRefund(
     }
     // A refund Stripe refused at once alerted staff instead (refundIntent); the Guest hears once it goes.
     if (refund.status === 'FAILED') return;
+    // A charge a case added: the case's history shows the refund too (spec §15).
+    const refundedCharge = extraChargeId
+      ? booking.extraCharges.find((charge) => charge._id?.equals(extraChargeId))
+      : undefined;
+    if (refundedCharge?.incidentId) {
+      await recordCaseChargeChange(
+        refundedCharge.incidentId,
+        {
+          action: 'CHARGE_REFUNDED',
+          actorId: actor.userId,
+          extraChargeId: refundedCharge._id!,
+          note: `${formatNzdExact(refund.amountCents)} of the ${formatNzdExact(refundedCharge.amountCents)} charge to the guest was refunded: ${refundedCharge.description}.`,
+          now,
+        },
+        session,
+      );
+    }
     await notify(
       {
         userId: booking.guestId,

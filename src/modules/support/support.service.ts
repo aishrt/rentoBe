@@ -6,6 +6,7 @@ import { randomRef } from '../../lib/refs.js';
 import { BookingModel } from '../bookings/booking.model.js';
 import { notify } from '../notifications/notify.js';
 import { alertStaff } from '../staff/staff-alerts.js';
+import { findActiveStaff } from '../staff/staff.service.js';
 import { attachmentView, confirmSupportFiles } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import type {
@@ -198,14 +199,15 @@ export async function getMyTicket(userId: string, ref: string): Promise<SupportT
 
 /**
  * Tells support about the sender's reply: whoever has the ticket, as for a party's update on an incident,
- * or else the whole team (plan §7, admin alerts), so it doesn't wait unseen in the inbox.
+ * or else the whole team (plan §7, admin alerts), so it doesn't wait unseen in the inbox. One who has left
+ * the team or is suspended no longer counts: the whole team hears instead.
  */
 async function tellSupport(ticket: TicketRecord, message: TicketMessage, index: number) {
   const who = ticket.name?.trim() || 'The sender';
   const link = `/admin/support/${ticket.ref}`;
   const dedupeKey = `SUPPORT_TICKET_REPLY:${ticket.ref}:${index}`;
   const title = `${who} replied on ticket ${ticket.ref}`;
-  if (ticket.assignedTo) {
+  if (ticket.assignedTo && (await findActiveStaff(ticket.assignedTo.toString()))) {
     // Not about their own message, e.g. a staff member following up a ticket they opened themselves.
     if (message.authorId?.equals(ticket.assignedTo)) return;
     await notify({

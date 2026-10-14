@@ -251,7 +251,7 @@ describe('a Guest no-show cancelled after the trip’s payout was sent (plan §8
 });
 
 describe('a cancellation after a Host-funded refund (plan §8.1, items 10 and 15)', () => {
-  it('keeps the Host’s share of the kept fee at the policy’s, and recovers the refund from them once', async () => {
+  it('leaves the Host neither a share nor a debt once the Guest has everything back', async () => {
     // Within 24 hours of the start: the Flexible policy gives half back.
     const { booking, payment, payout, guest, host } = await confirmed(new Date(Date.now() + 12 * HOUR_MS));
     const agent = await signIn(guest.email);
@@ -282,14 +282,124 @@ describe('a cancellation after a Host-funded refund (plan §8.1, items 10 and 15
 
     const cancelled = await agent.post(`/api/v1/bookings/${booking.ref}/cancel`);
     expect(cancelled.status).toBe(200);
-    // The policy's refund, up to the $138.70 left.
-    expect(cancelled.body.booking.cancellation).toMatchObject({ refundCents: 13_870 });
-    expect((await BookingModel.findById(booking._id).lean())!.hostShareCents).toBe(policyShare);
+    // The policy's refund, up to the $138.70 left: the Guest has all $338.70 back, so nothing is kept.
+    expect(cancelled.body.booking.cancellation).toMatchObject({ refundCents: 13_870, feeCents: 0 });
+    // $53.15 of the $200 the policy would have given back anyway: the Host's part of the rest ($117.48) covers
+    // their whole share of the kept fee, so the two cancel out instead of leaving the Host below nothing.
+    expect((await BookingModel.findById(booking._id).lean())!.hostShareCents).toBe(0);
     expect((await PayoutModel.findById(payout._id).lean())!.status).toBe('CANCELLED');
-    expect(
-      (await PayoutModel.findOne({ bookingId: booking._id, type: 'CANCELLATION_FEE' }).lean())!.amountCents,
-    ).toBe(policyShare);
-    expect(await owedFor(host._id, 're_staff')).toBe(16_000);
+    expect(await PayoutModel.exists({ bookingId: booking._id, type: 'CANCELLATION_FEE' })).toBeNull();
+    expect(await owedFor(host._id, 're_staff')).toBeUndefined();
+    expect((await PaymentModel.findById(payment._id).lean())!.refunds[0]).toMatchObject({
+      hostCents: 0,
+      hostReliefCents: 16_000,
+    });
+  });
+
+  it('settles a paid trip payout with what the Host no longer pays for an earlier refund', async () => {
+    // Checked in, and its payout sent, but still confirmed: staff can cancel it as a platform cancellation.
+    const { booking, payment, payout, host } = await confirmed(new Date(Date.now() - 30 * HOUR_MS));
+    await ConditionReportModel.create({
+      bookingId: booking._id,
+      stage: 'CHECK_IN',
+      submittedBy: host._id,
+      odometer: 45_000,
+      fuelOrBatteryPct: 80,
+      photos: [],
+    });
+    expect(await runPayout(payout.id)).toBe('paid');
+    await createStaff();
+    const admin = await staffAgent();
+    // Refunded after the payout went: the Host's $40 share is owed off their next payout.
+    vi.mocked(client.refunds.create).mockResolvedValueOnce({
+      id: 're_late',
+      status: 'succeeded',
+    } as Stripe.Response<Stripe.Refund>);
+    const refunded = await admin
+      .post(`/api/v1/admin/bookings/${booking.ref}/refunds`)
+      .send({ amountCents: 5_000, reason: 'The car wasn’t clean', fundedBy: 'HOST' });
+    expect(refunded.body.hostRefund).toEqual({ recoveredFrom: 'NEXT_PAYOUT', owedCents: 4_000 });
+
+    // A platform cancellation gives the Guest the rest: the Host keeps nothing of the $213.60 sent, and owes
+    // back $173.60 of it, as the $40 already owed for the refund settles the rest.
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${booking.ref}/cancel`)
+      .send({ reason: 'PLATFORM', note: 'The car was unsafe' });
+    expect(cancelled.status).toBe(200);
+    expect(await owedFor(host._id, `trip-payout-${payout.id}`)).toBe(21_360 - 4_000);
+    expect(await owedFor(host._id, 're_late')).toBe(4_000);
+    expect((await PaymentModel.findById(payment._id).lean())!.refunds[0]).toMatchObject({
+      hostCents: 0,
+      hostReliefCents: 4_000,
+    });
+  });
+});
+
+describe('a cancellation while the trip’s payout failed without a clear answer (plan §8.1, item 16)', () => {
+  /** A trip under way whose transfer timed out after its deductions were reserved. */
+  async function timedOut() {
+    const parts = await hostCheckedIn();
+    vi.mocked(client.transfers.create).mockRejectedValueOnce(
+      new Stripe.errors.StripeAPIError({ message: 'Stripe is having a moment', statusCode: 500 }),
+    );
+    await expect(runPayout(parts.payout.id)).rejects.toThrow(/moment/);
+    expect((await PayoutModel.findById(parts.payout._id).lean())!.status).toBe('FAILED');
+    return parts;
+  }
+
+  it('records the transfer Stripe made after all, and settles it like a payout already sent', async () => {
+    const { booking, payout, host, admin } = await timedOut();
+    // The transfer went through at Stripe all the same.
+    vi.mocked(client.transfers.list).mockImplementation((() =>
+      Promise.resolve({
+        data: [{ id: 'tr_late', metadata: { payoutId: payout.id }, reversed: false }],
+      })) as unknown as typeof client.transfers.list);
+
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${booking.ref}/cancel`)
+      .send({ reason: 'GUEST_NO_SHOW', note: 'The guest never arrived' });
+    expect(cancelled.status).toBe(200);
+    expect(await PayoutModel.findById(payout._id).lean()).toMatchObject({
+      status: 'PAID',
+      stripeTransferId: 'tr_late',
+      amountCents: 21_360,
+    });
+    // No second payout: the Host keeps their share of the kept fee from the one sent, and owes the rest.
+    expect(await PayoutModel.exists({ bookingId: booking._id, type: 'CANCELLATION_FEE' })).toBeNull();
+    const share = (await BookingModel.findById(booking._id).lean())!.hostShareCents!;
+    expect(await owedFor(host._id, `trip-payout-${payout.id}`)).toBe(21_360 - share);
+  });
+
+  it('cancels one that wasn’t sent, and a retry already under way waits for it', async () => {
+    const { booking, payout, host, admin } = await timedOut();
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${booking.ref}/cancel`)
+      .send({ reason: 'GUEST_NO_SHOW', note: 'The guest never arrived' });
+    expect(cancelled.status).toBe(200);
+    // Cancelled, its reservation given back, and the kept fee's share paid instead.
+    expect(await PayoutModel.findById(payout._id).lean()).toMatchObject({
+      status: 'CANCELLED',
+      deductions: [],
+    });
+    expect(await PayoutModel.exists({ bookingId: booking._id, type: 'CANCELLATION_FEE' })).toBeTruthy();
+    // A retry finds it cancelled and sends nothing.
+    expect(await runPayout(payout.id)).toBe('skipped');
+    expect(client.transfers.create).toHaveBeenCalledTimes(1);
+    expect(await owedFor(host._id, `trip-payout-${payout.id}`)).toBeUndefined();
+  });
+
+  it('waits while a retry is sending it', async () => {
+    const { booking, payout, admin } = await timedOut();
+    // The retry is mid-transfer as staff cancel: it's being sent again.
+    duringTransfer = async () => {
+      const refused = await admin
+        .post(`/api/v1/admin/bookings/${booking.ref}/cancel`)
+        .send({ reason: 'GUEST_NO_SHOW', note: 'The guest never arrived' });
+      expect(refused.status).toBe(409);
+      expect(refused.body.error.code).toBe('PAYOUT_IN_FLIGHT');
+    };
+    expect(await runPayout(payout.id)).toBe('paid');
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('ACTIVE');
   });
 });
 

@@ -11,6 +11,8 @@ import {
 } from '../src/modules/users/driver-licence.service.js';
 import { syncIdentity } from '../src/modules/users/identity.service.js';
 import { UserModel } from '../src/modules/users/user.model.js';
+import { BookingModel } from '../src/modules/bookings/booking.model.js';
+import { createBookingRecord, createHost, createVehicle, nzDay } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent } from './helpers.js';
 
 /*
@@ -233,5 +235,184 @@ describe('the ID check and support’s decision on a licence', () => {
     session = { ...session, status: 'verified', last_verification_report: 'vr_1' };
     await syncIdentity(user.id);
     expect(await licenceStatus(user._id)).toBe('APPROVED');
+  });
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** The NZ calendar date a number of days from now, as 2026-10-14. */
+const nzToday = (days = 0) => nzDate(new Date(Date.now() + days * DAY_MS));
+const yearsBefore = (date: string, years: number) => `${Number(date.slice(0, 4)) - years}${date.slice(4)}`;
+const codes = (body: { problems: { code: string }[] }) => body.problems.map((problem) => problem.code);
+
+describe('dates on NZ calendars', () => {
+  it('keeps a licence valid through its expiry day', async () => {
+    const { agent } = await guestWithLicence({ expiry: nzToday() });
+    // A trip ending this evening is fine; one ending tomorrow isn't.
+    const tonight = await agent.get('/api/v1/me/checkout').query({ end: nzDay(0, '23:30') });
+    expect(codes(tonight.body)).not.toContain('LICENCE_EXPIRES');
+    const tomorrow = await agent.get('/api/v1/me/checkout').query({ end: nzDay(1, '09:00') });
+    expect(codes(tomorrow.body)).toContain('LICENCE_EXPIRES');
+    // Yesterday's has expired.
+    const expired = await save(agent, { expiry: nzToday(-1) });
+    expect(expired.status).toBe(400);
+    expect(expired.body.error.fields).toEqual({ expiry: 'This licence has expired' });
+  });
+
+  it('counts age and years licensed to the trip’s start, by calendar date', async () => {
+    // They turn 21 in five days, and will have held their licence a year by then.
+    const birthday = nzToday(5);
+    const { agent } = await guestWithLicence({
+      dob: yearsBefore(birthday, 21),
+      issuedAt: yearsBefore(birthday, 1),
+    });
+    const today = await agent.get('/api/v1/me/checkout');
+    expect(codes(today.body)).toEqual(expect.arrayContaining(['TOO_YOUNG', 'NOT_LICENSED_LONG_ENOUGH']));
+    // A trip starting on the birthday: old enough, and licensed long enough.
+    const onTheDay = await agent
+      .get('/api/v1/me/checkout')
+      .query({ start: nzDay(5, '00:30'), end: nzDay(8) });
+    expect(codes(onTheDay.body)).not.toContain('TOO_YOUNG');
+    expect(codes(onTheDay.body)).not.toContain('NOT_LICENSED_LONG_ENOUGH');
+    const dayBefore = await agent
+      .get('/api/v1/me/checkout')
+      .query({ start: nzDay(4, '23:30'), end: nzDay(8) });
+    expect(codes(dayBefore.body)).toContain('TOO_YOUNG');
+  });
+});
+
+describe('the country of an overseas licence', () => {
+  const overseas = (country: string) =>
+    ({ number: 'D1234567', class: 'OVERSEAS', version: undefined, country }) as Partial<typeof LICENCE>;
+
+  it('is kept as its ISO code, from a code or a name', async () => {
+    const { user, agent } = await guestWithLicence();
+    const usa = await save(agent, overseas('USA'));
+    expect(usa.status).toBe(200);
+    expect(usa.body.licence.country).toBe('US');
+    expect((await UserModel.findById(user._id).lean())!.driverLicence!.country).toBe('US');
+    expect((await save(agent, overseas('GB'))).body.licence.country).toBe('GB');
+    expect((await save(agent, overseas('England'))).body.licence.country).toBe('GB');
+
+    for (const country of ['Narnia', 'NZ']) {
+      const refused = await save(agent, overseas(country));
+      expect(refused.status).toBe(400);
+      expect(refused.body.error.fields).toEqual({ country: 'Choose the country that issued your licence' });
+    }
+
+    // Staff read the country's name.
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    expect((await staff.get(`/api/v1/admin/users/${user.id}`)).body.user.licence.country).toBe(
+      'United Kingdom',
+    );
+  });
+
+  it('reads a country saved as text as its code, so the same details keep their review', async () => {
+    const { user, agent } = await guestWithLicence();
+    await decided(user._id, 'APPROVED');
+    await UserModel.updateOne({ _id: user._id }, { $set: { 'driverLicence.country': 'New Zealand' } });
+    const same = await save(agent);
+    expect(same.body.licence).toMatchObject({ country: 'NZ', status: 'APPROVED' });
+  });
+});
+
+describe('a licence changed after booking', () => {
+  /** A Guest with an approved licence and identity, a request waiting for its Host and a confirmed trip. */
+  async function bookedGuest() {
+    const { user, agent } = await guestWithLicence();
+    await decided(user._id, 'APPROVED');
+    const host = await createHost();
+    const vehicle = await createVehicle(host._id);
+    const parties = { guestId: user._id, hostId: host._id, vehicleId: vehicle._id };
+    const request = await createBookingRecord(parties, {
+      status: 'PENDING',
+      instantBook: false,
+      startAt: new Date(Date.now() + 10 * DAY_MS),
+      endAt: new Date(Date.now() + 13 * DAY_MS),
+      requestExpiresAt: new Date(Date.now() + DAY_MS),
+    });
+    const confirmed = await createBookingRecord(parties, {
+      startAt: new Date(Date.now() + 20 * DAY_MS),
+      endAt: new Date(Date.now() + 22 * DAY_MS),
+    });
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    return { user, agent, request, confirmed, staff: await staffAgent() };
+  }
+
+  const alerts = (ref: string) =>
+    NotificationModel.countDocuments({
+      type: 'LICENCE_NOT_ELIGIBLE',
+      channel: 'IN_APP',
+      'payload.link': `/admin/bookings/${ref}`,
+    });
+
+  it('holds a request for support and flags a confirmed trip when the licence no longer covers it', async () => {
+    const { agent, request, confirmed, staff, user } = await bookedGuest();
+    // Renewed details that run out before either trip ends.
+    expect((await save(agent, { expiry: nzToday(11) })).status).toBe(200);
+    expect(await BookingModel.findById(request._id).lean()).toMatchObject({
+      status: 'PENDING',
+      verificationReview: { status: 'PENDING' },
+    });
+    expect((await BookingModel.findById(confirmed._id).lean())!.status).toBe('CONFIRMED');
+    expect(await alerts(request.ref)).toBe(1);
+    expect(await alerts(confirmed.ref)).toBe(1);
+    // The same details saved again don't alert again.
+    await save(agent, { expiry: nzToday(11) });
+    expect(await alerts(request.ref)).toBe(1);
+
+    // Support approve the details, but they still don't cover the trip: the request keeps waiting.
+    const approved = await staff
+      .post(`/api/v1/admin/users/${user.id}/licence-review`)
+      .send({ decision: 'APPROVE' });
+    expect(approved.body).toMatchObject({ licenceStatus: 'APPROVED', licenceNotEligible: [request.ref] });
+    expect((await BookingModel.findById(request._id).lean())!.verificationReview!.status).toBe('PENDING');
+
+    // New details still too short for the confirmed trip (flagged again), then turned down: the request is
+    // released, and the confirmed trip is flagged once more.
+    await save(agent, { expiry: nzToday(12) });
+    const rejected = await staff
+      .post(`/api/v1/admin/users/${user.id}/licence-review`)
+      .send({ decision: 'REJECT', note: 'The card is a copy.' });
+    expect(rejected.body.released).toEqual([request.ref]);
+    expect((await BookingModel.findById(request._id).lean())!.status).toBe('EXPIRED');
+    expect(await alerts(confirmed.ref)).toBe(3);
+    const email = await NotificationModel.findOne({
+      userId: user._id,
+      type: 'LICENCE_REJECTED',
+      channel: 'EMAIL',
+    }).lean();
+    expect(JSON.stringify(email!.payload)).toContain(`Your confirmed booking ${confirmed.ref} can’t start`);
+  });
+
+  it('releases every request when support turn the licence down, not only those waiting for them', async () => {
+    const { agent, request, user, staff } = await bookedGuest();
+    // Changed details go back to support; the request was already with its Host, and still is.
+    await save(agent, { expiry: '2035-05-01' });
+    expect((await BookingModel.findById(request._id).lean())!.verificationReview).toBeUndefined();
+    const rejected = await staff
+      .post(`/api/v1/admin/users/${user.id}/licence-review`)
+      .send({ decision: 'REJECT' });
+    expect(rejected.body.released).toEqual([request.ref]);
+    expect((await BookingModel.findById(request._id).lean())!.status).toBe('EXPIRED');
+  });
+
+  it('lets a held request go ahead once the licence is fixed and approved', async () => {
+    const { agent, request, user } = await bookedGuest();
+    await save(agent, { expiry: nzToday(11) });
+    expect((await BookingModel.findById(request._id).lean())!.verificationReview!.status).toBe('PENDING');
+    // Fixed with details the passed ID check confirms: the request goes back to its Host.
+    await decided(user._id, 'APPROVED', {
+      documentType: 'driving_license',
+      documentNumberHash: licenceNumberHash(LICENCE.number),
+      documentDobHash: documentDobHash(LICENCE.dob),
+      documentDobMatched: true,
+    });
+    const fixed = await save(agent, { expiry: '2036-05-01' });
+    expect(fixed.body.licence.status).toBe('APPROVED');
+    expect(await BookingModel.findById(request._id).lean()).toMatchObject({
+      status: 'PENDING',
+      verificationReview: { status: 'APPROVED' },
+    });
   });
 });

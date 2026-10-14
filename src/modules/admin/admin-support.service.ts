@@ -7,6 +7,7 @@ import { BookingModel } from '../bookings/booking.model.js';
 import { notify } from '../notifications/notify.js';
 import { enqueue } from '../../jobs/queue.js';
 import { SupportTicketModel, type SupportTicket } from '../support/support-ticket.model.js';
+import { findActiveStaff } from '../staff/staff.service.js';
 import { attachmentView, confirmSupportFiles } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import type {
@@ -16,7 +17,7 @@ import type {
   ticketListQuerySchema,
   ticketUpdateSchema,
 } from './admin-ops.schemas.js';
-import { assertNotOwnRecord } from './own-record.js';
+import { assertNotOwnRecord, isOwnRecord } from './own-record.js';
 
 /*
  * The support inbox (spec §18; plan §9 Days 20–22): tickets from the Contact form, a booking's Contact
@@ -68,6 +69,7 @@ async function rows(tickets: TicketRecord[]): Promise<z.infer<typeof staffTicket
       },
       ...(bookingRef && { bookingRef }),
       ...(assignedTo && { assignedTo }),
+      ...(ticket.assignedTo && { assignedToId: ticket.assignedTo.toString() }),
       messages: ticket.messages.filter((message) => !message.internal).length,
       updatedAt: ticket.updatedAt.toISOString(),
       createdAt: ticket.createdAt.toISOString(),
@@ -101,15 +103,20 @@ export async function listTickets(staffId: string, query: z.infer<typeof ticketL
   return { tickets: await rows(tickets), total, page: query.page };
 }
 
+/** Who a ticket is about: its sender, and the Guest and Host of its booking. */
+async function ticketSubjects(ticket: TicketRecord) {
+  const booking = ticket.bookingId
+    ? await BookingModel.findById(ticket.bookingId).select('guestId hostId').lean()
+    : null;
+  return [ticket.userId, booking?.guestId, booking?.hostId];
+}
+
 /**
  * A support member's own request, or one about a booking they are the Guest or Host on, is someone else's to
  * answer (plan §6.2).
  */
 async function assertNotOwnTicket(staffId: string, ticket: TicketRecord) {
-  const booking = ticket.bookingId
-    ? await BookingModel.findById(ticket.bookingId).select('guestId hostId').lean()
-    : null;
-  await assertNotOwnRecord(staffId, [ticket.userId, booking?.guestId, booking?.hostId]);
+  await assertNotOwnRecord(staffId, await ticketSubjects(ticket));
 }
 
 async function findTicket(ref: string) {
@@ -227,7 +234,10 @@ export async function replyToTicket(
   return staffTicket(ticket.ref);
 }
 
-/** PATCH /admin/support/tickets/{ref}: its status, or taking it. */
+/**
+ * PATCH /admin/support/tickets/{ref}: its status, taking it, or handing it to another staff member (the admin
+ * or an active support member) or to nobody, as for an incident case. Whoever is handed it is told.
+ */
 export async function updateTicket(
   staffId: string,
   ref: string,
@@ -235,14 +245,30 @@ export async function updateTicket(
   ip?: string,
 ) {
   const ticket = await findTicket(ref);
-  await assertNotOwnTicket(staffId, ticket);
+  const subjects = await ticketSubjects(ticket);
+  await assertNotOwnRecord(staffId, subjects);
+  const assignee = input.assignTo ? await findActiveStaff(input.assignTo) : null;
+  if (input.assignTo && !assignee) {
+    throw new HttpError(409, 'NOT_STAFF', 'Choose someone on the support team.', {
+      assignTo: 'Choose someone on the support team',
+    });
+  }
+  // Nor to a support member it's about: they couldn't answer it.
+  if (assignee && (await isOwnRecord(assignee._id.toString(), subjects))) {
+    throw new HttpError(409, 'OWN_RECORD', 'Choose someone else: this request is about their own account.', {
+      assignTo: 'This request is about their own account',
+    });
+  }
+  const assignedTo =
+    input.assignTo === null ? null : assignee ? assignee._id : input.assignToMe ? staffId : undefined;
   await SupportTicketModel.updateOne(
     { _id: ticket._id },
     {
       $set: {
         ...(input.status && { status: input.status }),
-        ...(input.assignToMe && { assignedTo: staffId }),
+        ...(assignedTo && { assignedTo }),
       },
+      ...(assignedTo === null && { $unset: { assignedTo: 1 } }),
     },
   );
   await recordAudit({
@@ -250,9 +276,23 @@ export async function updateTicket(
     action: 'ticket.updated',
     entity: 'supportTicket',
     entityId: ticket.ref,
-    before: { status: ticket.status },
+    before: {
+      status: ticket.status,
+      ...(assignedTo !== undefined && { assignedTo: ticket.assignedTo?.toString() ?? null }),
+    },
     after: input,
     ...(ip && { ip }),
   });
+  if (assignee && !assignee._id.equals(staffId) && !ticket.assignedTo?.equals(assignee._id)) {
+    const by = await UserModel.findById(staffId).select('firstName').lean();
+    await notify({
+      userId: assignee._id,
+      type: 'SUPPORT_TICKET_ASSIGNED',
+      title: `Support request ${ticket.ref} is assigned to you`,
+      body: `${by?.firstName ?? 'Support'} handed you “${ticket.subject}”.`,
+      link: `/admin/support/${ticket.ref}`,
+      dedupeKey: `SUPPORT_TICKET_ASSIGNED:${ticket.ref}:${assignee._id.toString()}:${Date.now()}`,
+    });
+  }
   return staffTicket(ticket.ref);
 }

@@ -535,6 +535,18 @@ describe('an extra charge refunded after it was paid', () => {
     expect((await PaymentModel.findById(payment._id).lean())!.status).toBe('REFUNDED');
   });
 
+  it.each([6_000, 2_000])(
+    'keeps its receipt link in the payment history once refunded (%i cents)',
+    async (refundCents) => {
+      const { agent, payment } = await refundedCharge(refundCents);
+      const history = (await agent.get('/api/v1/me/payments')).body.payments as { id: string }[];
+      expect(history.find((item) => item.id === payment.id)).toMatchObject({
+        status: refundCents === 6_000 ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+        hasReceipt: true,
+      });
+    },
+  );
+
   it('shows as refunded on its pay link, which takes no payment', async () => {
     const { payment, agent } = await refundedCharge(6_000);
     const link = await agent.get(`/api/v1/payments/${payment.id}`);
@@ -573,6 +585,107 @@ describe('an extra charge refunded after it was paid', () => {
     // The PDF lays the refund out under the charge.
     const pdf = await agent.get(`/api/v1/bookings/${booking.ref}/receipt.pdf`);
     expect(pdf.status).toBe(200);
+  });
+});
+
+describe('an extra charge paid twice (plan §8.1, items 11 and 14)', () => {
+  /** A cleaning charge paid with one payment, with a second payment for it still open (made before the fix). */
+  async function paidCharge() {
+    const { ids, guest } = await parties();
+    await createStaff();
+    const startAt = new Date(Date.now() - 5 * DAY_MS);
+    const booking = await createBookingRecord(ids, {
+      status: 'COMPLETED',
+      startAt,
+      endAt: new Date(startAt.getTime() + 3 * DAY_MS),
+    });
+    await createPaymentRecord(booking);
+    const chargeId = new mongoose.Types.ObjectId();
+    const first = await PaymentModel.create({
+      bookingId: booking._id,
+      type: 'EXTRA_CHARGE',
+      extraChargeId: chargeId,
+      stripePaymentIntentId: 'pi_extra_first',
+      amountCents: 6_000,
+      status: 'SUCCEEDED',
+    });
+    const second = await PaymentModel.create({
+      bookingId: booking._id,
+      type: 'EXTRA_CHARGE',
+      extraChargeId: chargeId,
+      stripePaymentIntentId: 'pi_extra_second',
+      amountCents: 6_000,
+      status: 'FAILED',
+      failureReason: 'Your card was declined.',
+    });
+    await BookingModel.updateOne(
+      { _id: booking._id },
+      {
+        $set: {
+          extraCharges: [
+            {
+              _id: chargeId,
+              type: 'CLEANING',
+              description: 'Sand through the back seats',
+              amountCents: 6_000,
+              status: 'SUCCEEDED',
+              paymentId: first._id,
+            },
+          ],
+        },
+      },
+    );
+    return { booking, first, second, agent: await signIn(guest.email) };
+  }
+
+  it('says paid on a leftover pay link, which takes no payment', async () => {
+    const { second, agent } = await paidCharge();
+    expect((await agent.get(`/api/v1/payments/${second.id}`)).body.payment.status).toBe('PAID');
+    const pay = await agent.post(`/api/v1/payments/${second.id}/pay`);
+    expect(pay.status).toBe(409);
+    expect(pay.body.error.code).toBe('ALREADY_PAID');
+  });
+
+  it('refunds the second payment in full and tells staff, leaving the charge paid', async () => {
+    const { booking, first, second, agent } = await paidCharge();
+    const paid = { id: 'pi_extra_second', object: 'payment_intent', status: 'succeeded', amount: 6_000 };
+    expect((await webhook('payment_intent.succeeded', paid)).status).toBe(200);
+
+    expect((await PaymentModel.findById(second._id).lean())!.status).toBe('SUCCEEDED');
+    // The charge stays paid by the first payment, and the Host isn't paid twice for it.
+    expect((await BookingModel.findById(booking._id).lean())!.extraCharges[0]).toMatchObject({
+      status: 'SUCCEEDED',
+      paymentId: first._id,
+    });
+    expect(await PayoutModel.countDocuments({ bookingId: booking._id, type: 'EXTRA_CHARGE' })).toBe(0);
+    expect(await inApp('EXTRA_CHARGE_PAID_TWICE')).toBeTruthy();
+    const job = await jobOf('payment.refundUnwanted');
+    expect(job).toEqual({ paymentId: second.id, reason: 'CHARGE_DUPLICATE' });
+
+    intentStatus = 'succeeded';
+    await refundUnwantedJob(job as Parameters<typeof refundUnwantedJob>[0], context);
+    expect(client.refunds.create).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_intent: 'pi_extra_second', amount: 6_000 }),
+      { idempotencyKey: `refund-${second.id}-paid-twice` },
+    );
+    expect(await PaymentModel.findById(second._id).lean()).toMatchObject({
+      status: 'REFUNDED',
+      refunds: [expect.objectContaining({ amountCents: 6_000, fundedBy: 'PLATFORM' })],
+    });
+    expect(await inApp('REFUND_ISSUED')).toMatchObject({
+      payload: { body: expect.stringContaining('paid twice') },
+    });
+    // The first payment isn't given back, and the charge still shows as paid, with the paying one's receipt.
+    expect((await PaymentModel.findById(first._id).lean())!.status).toBe('SUCCEEDED');
+    expect((await agent.get(`/api/v1/bookings/${booking.ref}`)).body.booking.extraCharges).toEqual([
+      expect.objectContaining({ status: 'PAID' }),
+    ]);
+    const history = (await agent.get('/api/v1/me/payments')).body.payments as {
+      id: string;
+      hasReceipt: boolean;
+    }[];
+    expect(history.find((item) => item.id === first.id)?.hasReceipt).toBe(true);
+    expect(history.find((item) => item.id === second.id)?.hasReceipt).toBe(false);
   });
 });
 

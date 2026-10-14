@@ -121,6 +121,50 @@ describe('daily Host reminders', () => {
     expect(await NotificationModel.countDocuments({})).toBe(before);
   });
 
+  it('cover a booked car whose key details are being checked again', async () => {
+    const host = await createHost();
+    const guest = await createUser({ email: 'kiri@example.co.nz' });
+    const admin = await createStaff('aroha@example.co.nz', 'ADMIN');
+    const expiring = { wofExpiry: new Date(Date.now() + 2 * DAY_MS) };
+    const underReview = await createVehicle(host._id, { status: 'UNDER_REVIEW', ...expiring });
+    const changes = await createVehicle(host._id, { status: 'CHANGES_REQUESTED', ...expiring });
+    const draft = await createVehicle(host._id, { status: 'DRAFT', ...expiring });
+    const trips = [];
+    for (const car of [underReview, changes, draft]) {
+      trips.push(
+        await createBookingRecord(
+          { guestId: guest._id, hostId: host._id, vehicleId: car._id },
+          { startAt: new Date(Date.now() + 1.5 * DAY_MS), endAt: new Date(Date.now() + 4 * DAY_MS) },
+        ),
+      );
+    }
+
+    await runHostReminders();
+    const before = await NotificationModel.find({
+      userId: host._id,
+      type: 'DOCUMENT_BEFORE_TRIP',
+      channel: 'IN_APP',
+    });
+    expect(before.map((notification) => (notification.payload as { title: string }).title).sort()).toEqual(
+      [`WOF runs out before ${trips[0]!.ref} ends`, `WOF runs out before ${trips[1]!.ref} ends`].sort(),
+    );
+    // Within 72 hours of the start, support is alerted too.
+    expect(
+      await NotificationModel.countDocuments({
+        type: 'DOCUMENT_BEFORE_TRIP',
+        userId: admin._id,
+        channel: 'IN_APP',
+      }),
+    ).toBe(2);
+    expect(
+      await NotificationModel.countDocuments({
+        userId: host._id,
+        type: 'DOCUMENT_EXPIRING',
+        channel: 'IN_APP',
+      }),
+    ).toBe(2);
+  });
+
   it('count a Road User Charges licence that would run out on a booked trip’s kilometres', async () => {
     const host = await createHost();
     const guest = await createUser({ email: 'kiri@example.co.nz' });

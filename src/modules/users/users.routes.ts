@@ -23,6 +23,7 @@ import { acceptLatestAgreements, changePassword, requestEmailChange, updateName 
 import { hostApplicationSchema, hostProfilePatchSchema } from '../hosts/hosts.schemas.js';
 import { applyToHost, getHostProfile, updateHostProfile } from '../hosts/hosts.service.js';
 import { driverLicenceInputSchema } from './driver-licence.schemas.js';
+import { recheckBookedTrips } from '../admin/verification-queue.service.js';
 import { checkoutReadiness, saveDriverLicence } from './driver-licence.service.js';
 import {
   listPaymentHistory,
@@ -156,7 +157,8 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
   // Checkout's verification step (plan §9, Days 11–13): what's still needed, and the licence details.
   router.get('/checkout', async (req, res) => {
     const end = typeof req.query.end === 'string' ? parseNzDateTime(req.query.end) : null;
-    res.json(await checkoutReadiness(req.auth!.userId, end ?? undefined));
+    const start = typeof req.query.start === 'string' ? parseNzDateTime(req.query.start) : null;
+    res.json(await checkoutReadiness(req.auth!.userId, end ?? undefined, start ?? undefined));
   });
 
   // The identity check (plan §9, Days 19–20): Stripe Identity's page, and where the check stands.
@@ -171,7 +173,10 @@ export function meRouter(options: { rateLimit: boolean } = { rateLimit: true }) 
 
   router.put('/driver-licence', async (req, res) => {
     const input = validate(driverLicenceInputSchema, req.body);
-    res.json(await saveDriverLicence(req.auth!.userId, input, req.ip));
+    const readiness = await saveDriverLicence(req.auth!.userId, input, req.ip);
+    // The Guest's upcoming bookings are held to the new details, as booking them was (plan §3).
+    await recheckBookedTrips(req.auth!.userId);
+    res.json(readiness);
   });
 
   router.put('/last-search', async (req, res) => {

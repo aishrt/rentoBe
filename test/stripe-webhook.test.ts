@@ -3,8 +3,12 @@ import Stripe from 'stripe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { env } from '../src/env.js';
 import { StripeEventModel } from '../src/modules/payments/stripe-event.model.js';
-import { stripeEventHandlers } from '../src/modules/payments/stripe-webhook.js';
-import { testApp } from './helpers.js';
+import { handleStripeEvent, stripeEventHandlers } from '../src/modules/payments/stripe-webhook.js';
+import { NotificationModel } from '../src/modules/notifications/notification.model.js';
+import { PayoutModel } from '../src/modules/payouts/payout.model.js';
+import { UserModel } from '../src/modules/users/user.model.js';
+import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
+import { createUser, testApp } from './helpers.js';
 
 const SECRET = env.STRIPE_WEBHOOK_SECRET!;
 
@@ -98,5 +102,60 @@ describe('Stripe webhook', () => {
     } finally {
       env.STRIPE_WEBHOOK_SECRET = saved;
     }
+  });
+});
+
+describe('Connect account updates', () => {
+  const account = (enabled: boolean) => ({
+    id: 'acct_order',
+    object: 'account',
+    payouts_enabled: enabled,
+    capabilities: { transfers: enabled ? 'active' : 'inactive' },
+    requirements: { currently_due: enabled ? [] : ['external_account'], past_due: [] },
+  });
+  const event = (id: string, created: number, enabled: boolean) =>
+    ({
+      id,
+      object: 'event',
+      type: 'account.updated',
+      created,
+      data: { object: account(enabled) },
+    }) as unknown as Stripe.Event;
+
+  it('ignore a state older than the one already applied, as Stripe may send them out of order', async () => {
+    const host = await createHost();
+    await UserModel.updateOne(
+      { _id: host._id },
+      { $set: { 'hostProfile.stripeAccountId': 'acct_order', 'hostProfile.payoutsEnabled': false } },
+    );
+    const vehicle = await createVehicle(host._id);
+    const guest = await createUser({ email: 'kiri@example.co.nz' });
+    const booking = await createBookingRecord({
+      guestId: guest._id,
+      hostId: host._id,
+      vehicleId: vehicle._id,
+    });
+    const payout = await PayoutModel.create({
+      hostId: host._id,
+      bookingId: booking._id,
+      type: 'TRIP',
+      amountCents: 21_360,
+      status: 'SCHEDULED',
+      scheduledFor: new Date(Date.now() + 86_400_000),
+    });
+    const enabled = async () => (await UserModel.findById(host._id).lean())!.hostProfile!.payoutsEnabled;
+
+    expect(await handleStripeEvent(event('evt_enabled', 1_790_000_100, true))).toBe(true);
+    expect(await enabled()).toBe(true);
+    // The "disabled" from before it arrives late: nothing changes, and the Host isn't told payouts are paused.
+    expect(await handleStripeEvent(event('evt_disabled_earlier', 1_790_000_000, false))).toBe(true);
+    expect(await enabled()).toBe(true);
+    expect((await PayoutModel.findById(payout._id).lean())!.status).toBe('SCHEDULED');
+    expect(await NotificationModel.countDocuments({ userId: host._id, type: 'PAYOUT_SETUP_NEEDED' })).toBe(0);
+
+    // A newer one applies.
+    await handleStripeEvent(event('evt_disabled_later', 1_790_000_200, false));
+    expect(await enabled()).toBe(false);
+    expect((await PayoutModel.findById(payout._id).lean())!.status).toBe('HELD');
   });
 });

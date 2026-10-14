@@ -9,6 +9,7 @@ import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.mod
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { MessageModel } from '../messages/message.model.js';
 import { ThreadModel } from '../messages/thread.model.js';
+import { attachmentFiles } from '../uploads/upload-folders.js';
 import { redactEarlierSessions, redactIdentity } from '../users/identity.service.js';
 import { UserModel } from '../users/user.model.js';
 import { getPlatformSettings } from './platform-settings.service.js';
@@ -25,6 +26,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const RETENTION_HOUR = 3;
 /** How much one run deletes at most, so a first run on an old database doesn't take too long. */
 const BATCH = 200;
+/** Defence in depth under the settings' 7-year floor: the job never deletes an audit log younger than this. */
+const MIN_AUDIT_LOG_AGE_MS = 365 * DAY_MS;
 
 export interface RetentionResult {
   identitiesRedacted: number;
@@ -55,7 +58,8 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
 
   // ID images: Stripe Identity redacts the session; the result stays on the account. A check that passed goes
   // 90 days after it passed; one that was turned down or never finished, 90 days after it began. One that
-  // support is still reviewing (PENDING) keeps its images until they decide.
+  // support is still reviewing (PENDING) keeps its images until they decide, unless the account is closed:
+  // support's queue leaves closed accounts out, so its check goes 90 days after it began, whatever its status.
   const idCutoff = new Date(now.getTime() - settings.retention.idImagesDays * DAY_MS);
   const checked = await UserModel.find({
     'identityVerification.providerRef': mongoose.trusted({ $exists: true }),
@@ -71,6 +75,16 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
         'identityVerification.status': 'REJECTED',
         'identityVerification.startedAt': mongoose.trusted({ $exists: false }),
         updatedAt: mongoose.trusted({ $lte: idCutoff }),
+      },
+      // A closed account's check, even one still in review.
+      {
+        closedAt: mongoose.trusted({ $exists: true }),
+        'identityVerification.startedAt': mongoose.trusted({ $lte: idCutoff }),
+      },
+      // One begun before checks kept their start time: 90 days after the account closed.
+      {
+        closedAt: mongoose.trusted({ $lte: idCutoff }),
+        'identityVerification.startedAt': mongoose.trusted({ $exists: false }),
       },
     ],
   })
@@ -117,7 +131,8 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
     const thread = await ThreadModel.findOne({ bookingId }).select('_id').lean();
     if (thread) {
       const messages = await MessageModel.find({ threadId: thread._id }).select('attachments').lean();
-      await removeFiles(messages.flatMap((message) => message.attachments.map((file) => file.url)));
+      // A message photo's smaller copy goes with it.
+      await removeFiles(messages.flatMap((message) => message.attachments.flatMap(attachmentFiles)));
       await MessageModel.deleteMany({ threadId: thread._id });
     }
     const reports = await ConditionReportModel.find({ bookingId }).select('photos').lean();
@@ -136,6 +151,14 @@ export async function runDataRetention(now = new Date()): Promise<RetentionResul
   }
 
   const auditCutoff = new Date(now.getTime() - settings.retention.auditLogYears * 365 * DAY_MS);
+  // The settings keep audit logs 7 years at least; whatever is stored, a log under a year old is never deleted.
+  if (now.getTime() - auditCutoff.getTime() < MIN_AUDIT_LOG_AGE_MS) {
+    logger.error(
+      { auditLogYears: settings.retention.auditLogYears },
+      'Audit log retention under a year: no audit logs deleted',
+    );
+    return result;
+  }
   const deleted = await AuditLogModel.deleteMany({ createdAt: mongoose.trusted({ $lte: auditCutoff }) });
   result.auditLogsDeleted = deleted.deletedCount;
   return result;

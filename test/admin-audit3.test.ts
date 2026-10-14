@@ -95,6 +95,18 @@ describe('support staff and their own records', () => {
           .post(`/api/v1/admin/vehicles/${samsCar.id}/documents/${new mongoose.Types.ObjectId().toString()}`)
           .send({ decision: 'VERIFY' }),
       () => agent.post(`/api/v1/admin/vehicles/${samsCar.id}/suspend`).send({ reason: 'Checking it over' }),
+      // The calendar override, which could lift a staff block on his own car.
+      () =>
+        agent
+          .post(`/api/v1/admin/vehicles/${samsCar.id}/blocks`)
+          .send({ start: daysFromToday(20), end: daysFromToday(22) }),
+      () =>
+        agent.delete(
+          `/api/v1/admin/vehicles/${samsCar.id}/blocks/${new mongoose.Types.ObjectId().toString()}`,
+        ),
+      // Correcting his own details, or downloading them, on a privacy request.
+      () => agent.patch(`/api/v1/admin/users/${sam._id}`).send({ lastName: 'Smith', reason: 'Spelling' }),
+      () => agent.get(`/api/v1/admin/users/${sam._id}/export`),
       () =>
         agent
           .post(`/api/v1/admin/bookings/${asGuest.ref}/status`)

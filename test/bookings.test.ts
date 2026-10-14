@@ -1188,6 +1188,45 @@ describe('Cancellations', () => {
       role: 'STAFF',
       cancellation: { by: 'SUPPORT', reason: 'GUEST_NO_SHOW', feeCents: 33_870 - 4_500 },
     });
+    // Both emails say why (plan §8.2: each labelled).
+    const emails = await NotificationModel.find({ type: 'BOOKING_CANCELLED', channel: 'EMAIL' }).lean();
+    const texts = await Promise.all(
+      emails.map(async (email) => {
+        const props = (email.payload as { props: BookingCancelledProps }).props;
+        expect(props.reason).toBe('GUEST_NO_SHOW');
+        return [props.audience, (await renderEmail('bookingCancelled', props)).text] as const;
+      }),
+    );
+    expect(Object.fromEntries(texts)).toEqual({
+      GUEST: expect.stringMatching(/our support team cancelled booking RV-\w+ for the .+ as a no-show/),
+      HOST: expect.stringMatching(/as a no-show: the guest didn’t turn up at the pick-up time/),
+    });
+  });
+
+  it('asks again when the refund dropped after the preview was shown', async () => {
+    const spies = mockStripe();
+    const { ref, agent, piId } = await paidBooking(true, 3);
+    await webhook('payment_intent.succeeded', { id: piId, object: 'payment_intent', status: 'succeeded' });
+    const preview = (await agent.get(`/api/v1/bookings/${ref}/cancellation-preview`)).body;
+    expect(preview.refundCents).toBe(19_185);
+
+    // The dialog was opened while a full refund still applied.
+    const changed = await agent.post(`/api/v1/bookings/${ref}/cancel`).send({ expectedRefundCents: 33_870 });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error).toMatchObject({
+      code: 'REFUND_CHANGED',
+      message: expect.stringMatching(/it's now \$191\.85, not \$338\.70/),
+      fields: { expectedRefundCents: preview.message },
+    });
+    expect(spies.refund).not.toHaveBeenCalled();
+    expect((await BookingModel.findOne({ ref }).lean())!.status).toBe('CONFIRMED');
+
+    // Confirmed again with the new figure: cancelled.
+    const cancelled = await agent
+      .post(`/api/v1/bookings/${ref}/cancel`)
+      .send({ expectedRefundCents: 19_185 });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.booking.cancellation).toMatchObject({ refundCents: 19_185 });
   });
 
   it('previews what a staff cancellation would refund for each reason, less earlier refunds', async () => {

@@ -106,6 +106,157 @@ describe('user management', () => {
     ).toBe(2);
   });
 
+  it('holds a suspended Host’s scheduled payouts at once, except one being sent, and lifting it releases them', async () => {
+    const { host, booking } = await trip();
+    await UserModel.updateOne(
+      { _id: host._id },
+      { $set: { 'hostProfile.payoutsEnabled': true, 'hostProfile.stripeAccountId': 'acct_1' } },
+    );
+    const waiting = await tripPayout(booking, { scheduledFor: new Date(Date.now() + DAY_MS) });
+    const sending = await tripPayout(booking, { type: 'EXTRA_CHARGE', deductionsReservedAt: new Date() });
+    await createStaff();
+    const agent = await staffAgent();
+
+    await agent.post(`/api/v1/admin/users/${host.id}/suspend`).send({ reason: 'Checking their listings' });
+    expect(await PayoutModel.findById(waiting._id).lean()).toMatchObject({
+      status: 'HELD',
+      holdReason: 'SUSPENDED',
+    });
+    expect((await PayoutModel.findById(sending._id).lean())!.status).toBe('SCHEDULED');
+    expect(await AuditLogModel.findOne({ action: 'user.suspended' }).lean()).toMatchObject({
+      after: { payoutsHeld: 1 },
+    });
+
+    await agent.post(`/api/v1/admin/users/${host.id}/unsuspend`);
+    const released = (await PayoutModel.findById(waiting._id).lean())!;
+    expect(released.status).toBe('SCHEDULED');
+    expect(released.holdReason).toBeUndefined();
+  });
+
+  it('corrects a person’s details on a privacy request, in the audit log, and emails a new address to confirm', async () => {
+    const guest = await createUser();
+    await UserModel.updateOne(
+      { _id: guest._id },
+      {
+        $set: {
+          dob: new Date('1990-04-19T12:00:00Z'),
+          emailVerifiedAt: new Date(),
+          identityVerification: { status: 'APPROVED', verifiedAt: new Date() },
+        },
+      },
+    );
+    await createUser({ email: 'taken@example.co.nz', firstName: 'Tama' });
+    await createStaff();
+    await createStaff('sam@example.co.nz', 'SUPPORT');
+    const agent = await staffAgent('sam@example.co.nz');
+    const path = `/api/v1/admin/users/${guest.id}`;
+
+    const taken = await agent
+      .patch(path)
+      .send({ email: 'taken@example.co.nz', reason: 'Privacy request ST-ABC123' });
+    expect(taken.status).toBe(409);
+    expect(taken.body.error.code).toBe('EMAIL_TAKEN');
+    expect((await agent.patch(path).send({ reason: 'Nothing to change' })).status).toBe(400);
+
+    const corrected = await agent.patch(path).send({
+      lastName: 'Ngātahi',
+      dob: '1990-04-21',
+      email: 'kiri.n@example.co.nz',
+      reason: 'Privacy request ST-ABC123, checked against her passport',
+    });
+    expect(corrected.status).toBe(200);
+    expect(corrected.body.user).toMatchObject({
+      lastName: 'Ngātahi',
+      dob: '1990-04-21',
+      email: 'kiri.n@example.co.nz',
+      emailVerified: false,
+    });
+    expect(
+      await JobModel.exists({
+        type: 'email.send',
+        'payload.template': 'verifyEmail',
+        'payload.to': 'kiri.n@example.co.nz',
+      }),
+    ).toBeTruthy();
+    expect(
+      await JobModel.exists({
+        type: 'email.send',
+        'payload.template': 'emailChanged',
+        'payload.to': 'kiri@example.co.nz',
+      }),
+    ).toBeTruthy();
+    expect(await AuditLogModel.findOne({ action: 'user.corrected' }).lean()).toMatchObject({
+      entityId: guest.id,
+      before: { lastName: 'Tester', dob: '1990-04-20', email: 'kiri@example.co.nz' },
+      after: {
+        lastName: 'Ngātahi',
+        email: 'kiri.n@example.co.nz',
+        identityChecked: true,
+        reason: 'Privacy request ST-ABC123, checked against her passport',
+      },
+    });
+  });
+
+  it('downloads a person’s information for a privacy request, without anyone else’s details or staff notes', async () => {
+    const { host, guest, booking } = await trip();
+    const payment = await createPaymentRecord(booking);
+    await PaymentModel.updateOne(
+      { _id: payment._id },
+      {
+        $push: {
+          refunds: {
+            amountCents: 1_000,
+            reason: 'Goodwill',
+            fundedBy: 'PLATFORM',
+            status: 'SUCCEEDED',
+            createdAt: new Date(),
+          },
+        },
+      },
+    );
+    const thread = await ThreadModel.create({
+      bookingId: booking._id,
+      participantIds: [guest._id, host._id],
+    });
+    await MessageModel.create({ threadId: thread._id, senderId: guest._id, body: 'See you at 10' });
+    await MessageModel.create({
+      threadId: thread._id,
+      senderId: host._id,
+      body: 'My number is 021 555 0101',
+    });
+    await SupportTicketModel.create({
+      ref: 'ST-EXP001',
+      userId: guest._id,
+      subject: 'Privacy: a copy of my personal information',
+      category: 'PRIVACY',
+      messages: [
+        { authorId: guest._id, body: 'Please send it' },
+        { authorId: host._id, body: 'Check her ID first', internal: true },
+      ],
+    });
+    await createStaff();
+    await createStaff('sam@example.co.nz', 'SUPPORT');
+    const agent = await staffAgent('sam@example.co.nz');
+
+    const download = await agent.get(`/api/v1/admin/users/${guest.id}/export`);
+    expect(download.status).toBe(200);
+    expect(download.headers['content-disposition']).toMatch(/^attachment; filename="rento-vroom-data-/);
+    const data = JSON.parse(download.text);
+    expect(data.account).toMatchObject({ email: 'kiri@example.co.nz', firstName: 'Kiri' });
+    expect(data.bookings).toEqual([expect.objectContaining({ ref: booking.ref, as: 'GUEST' })]);
+    expect(data.payments[0]).toMatchObject({
+      booking: booking.ref,
+      refunds: [expect.objectContaining({ amountCents: 1_000 })],
+    });
+    expect(data.messagesSent.map((message: { body: string }) => message.body)).toEqual(['See you at 10']);
+    expect(data.supportRequests[0].messages.map((message: { body: string }) => message.body)).toEqual([
+      'Please send it',
+    ]);
+    expect(download.text).not.toContain('Hana');
+    expect(download.text).not.toContain('021 555 0101');
+    expect(await AuditLogModel.exists({ action: 'user.exported', entityId: guest.id })).toBeTruthy();
+  });
+
   it('keeps support away from staff accounts and from closing accounts', async () => {
     const guest = await createUser();
     const other = await createStaff('mere@example.co.nz', 'SUPPORT');
@@ -131,7 +282,17 @@ describe('user management', () => {
     expect(blocked.status).toBe(409);
     expect(blocked.body.error.code).toBe('CLOSURE_BLOCKED');
 
-    await BookingModel.updateOne({ _id: booking._id }, { $set: { status: 'COMPLETED' } });
+    // Finished a week ago: past the damage-report window.
+    await BookingModel.updateOne(
+      { _id: booking._id },
+      {
+        $set: {
+          status: 'COMPLETED',
+          startAt: new Date(Date.now() - 10 * DAY_MS),
+          endAt: new Date(Date.now() - 7 * DAY_MS),
+        },
+      },
+    );
     const closed = await agent.post(`/api/v1/admin/users/${guest.id}/close`);
     expect(closed.status).toBe(200);
     const user = await UserModel.findById(guest._id).lean();
@@ -540,5 +701,54 @@ describe('risk flags', () => {
     expect(second.body.user.openRiskFlags).toBe(1);
     const again = await agent.post(`/api/v1/admin/users/${guest.id}/risk-flags/${flagId}/clear`);
     expect(again.status).toBe(404);
+  });
+
+  it('sorts everyone flagged by open flags in the database, a page at a time', async () => {
+    const flag = (code: string, days: number, cleared = false) => ({
+      code,
+      createdAt: new Date(Date.now() - days * DAY_MS),
+      ...(cleared && { clearedAt: new Date() }),
+    });
+    // 30 people with one open flag, stored first, then two with more, one of whose flags is cleared.
+    for (let index = 0; index < 30; index += 1) {
+      await UserModel.collection.insertOne({
+        email: `flagged${index}@example.co.nz`,
+        firstName: 'Flagged',
+        lastName: String(index),
+        roles: ['GUEST'],
+        status: 'ACTIVE',
+        permissions: [],
+        agreements: [],
+        createdAt: new Date(),
+        riskFlags: [flag('BOOKING_VELOCITY', 30 - index)],
+      });
+    }
+    const most = await createUser({ email: 'most@example.co.nz' });
+    const two = await createUser({ email: 'two@example.co.nz' });
+    await UserModel.updateOne(
+      { _id: most._id },
+      {
+        $set: { riskFlags: [flag('CARD_COUNTRY', 1), flag('RADAR_WARNING', 1), flag('BOOKING_VELOCITY', 2)] },
+      },
+    );
+    await UserModel.updateOne(
+      { _id: two._id },
+      { $set: { riskFlags: [flag('CARD_COUNTRY', 1), flag('RADAR_WARNING', 1), flag('OLD', 9, true)] } },
+    );
+    await createStaff();
+    const agent = await staffAgent();
+
+    const first = await agent.get('/api/v1/admin/risk');
+    expect(first.body).toMatchObject({ total: 32, page: 1, nextPage: 2 });
+    expect(first.body.users).toHaveLength(25);
+    expect(first.body.users.slice(0, 3).map((user: { email: string }) => user.email)).toEqual([
+      'most@example.co.nz',
+      'two@example.co.nz',
+      'flagged0@example.co.nz',
+    ]);
+    expect(first.body.users[1].flags).toHaveLength(2);
+    const second = await agent.get('/api/v1/admin/risk').query({ page: 2 });
+    expect(second.body.users).toHaveLength(7);
+    expect(second.body.nextPage).toBeUndefined();
   });
 });

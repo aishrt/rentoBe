@@ -4,7 +4,7 @@ import { requireAuth } from '../../middleware/auth.js';
 import { messageRateLimit, reportRateLimit } from '../../middleware/rate-limit.js';
 import { reportInputSchema } from '../moderation/reports.schemas.js';
 import { createReport } from '../moderation/reports.service.js';
-import { messagesQuerySchema, sendMessageSchema } from './messages.schemas.js';
+import { messagesQuerySchema, sendMessageSchema, threadsQuerySchema } from './messages.schemas.js';
 import {
   getThread,
   listMessages,
@@ -23,7 +23,7 @@ export function threadsRouter(options: { rateLimit: boolean } = { rateLimit: tru
   router.use(requireAuth);
 
   router.get('/', async (req, res) => {
-    res.json(await listThreads(req.auth!.userId));
+    res.json(await listThreads(req.auth!.userId, validate(threadsQuerySchema, req.query)));
   });
 
   router.get('/unread', async (req, res) => {

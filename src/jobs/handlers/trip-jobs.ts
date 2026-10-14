@@ -220,8 +220,8 @@ export async function returnReminderJob(
 
 /**
  * A trip the Host checked in alone (it started with their check-in), which the Guest hasn't confirmed by the
- * start check: 1 h after the start the Guest is asked to confirm it; after 2 h support is alerted to a possible
- * Guest no-show, which they can still cancel as one (plan §8.2).
+ * start check: 1 h after the start (or after a check-in done later) the Guest is asked to confirm it; after 2 h
+ * support is alerted to a possible Guest no-show, which they can still cancel as one (plan §8.2).
  */
 async function unconfirmedCheckIn(
   { booking, context }: NonNullable<Awaited<ReturnType<typeof loadTrip>>>,
@@ -234,7 +234,7 @@ async function unconfirmedCheckIn(
     await alertStaff({
       type: 'TRIP_CHECK_IN_UNCONFIRMED',
       title: `Possible no-show on ${booking.ref}`,
-      body: `${hostName} did the check-in on booking ${booking.ref} (${booking.vehicleSnapshot.title}) alone, and the guest still hasn't confirmed it 2 hours after the start time. Contact the guest and host, and cancel it as a Guest no-show if the guest never turned up.`,
+      body: `${hostName} did the check-in on booking ${booking.ref} (${booking.vehicleSnapshot.title}) alone, and the guest still hasn't confirmed it 2 hours on. Contact the guest and host, and cancel it as a Guest no-show if the guest never turned up.`,
       link: `/admin/bookings/${booking.ref}`,
       dedupeKey: `TRIP_CHECK_IN_UNCONFIRMED:${key}`,
     });
@@ -254,7 +254,7 @@ async function unconfirmedCheckIn(
         firstName: context.guest?.firstName ?? 'there',
         heading: 'Please confirm the check-in',
         paragraphs: [
-          `${hostName} did the check-in for your trip in the ${booking.vehicleSnapshot.title}, which started an hour ago, but you haven’t confirmed it yet.`,
+          `${hostName} did the check-in for your trip in the ${booking.vehicleSnapshot.title}, but you haven’t confirmed it yet.`,
           'Check the photos and readings and confirm them: they protect you both if anything is damaged. If you didn’t pick up the car, let us know straight away.',
         ],
         rows: [

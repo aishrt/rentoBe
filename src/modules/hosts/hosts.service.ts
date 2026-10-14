@@ -68,32 +68,27 @@ export async function applyToHost(
   if (!user.roles.includes('HOST')) user.roles.push('HOST');
 
   const reapplying = !current || current === 'REJECTED';
-  user.hostProfile = {
-    status: current === 'APPROVED' ? 'APPROVED' : 'APPLIED',
-    appliedAt: reapplying ? now : (user.hostProfile?.appliedAt ?? now),
-    reviewNotes: reapplying ? undefined : user.hostProfile?.reviewNotes,
+  const application = {
+    status: current === 'APPROVED' ? ('APPROVED' as const) : ('APPLIED' as const),
     bio: input.bio,
     gstRegistered: input.gstRegistered,
     gstNumber: input.gstRegistered ? input.gstNumber : undefined,
-    payoutsEnabled: user.hostProfile?.payoutsEnabled ?? false,
-    tripCount: user.hostProfile?.tripCount ?? 0,
-    rating: user.hostProfile?.rating ?? { avg: 0, count: 0 },
-    feesOwedCents: user.hostProfile?.feesOwedCents ?? 0,
-    // Host-funded refunds still owed stay owed (plan §8.1, item 15).
-    ...(user.hostProfile?.refundsOwed?.length && {
-      refundsOwed: user.hostProfile.refundsOwed.map(
-        ({ bookingId, stripeRefundId, amountCents, createdAt }) => ({
-          bookingId,
-          stripeRefundId,
-          amountCents,
-          createdAt,
-        }),
-      ),
-    }),
-    reviewedBy: reapplying ? undefined : user.hostProfile?.reviewedBy,
-    stripeAccountId: user.hostProfile?.stripeAccountId,
-    responseRate: user.hostProfile?.responseRate,
+    ...(reapplying && { appliedAt: now, reviewNotes: undefined, reviewedBy: undefined }),
   };
+  if (user.hostProfile) {
+    // Only what the application changes: the Stripe account and its payout state, what the Host owes and
+    // their record stay as they are, and a fee or refund owed added meanwhile isn't overwritten.
+    for (const [field, value] of Object.entries(application)) user.set(`hostProfile.${field}`, value);
+  } else {
+    user.hostProfile = {
+      ...application,
+      appliedAt: now,
+      payoutsEnabled: false,
+      tripCount: 0,
+      rating: { avg: 0, count: 0 },
+      feesOwedCents: 0,
+    };
+  }
   await user.save();
 
   await recordAudit({ actorId: user._id, action: 'host.applied', entity: 'user', entityId: user.id, ip });

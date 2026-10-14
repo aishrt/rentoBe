@@ -12,12 +12,14 @@ import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { HelpArticleModel } from '../src/modules/help/help-article.model.js';
 import { articleSummary } from '../src/modules/help/help.routes.js';
 import { IncidentModel } from '../src/modules/incidents/incident.model.js';
+import { NotificationModel } from '../src/modules/notifications/notification.model.js';
+import { PaymentModel } from '../src/modules/payments/payment.model.js';
 import { PayoutModel } from '../src/modules/payouts/payout.model.js';
 import { SupportTicketModel } from '../src/modules/support/support-ticket.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
 import { createBookingRecord, createHost, createPaymentRecord, createVehicle, nzDay } from './fixtures.js';
-import { PASSWORD, browserAgent, createStaff, createUser } from './helpers.js';
+import { PASSWORD, browserAgent, createStaff, createUser, staffAgent } from './helpers.js';
 
 /*
  * The Guest dashboard's account pages (plan §9, Days 16–18; spec §8): Saved cars, saved cards and
@@ -337,6 +339,38 @@ describe('Receipts', () => {
     expect(receipt.body.receipt.supplier).not.toHaveProperty('gstNumber');
   });
 
+  it('dates a payment that never confirmed its booking by when it was taken, not by its refund', async () => {
+    const createdAt = new Date(Date.now() - 3 * DAY_MS);
+    const { guest, booking } = await bookedTrip({
+      status: 'EXPIRED',
+      statusHistory: [
+        { status: 'PAYMENT_PENDING', at: createdAt },
+        { status: 'EXPIRED', at: new Date(createdAt.getTime() + 30 * 60_000) },
+      ],
+    });
+    const payment = await createPaymentRecord(booking);
+    // Taken (the first save as paid sets it), then refunded in full a while later.
+    expect(payment.succeededAt).toBeInstanceOf(Date);
+    const takenAt = new Date(createdAt.getTime() + 40 * 60_000);
+    payment.succeededAt = takenAt;
+    await payment.save();
+    payment.refunds.push({
+      amountCents: payment.amountCents,
+      reason: 'Paid after the booking had ended',
+      kind: 'LATE_PAYMENT',
+      fundedBy: 'PLATFORM',
+      status: 'SUCCEEDED',
+      createdAt: new Date(),
+    });
+    payment.status = 'REFUNDED';
+    await payment.save();
+    expect((await PaymentModel.findById(payment._id).lean())!.succeededAt).toEqual(takenAt);
+
+    const receipt = await (await signIn(guest.email)).get(`/api/v1/bookings/${booking.ref}/receipt`);
+    expect(receipt.status).toBe(200);
+    expect(receipt.body.receipt.paidAt).toBe(takenAt.toISOString());
+  });
+
   it('shows the GST number once it is set in Platform settings', async () => {
     await PlatformSettingsModel.create({
       _id: PLATFORM_SETTINGS_ID,
@@ -531,7 +565,11 @@ describe('Privacy requests and closing the account', () => {
     const agent = await signIn(guest.email);
     const first = await agent.post('/api/v1/me/privacy-requests').send({ type: 'ACCESS' });
     expect(first.status).toBe(201);
-    expect(first.body).toEqual({ ref: expect.stringMatching(/^ST-[A-Z0-9]{6}$/), alreadyOpen: false });
+    expect(first.body).toEqual({
+      ref: expect.stringMatching(/^ST-[A-Z0-9]{6}$/),
+      alreadyOpen: false,
+      added: false,
+    });
 
     const ticket = await SupportTicketModel.findOne({ ref: first.body.ref }).lean();
     expect(ticket).toMatchObject({
@@ -547,8 +585,41 @@ describe('Privacy requests and closing the account', () => {
     expect(await AuditLogModel.exists({ action: 'privacy.requested', entityId: guest.id })).toBeTruthy();
 
     const again = await agent.post('/api/v1/me/privacy-requests').send({ type: 'ACCESS' });
-    expect(again.body).toEqual({ ref: first.body.ref, alreadyOpen: true });
+    expect(again.body).toEqual({ ref: first.body.ref, alreadyOpen: true, added: false });
     expect(await SupportTicketModel.countDocuments()).toBe(1);
+  });
+
+  it('adds a second correction to the open request, back with support, instead of dropping it', async () => {
+    await createStaff();
+    const guest = await createUser();
+    const agent = await signIn(guest.email);
+    const first = await agent
+      .post('/api/v1/me/privacy-requests')
+      .send({ type: 'CORRECTION', message: 'My last name is spelt Ngātahi.' });
+    expect(first.status).toBe(201);
+    // Support answers, so it waits on the member.
+    await SupportTicketModel.updateOne({ ref: first.body.ref }, { $set: { status: 'PENDING' } });
+
+    const second = await agent
+      .post('/api/v1/me/privacy-requests')
+      .send({ type: 'CORRECTION', message: 'And my date of birth is 21 April 1990.' });
+    expect(second.status).toBe(201);
+    expect(second.body).toEqual({ ref: first.body.ref, alreadyOpen: true, added: true });
+    expect(await SupportTicketModel.countDocuments()).toBe(1);
+    const ticket = await SupportTicketModel.findOne({ ref: first.body.ref }).lean();
+    expect(ticket?.status).toBe('OPEN');
+    expect(ticket?.messages.map((message) => message.body)).toEqual([
+      'My last name is spelt Ngātahi.',
+      'And my date of birth is 21 April 1990.',
+    ]);
+    expect(ticket?.messages[1]?.authorId?.equals(guest._id)).toBe(true);
+    // Nobody has it yet, so the whole team hears of the new message.
+    expect(
+      await NotificationModel.exists({
+        type: 'SUPPORT_TICKET_REPLY',
+        dedupeKey: mongoose.trusted({ $regex: `^SUPPORT_TICKET_REPLY:${first.body.ref}:1` }),
+      }),
+    ).toBeTruthy();
   });
 
   it('needs to know what to correct', async () => {
@@ -616,7 +687,11 @@ describe('Privacy requests and closing the account', () => {
   });
 
   it('counts an unpaid extra charge from a finished trip', async () => {
-    const { guest, booking } = await bookedTrip({ status: 'COMPLETED' });
+    const { guest, booking } = await bookedTrip({
+      status: 'COMPLETED',
+      startAt: new Date(Date.now() - 10 * DAY_MS),
+      endAt: new Date(Date.now() - 7 * DAY_MS),
+    });
     booking.extraCharges.push({
       type: 'EXTRA_KM',
       description: '40 km over',
@@ -626,6 +701,108 @@ describe('Privacy requests and closing the account', () => {
     await booking.save();
     const closure = await (await signIn(guest.email)).get('/api/v1/me/account-closure');
     expect(closure.body.blockers.map((blocker: { code: string }) => blocker.code)).toEqual(['UNPAID_CHARGE']);
+  });
+});
+
+describe('Closing an account while money is owed', () => {
+  const codes = (body: { blockers: { code: string }[] }) => body.blockers.map((blocker) => blocker.code);
+
+  it('waits for Host fees and refunds owed, a failed refund, an open dispute and a trip just finished', async () => {
+    const { host, guest, booking } = await bookedTrip({
+      status: 'COMPLETED',
+      startAt: new Date(Date.now() - 4 * DAY_MS),
+      endAt: new Date(Date.now() - DAY_MS),
+    });
+    await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.feesOwedCents': 5_000 } });
+    const payment = await createPaymentRecord(booking, {
+      refunds: [
+        {
+          amountCents: 2_000,
+          reason: 'Goodwill',
+          fundedBy: 'PLATFORM',
+          status: 'FAILED',
+          createdAt: new Date(Date.now() - DAY_MS),
+        },
+      ],
+      dispute: { stripeDisputeId: 'dp_test_1', status: 'needs_response' },
+    });
+
+    const guestAgent = await signIn(guest.email);
+    const closure = await guestAgent.get('/api/v1/me/account-closure');
+    expect(codes(closure.body)).toEqual(['REFUND_PENDING', 'OPEN_DISPUTE', 'RECENT_TRIP']);
+    expect(closure.body.blockers[0].message).toMatch(/didn’t go through/);
+    const hostClosure = await (await signIn(host.email)).get('/api/v1/me/account-closure');
+    expect(codes(hostClosure.body)).toEqual(['FEES_OWED', 'OPEN_DISPUTE']);
+
+    // A new refund made since, the dispute won and the damage window over: nothing stops it.
+    await PaymentModel.updateOne(
+      { _id: payment._id },
+      {
+        $push: {
+          refunds: {
+            amountCents: 2_000,
+            reason: 'Again',
+            fundedBy: 'PLATFORM',
+            status: 'SUCCEEDED',
+            createdAt: new Date(),
+          },
+        },
+        $set: { 'dispute.status': 'won' },
+      },
+    );
+    await BookingModel.updateOne(
+      { _id: booking._id },
+      { $set: { startAt: new Date(Date.now() - 9 * DAY_MS), endAt: new Date(Date.now() - 6 * DAY_MS) } },
+    );
+    expect((await guestAgent.get('/api/v1/me/account-closure')).body).toEqual({
+      allowed: true,
+      blockers: [],
+    });
+    await UserModel.updateOne(
+      { _id: host._id },
+      {
+        $set: {
+          'hostProfile.feesOwedCents': 0,
+          'hostProfile.refundsOwed': [
+            {
+              bookingId: booking._id,
+              stripeRefundId: 're_test_1',
+              amountCents: 1_500,
+              createdAt: new Date(),
+            },
+          ],
+        },
+      },
+    );
+    expect(codes((await (await signIn(host.email)).get('/api/v1/me/account-closure')).body)).toEqual([
+      'FEES_OWED',
+    ]);
+  });
+
+  it('waits until the extra kilometres are worked out, and tells staff in their own words', async () => {
+    const { guest, booking } = await bookedTrip({
+      status: 'COMPLETED',
+      startAt: new Date(Date.now() - 10 * DAY_MS),
+      endAt: new Date(Date.now() - 7 * DAY_MS),
+    });
+    await JobModel.create({
+      type: 'trip.extraCharges',
+      payload: { bookingId: booking.id },
+      runAt: new Date(),
+      uniqueKey: `trip.extraCharges:${booking.id}`,
+      refId: booking.id,
+    });
+    const closure = await (await signIn(guest.email)).get('/api/v1/me/account-closure');
+    expect(codes(closure.body)).toEqual(['RECENT_TRIP']);
+
+    await createStaff();
+    const admin = await staffAgent();
+    const refused = await admin.post(`/api/v1/admin/users/${guest.id}/close`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({
+      code: 'CLOSURE_BLOCKED',
+      message: expect.stringMatching(/^They finished a trip/),
+    });
   });
 });
 

@@ -1,7 +1,9 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_SETTINGS } from '../src/modules/admin/default-settings.js';
+import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { platformSettingsResponseSchema } from '../src/modules/admin/platform-settings.schemas.js';
+import { getPlatformSettings } from '../src/modules/admin/platform-settings.service.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { createHost, createVehicle, nzDay } from './fixtures.js';
 import {
@@ -165,5 +167,64 @@ describe('PATCH /api/v1/admin/settings', () => {
     const settings = await agent.get('/api/v1/admin/settings');
     expect(settings.body.settings).toEqual(DEFAULT_SETTINGS);
     expect(await AuditLogModel.countDocuments({ action: 'settings.update' })).toBe(0);
+  });
+});
+
+describe('retention and risk floors', () => {
+  it('refuses periods that would have the retention job delete the audit log or trip records, and risk thresholds of 0', async () => {
+    await createStaff();
+    const agent = await staffAgent();
+    const send = (body: object) => agent.patch('/api/v1/admin/settings').send(body);
+
+    const wiped = await send({
+      retention: { financialRecordsYears: 6, idImagesDays: 0, tripRecordsYears: 0, auditLogYears: 0 },
+    });
+    expect(wiped.status).toBe(400);
+    expect(wiped.body.error.fields).toMatchObject({
+      'retention.financialRecordsYears': expect.stringMatching(/7 years/),
+      'retention.auditLogYears': expect.stringMatching(/7 years/),
+      'retention.tripRecordsYears': expect.any(String),
+      'retention.idImagesDays': expect.any(String),
+    });
+
+    const flagsEveryone = await send({ risk: { ...DEFAULT_SETTINGS.risk, bookingsPerDay: 0 } });
+    expect(flagsEveryone.body.error.fields).toHaveProperty(['risk.bookingsPerDay']);
+
+    const confirmed = await send({
+      retention: { financialRecordsYears: 7, idImagesDays: 30, tripRecordsYears: 3, auditLogYears: 10 },
+      risk: { ...DEFAULT_SETTINGS.risk, reportsBeforeFlag: 1 },
+      decisions: { retentionAndRisk: { status: 'CONFIRMED', note: 'Legal adviser, 13 October' } },
+    });
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.settings.retention).toEqual({
+      financialRecordsYears: 7,
+      idImagesDays: 30,
+      tripRecordsYears: 3,
+      auditLogYears: 10,
+    });
+    expect(confirmed.body.settings.decisions.retentionAndRisk.status).toBe('CONFIRMED');
+  });
+
+  it('uses the launch defaults for a group saved before its floor, instead of failing every page', async () => {
+    await createStaff();
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      {
+        $set: {
+          settings: {
+            ...DEFAULT_SETTINGS,
+            fees: { ...DEFAULT_SETTINGS.fees, guestServiceFeePct: 12 },
+            retention: { ...DEFAULT_SETTINGS.retention, auditLogYears: 0 },
+          },
+        },
+      },
+      { upsert: true },
+    );
+
+    const settings = await getPlatformSettings();
+    expect(settings.retention).toEqual(DEFAULT_SETTINGS.retention);
+    // The other groups keep what was saved.
+    expect(settings.fees.guestServiceFeePct).toBe(12);
+    expect((await (await staffAgent()).get('/api/v1/admin/settings')).status).toBe(200);
   });
 });

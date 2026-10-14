@@ -15,7 +15,7 @@ import {
 import { expirePaymentHold, expireRequest } from '../../modules/bookings/booking.service.js';
 import { recordStripeRefunds } from '../../modules/bookings/payment-events.js';
 import { notify } from '../../modules/notifications/notify.js';
-import { refundCancelledCharge } from '../../modules/payments/extra-charges.service.js';
+import { refundUnwantedCharge } from '../../modules/payments/extra-charges.service.js';
 import { PaymentModel } from '../../modules/payments/payment.model.js';
 import { checkPaymentRisk } from '../../modules/risk/risk-signals.js';
 import { UserModel } from '../../modules/users/user.model.js';
@@ -130,8 +130,8 @@ export async function refundUnwantedJob(
   { paymentId, reason }: { paymentId: string; reason?: UnwantedReason },
   { log }: JobContext,
 ) {
-  if (reason === 'CHARGE_CANCELLED') {
-    if (await refundCancelledCharge(paymentId)) log.warn({ paymentId }, 'Refunded a cancelled extra charge');
+  if (reason === 'CHARGE_CANCELLED' || reason === 'CHARGE_DUPLICATE') {
+    if (await refundUnwantedCharge(paymentId, reason)) log.warn({ paymentId, reason }, 'Refunded an unwanted extra charge payment');
     return;
   }
   const payment = await PaymentModel.findById(paymentId);

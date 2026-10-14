@@ -2,7 +2,7 @@ import { env } from '../../env.js';
 import { nzDate } from '../../lib/nz-time.js';
 import { pendingAgreements } from './agreements.js';
 import { identityProcessing } from './driver-licence.service.js';
-import { STAFF_ROLES, type Role, type User, type UserDocument } from './user.model.js';
+import { PERMISSIONS, STAFF_ROLES, type Role, type User, type UserDocument } from './user.model.js';
 import type { PublicUser } from './user.schemas.js';
 
 export type { PublicUser };
@@ -26,6 +26,7 @@ export function nameLocked(user: Pick<User, 'identityVerification'>): boolean {
 }
 
 export function toPublicUser(user: UserDocument): PublicUser {
+  const roles = effectiveRoles(user);
   return {
     id: user.id,
     email: user.email,
@@ -34,7 +35,11 @@ export function toPublicUser(user: UserDocument): PublicUser {
     ...(user.avatarUrl && { avatarUrl: user.avatarUrl }),
     ...(user.dob && { dateOfBirth: nzDate(user.dob) }),
     nameLocked: nameLocked(user),
-    roles: effectiveRoles(user),
+    roles,
+    // Staff: so the portal shows money actions only to those who can use them (the API still checks).
+    ...(isStaff(roles) && {
+      permissions: roles.includes('ADMIN') ? [...PERMISSIONS] : [...(user.permissions ?? [])],
+    }),
     emailVerified: Boolean(user.emailVerifiedAt),
     ...(user.phone && { phone: user.phone }),
     phoneVerified: Boolean(user.phoneVerifiedAt),

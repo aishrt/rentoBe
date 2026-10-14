@@ -79,7 +79,11 @@ export const adminDashboardSchema = z
         description:
           'Payments that didn’t go through in the last 30 NZ days, today included: GET /admin/payments?view=failed with `from` 29 days before today',
       }),
-      heldPayouts: z.number().int(),
+      heldPayouts: z.number().int().meta({ description: 'Payouts on hold: GET /admin/payouts?status=HELD' }),
+      failedPayouts: z
+        .number()
+        .int()
+        .meta({ description: 'Payouts whose transfer failed: GET /admin/payouts?status=FAILED' }),
       failedJobs: z.number().int(),
     }),
     generatedAt: iso,
@@ -216,6 +220,34 @@ export const waiveFeeSchema = z
     reason,
   })
   .meta({ id: 'WaiveFeeRequest' });
+
+/**
+ * PATCH /admin/users/{id}: staff correct a person's details on a privacy request (plan §14), after checking
+ * them, e.g. against their ID. Send only what changes.
+ */
+export const adminUserUpdateSchema = z
+  .object({
+    firstName: z.string().trim().min(1, { error: 'Enter their first name' }).max(50).optional(),
+    lastName: z.string().trim().min(1, { error: 'Enter their last name' }).max(50).optional(),
+    dob: z.iso
+      .date({ error: 'Use a date like 1990-04-21' })
+      .optional()
+      .meta({ description: 'Their date of birth, an NZ calendar date' }),
+    email: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .max(254)
+      .pipe(z.email({ error: 'Enter a valid email address' }))
+      .optional()
+      .meta({ description: 'Marked unverified, and a link to confirm it is emailed to the new address' }),
+    reason: reason.meta({ description: 'Why, e.g. the privacy request’s reference and what was checked' }),
+  })
+  .refine((input) => input.firstName ?? input.lastName ?? input.dob ?? input.email, {
+    error: 'Change at least one detail',
+    path: ['firstName'],
+  })
+  .meta({ id: 'AdminUserUpdateRequest' });
 
 // Bookings ---------------------------------------------------------------------------------------------------
 
@@ -535,7 +567,8 @@ export const staffTicketRowSchema = z
     status: z.enum(TICKET_STATUSES),
     from: z.object({ name: z.string(), email: z.string(), userId: z.string().optional() }),
     bookingRef: z.string().optional(),
-    assignedTo: z.string().optional(),
+    assignedTo: z.string().optional().meta({ description: 'The name of the staff member handling it' }),
+    assignedToId: z.string().optional().meta({ description: 'Their user id' }),
     messages: z.number().int(),
     updatedAt: iso,
     createdAt: iso,
@@ -579,7 +612,19 @@ export const staffTicketReplySchema = z
   .meta({ id: 'StaffTicketReplyRequest' });
 
 export const ticketUpdateSchema = z
-  .object({ status: z.enum(TICKET_STATUSES).optional(), assignToMe: z.boolean().optional() })
+  .object({
+    status: z.enum(TICKET_STATUSES).optional(),
+    assignToMe: z.boolean().optional(),
+    assignTo: z
+      .string()
+      .regex(/^[0-9a-f]{24}$/, { error: 'Choose who handles it' })
+      .nullable()
+      .optional()
+      .meta({
+        description:
+          'Hand the ticket to an active support member or the admin (from GET /admin/incidents/assignees), or null for nobody. 409 NOT_STAFF for anyone else, OWN_RECORD for someone the ticket is about',
+      }),
+  })
   .meta({ id: 'TicketUpdateRequest' });
 
 // Moderation and risk ----------------------------------------------------------------------------------------
@@ -618,11 +663,16 @@ export const resolveReportSchema = z
   .object({ status: z.enum(['ACTIONED', 'DISMISSED']), resolution: reason })
   .meta({ id: 'ResolveReportRequest' });
 
+export const riskQueueQuerySchema = z.object({ page });
+
 export const riskQueueSchema = z
   .object({
     users: z.array(
       adminUserRowSchema.extend({ flags: z.array(riskFlagViewSchema) }).meta({ id: 'RiskUser' }),
     ),
+    total: z.number().int().meta({ description: 'People with a flag to review' }),
+    page: z.number().int(),
+    nextPage: z.number().int().optional().meta({ description: 'Set when there are more' }),
   })
   .meta({ id: 'RiskQueue' });
 

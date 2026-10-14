@@ -90,7 +90,9 @@ const HAS_RECEIPT: PaymentStatus[] = ['SUCCEEDED', 'REFUNDED', 'PARTIALLY_REFUND
  * extra charge stays, because it still has to be paid.
  */
 export async function listPaymentHistory(userId: string): Promise<PaymentHistoryItem[]> {
-  const bookings = await BookingModel.find({ guestId: userId }).select('ref vehicleSnapshot.title').lean();
+  const bookings = await BookingModel.find({ guestId: userId })
+    .select('ref vehicleSnapshot.title extraCharges._id extraCharges.paymentId')
+    .lean();
   if (bookings.length === 0) return [];
   const byId = new Map(bookings.map((booking) => [booking._id.toString(), booking]));
   const payments = await PaymentModel.find({
@@ -123,11 +125,17 @@ export async function listPaymentHistory(userId: string): Promise<PaymentHistory
           .filter((refund) => refund.status !== 'FAILED')
           .reduce((sum, refund) => sum + refund.amountCents, 0),
         refunds,
-        // A paid extra charge is on the booking's receipt, under "Charges after the trip".
+        // A paid extra charge is on the booking's receipt, under "Charges after the trip", refunded since or
+        // not; a second payment for it, given back, isn't.
         hasReceipt:
-          payment.type === 'EXTRA_CHARGE'
-            ? payment.status === 'SUCCEEDED'
-            : payment.type === 'BOOKING' && HAS_RECEIPT.includes(payment.status),
+          HAS_RECEIPT.includes(payment.status) &&
+          (payment.type === 'BOOKING' ||
+            (payment.type === 'EXTRA_CHARGE' &&
+              (booking.extraCharges ?? []).some(
+                (charge) =>
+                  charge._id?.equals(payment.extraChargeId) &&
+                  (!charge.paymentId || charge.paymentId.equals(payment._id)),
+              ))),
       },
     ];
   });

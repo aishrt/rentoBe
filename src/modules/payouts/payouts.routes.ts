@@ -5,7 +5,7 @@ import { earningsStatement, hostEarnings } from '../hosts/earnings.service.js';
 import { payLinkView, startPayLink, syncPayLink } from '../payments/extra-charges.service.js';
 import { UserModel } from '../users/user.model.js';
 import { dashboardLink, onboardingLink, payoutAccountView, syncPayoutAccount } from './connect.service.js';
-import { hostPayoutsQuerySchema, statementQuerySchema } from './payouts.schemas.js';
+import { earningsQuerySchema, hostPayoutsQuerySchema, statementQuerySchema } from './payouts.schemas.js';
 import { listHostPayouts } from './payouts.service.js';
 
 /** Mounted at /api/v1/host, next to the vehicle routes: the Host's payouts and payout setup. */
@@ -24,7 +24,8 @@ export function hostPayoutsRouter() {
 
   // The earnings dashboard and the GST-ready statement (spec §9, §23).
   router.get('/earnings', async (req, res) => {
-    res.json(await hostEarnings(req.auth!.userId));
+    const { month } = validate(earningsQuerySchema, req.query);
+    res.json(await hostEarnings(req.auth!.userId, new Date(), month));
   });
 
   router.get('/earnings/statement', async (req, res) => {

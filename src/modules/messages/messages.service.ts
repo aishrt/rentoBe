@@ -17,6 +17,7 @@ import { UserModel } from '../users/user.model.js';
 import { MessageModel } from './message.model.js';
 import {
   REMOVED_MESSAGE_NOTICE,
+  THREADS_PAGE_SIZE,
   type MessageView,
   type SendMessageInput,
   type ThreadDetail,
@@ -67,6 +68,25 @@ export function unreadNoticeSince(
   const noticed = thread.unreadNotices?.find((notice) => notice.userId.equals(recipientId))?.at;
   if (!noticed || noticed <= read) return read;
   return at.getTime() - noticed.getTime() < UNREAD_NOTICE_COOLDOWN_MS ? null : noticed;
+}
+
+/**
+ * When the unread-message notice for a message sent at `at` is due, and which notice it is: 10 minutes
+ * later, under its streak's name (unreadNoticeSince). Within 12 hours of the last notice, it waits for those
+ * 12 hours to pass, under that notice's name, so a message sent meanwhile is still announced then if unread.
+ */
+export function unreadNoticeDue(
+  thread: Pick<ThreadRecord, 'reads' | 'unreadNotices'>,
+  recipientId: Id | string,
+  at: Date,
+): { since: Date; runAt: Date } {
+  const runAt = new Date(at.getTime() + UNREAD_EMAIL_DELAY_MS);
+  const since = unreadNoticeSince(thread, recipientId, at);
+  if (since) return { since, runAt };
+  // Null only within 12 hours of a notice sent since the conversation was last read.
+  const noticed = thread.unreadNotices!.find((notice) => notice.userId.equals(recipientId))!.at;
+  const cooled = noticed.getTime() + UNREAD_NOTICE_COOLDOWN_MS;
+  return { since: noticed, runAt: new Date(Math.max(runAt.getTime(), cooled)) };
 }
 
 /** Records that the recipient was just sent an unread-message notice, which starts the 12-hour wait. */
@@ -190,17 +210,55 @@ async function toSummaries(threads: ThreadRecord[], userId: string, now: Date): 
   return summaries;
 }
 
-/** GET /threads: the user's conversations, most recent first, as Guest and as Host. */
-export async function listThreads(userId: string, now = new Date()) {
-  const threads = await ThreadModel.find({
+/*
+ * The inbox comes a page at a time. A page ends at a conversation; the next starts just after it, newest
+ * first. The cursor is opaque to clients: that conversation's last message time and id.
+ */
+const encodeThreadCursor = (thread: ThreadRecord) =>
+  Buffer.from(`${thread.lastMessageAt!.getTime()}:${thread._id.toString()}`).toString('base64url');
+
+function decodeThreadCursor(cursor: string): { at: Date; id: string } {
+  const match = /^(\d{1,15}):([0-9a-f]{24})$/.exec(Buffer.from(cursor, 'base64url').toString());
+  if (!match) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
+      cursor: 'Unknown cursor. Start again from the first page.',
+    });
+  }
+  return { at: new Date(Number(match[1])), id: match[2]! };
+}
+
+/**
+ * GET /threads: the user's conversations, most recent first, as Guest and as Host, a page at a time
+ * (`nextCursor` asks for the next). The unread total counts every conversation, not just this page's.
+ */
+export async function listThreads(
+  userId: string,
+  { cursor, limit = THREADS_PAGE_SIZE }: { cursor?: string; limit?: number } = {},
+  now = new Date(),
+) {
+  const after = cursor ? decodeThreadCursor(cursor) : undefined;
+  const found = await ThreadModel.find({
     participantIds: userId,
     lastMessageAt: mongoose.trusted({ $exists: true }),
+    // Older than the cursor, or as old with a lower id.
+    ...(after && {
+      $or: [
+        { lastMessageAt: mongoose.trusted({ $lt: after.at }) },
+        { lastMessageAt: after.at, _id: mongoose.trusted({ $lt: new mongoose.Types.ObjectId(after.id) }) },
+      ],
+    }),
   })
-    .sort({ lastMessageAt: -1 })
-    .limit(100)
+    .sort({ lastMessageAt: -1, _id: -1 })
+    .limit(limit + 1)
     .lean<ThreadRecord[]>();
-  const summaries = await toSummaries(threads, userId, now);
-  return { threads: summaries, unreadTotal: summaries.reduce((sum, thread) => sum + thread.unreadCount, 0) };
+  const threads = found.slice(0, limit);
+  const last = threads.at(-1);
+  const [summaries, unread] = await Promise.all([toSummaries(threads, userId, now), unreadTotal(userId)]);
+  return {
+    threads: summaries,
+    unreadTotal: unread,
+    ...(found.length > limit && last && { nextCursor: encodeThreadCursor(last) }),
+  };
 }
 
 /** GET /threads/unread: how many messages wait, for the Messages tab's badge. */
@@ -359,20 +417,19 @@ export async function sendMessage(
     // Writing a message means they've read the conversation so far.
     await markRead(thread, actor.userId, created!.createdAt, session);
     const fresh = await ThreadModel.findById(thread._id).session(session).lean<ThreadRecord>();
-    // One notice per streak of unread messages: the first message of a streak queues it.
-    const since = unreadNoticeSince(fresh!, recipientId, created!.createdAt);
-    if (since) {
-      await enqueue(
-        'messages.unreadEmail',
-        { threadId: thread.id, recipientId: recipientId.toString() },
-        {
-          runAt: new Date(created!.createdAt.getTime() + UNREAD_EMAIL_DELAY_MS),
-          uniqueKey: `unread-email:${thread.id}:${recipientId.toString()}:${since.getTime()}`,
-          refId: booking.id,
-          session,
-        },
-      );
-    }
+    // One notice per streak of unread messages: the first message of a streak queues it. Within 12 hours
+    // of the last notice, it's queued for when those 12 hours are up.
+    const { since, runAt } = unreadNoticeDue(fresh!, recipientId, created!.createdAt);
+    await enqueue(
+      'messages.unreadEmail',
+      { threadId: thread.id, recipientId: recipientId.toString() },
+      {
+        runAt,
+        uniqueKey: `unread-email:${thread.id}:${recipientId.toString()}:${since.getTime()}`,
+        refId: booking.id,
+        session,
+      },
+    );
     const record = created!.toObject() as MessageRecord;
     afterCommit(session, () => emitMessage(booking.toObject() as BookingRecord, record));
     return record;
@@ -384,16 +441,30 @@ export async function sendMessage(
 export async function readThread(actor: Actor, ref: string, now = new Date()): Promise<void> {
   const { booking, viewer, thread } = await openThreadFor(actor, ref);
   await markRead(thread, actor.userId, now);
+  // The bell's "new message" notices for this conversation are read with it.
+  const notices = await NotificationModel.updateMany(
+    {
+      userId: actor.userId,
+      channel: 'IN_APP',
+      type: 'NEW_MESSAGE',
+      'payload.link': `/messages/${booking.ref}`,
+      readAt: mongoose.trusted({ $exists: false }),
+      createdAt: mongoose.trusted({ $lte: now }),
+    },
+    { $set: { readAt: now } },
+  );
   const otherId = viewer === 'GUEST' ? booking.hostId : booking.guestId;
   emitToUser(otherId.toString(), 'thread:read', { ref: booking.ref, at: now.toISOString() });
   emitToUser(actor.userId, 'thread:read', { ref: booking.ref, at: now.toISOString(), self: true });
+  if (notices.modifiedCount > 0)
+    emitToUser(actor.userId, 'notification', { type: 'NEW_MESSAGE', read: true });
 }
 
 /**
  * `messages.unreadEmail` (plan §4.3): 10 minutes after a message, the recipient is emailed (and texted,
- * if they asked) when the conversation is still unread. Returns the unread messages it reports, which
- * notice they belong to (`noticeSince`, null within 12 hours of the last one), and whether the recipient
- * has blocked the sender since.
+ * if they asked) when the conversation is still unread. Returns the unread messages it reports, when the
+ * oldest of them was sent (`oldestAt`), which notice they belong to (`noticeSince`, null within 12 hours
+ * of the last one), and whether the recipient has blocked the sender since.
  */
 export async function unreadMessagesFor(threadId: string, recipientId: string, now = new Date()) {
   const thread = await ThreadModel.findById(threadId).lean<ThreadRecord>();
@@ -408,7 +479,7 @@ export async function unreadMessagesFor(threadId: string, recipientId: string, n
     createdAt: mongoose.trusted({ $gt: since }),
     hiddenAt: mongoose.trusted({ $exists: false }),
   })
-    .sort({ createdAt: 1 })
+    .sort({ createdAt: 1, _id: 1 })
     .lean<MessageRecord[]>();
   if (unread.length === 0) return null;
   const viewer: Viewer = booking.guestId.equals(recipientId) ? 'GUEST' : 'HOST';
@@ -420,6 +491,7 @@ export async function unreadMessagesFor(threadId: string, recipientId: string, n
     viewer,
     count: unread.length,
     latest,
+    oldestAt: unread[0]!.createdAt,
     noticeSince: unreadNoticeSince(thread, recipientId, now),
     // Accounts made before blocking existed have no list (lean reads skip the schema's default).
     blockedSender: recipient?.blockedUserIds?.some((id) => id.equals(senderId)) ?? false,

@@ -7,7 +7,7 @@ import { nzTripDays } from '../../lib/nz-time.js';
 import { emailTheme } from '../../emails/theme.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { bookingPayment } from '../payments/booking-payment.js';
-import { PaymentModel } from '../payments/payment.model.js';
+import { PaymentModel, type Payment } from '../payments/payment.model.js';
 import { UserModel } from '../users/user.model.js';
 import type { BookingDocument } from './booking.model.js';
 import type { Viewer } from './booking-view.js';
@@ -21,6 +21,17 @@ import type { Receipt } from './bookings.schemas.js';
  */
 
 const RECEIPT_STATUSES = ['SUCCEEDED', 'REFUNDED', 'PARTIALLY_REFUNDED'] as const;
+
+/**
+ * When a payment was taken. One recorded before `succeededAt` existed falls back to its last change, or its
+ * first refund if earlier, as a refund moves updatedAt on.
+ */
+function paidTime(payment: Pick<Payment, 'succeededAt' | 'updatedAt' | 'refunds'>): Date {
+  if (payment.succeededAt) return payment.succeededAt;
+  return new Date(
+    Math.min(payment.updatedAt.getTime(), ...payment.refunds.map((refund) => refund.createdAt.getTime())),
+  );
+}
 
 /** The GST in a GST-inclusive amount. */
 const gstIn = (cents: number, ratePct: number) => Math.round((cents * ratePct) / (100 + ratePct));
@@ -49,7 +60,7 @@ export async function bookingReceipt(booking: BookingDocument, viewer: Viewer): 
       type: 'EXTRA_CHARGE',
       status: mongoose.trusted({ $in: RECEIPT_STATUSES }),
     })
-      .select('extraChargeId method updatedAt refunds')
+      .select('extraChargeId method succeededAt updatedAt refunds')
       .lean(),
   ]);
   // Charges after the trip (extra kilometres, or from a resolved case), each paid on its own, with any
@@ -57,13 +68,12 @@ export async function bookingReceipt(booking: BookingDocument, viewer: Viewer): 
   const extraCharges = booking.extraCharges
     .filter((charge) => charge.status === 'SUCCEEDED')
     .map((charge) => {
-      const paid = chargePayments.find((payment) => payment.extraChargeId?.equals(charge._id));
+      // The payment that paid it: a second one, given back, isn't on the receipt.
+      const paid =
+        chargePayments.find((payment) => charge.paymentId && payment._id.equals(charge.paymentId)) ??
+        chargePayments.find((payment) => payment.extraChargeId?.equals(charge._id));
       const refunds = paid?.refunds ?? [];
-      // A refund moves updatedAt on; the charge was paid before its first refund.
-      const paidAt = Math.min(
-        (paid?.updatedAt ?? booking.endAt).getTime(),
-        ...refunds.map((refund) => refund.createdAt.getTime()),
-      );
+      const paidAt = paid ? paidTime(paid).getTime() : booking.endAt.getTime();
       return {
         description: charge.description,
         amountCents: charge.amountCents,
@@ -83,8 +93,9 @@ export async function bookingReceipt(booking: BookingDocument, viewer: Viewer): 
       };
     });
   // Charged when the booking was confirmed: at checkout for Instant Book, or when the Host accepted.
+  // One never confirmed (paid after it had ended, say, and refunded) shows when the money was taken.
   const paidAt =
-    booking.statusHistory.find((change) => change.status === 'CONFIRMED')?.at ?? payment.updatedAt;
+    booking.statusHistory.find((change) => change.status === 'CONFIRMED')?.at ?? paidTime(payment);
   const refunded = payment.refunds
     .filter((refund) => refund.status === 'SUCCEEDED')
     .reduce((sum, refund) => sum + refund.amountCents, 0);

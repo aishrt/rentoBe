@@ -113,12 +113,14 @@ export const ratingSchema = new Schema<Rating>(
 /** A private file attached to a message, incident or support ticket, shown through signed URLs (plan §3). */
 export interface FileAttachment {
   url: string;
+  /** A message photo's smaller copy, which the conversation shows (confirmSharedPhoto). */
+  previewUrl?: string;
   name?: string;
   contentType?: string;
 }
 
 export const attachmentSchema = new Schema<FileAttachment>(
-  { url: { type: String, required: true }, name: String, contentType: String },
+  { url: { type: String, required: true }, previewUrl: String, name: String, contentType: String },
   { _id: false },
 );
 
