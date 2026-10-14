@@ -1,6 +1,7 @@
 import { formatNzdFromCents } from '../lib/format.js';
 import type { Destination } from '../modules/cms/destination.model.js';
 import type { FuelType, Transmission, Vehicle } from '../modules/vehicles/vehicle.model.js';
+import { coverPhoto } from '../modules/vehicles/vehicle-view.js';
 
 /*
  * The <head> tags for vehicle and destination pages (plan §1.4, item 2). They follow the frontend's own
@@ -99,9 +100,8 @@ export function vehiclePageTags(vehicle: PublicVehicle, indexable: boolean, site
   const name = [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(' ');
   const place = [vehicle.suburb, vehicle.city].filter(Boolean).join(', ') || 'New Zealand';
   const path = `/cars/${vehicle.slug}`;
-  const photo = vehicle.photos
-    .filter((candidate) => candidate.status === 'APPROVED')
-    .sort((a, b) => a.order - b.order)[0];
+  // The listing's own cover, as on its cards: the front first.
+  const photo = coverPhoto(vehicle);
 
   const facts = [
     vehicle.seats && `${vehicle.seats} seats`,

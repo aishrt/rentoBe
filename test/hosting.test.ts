@@ -240,11 +240,24 @@ describe('Vehicle onboarding', () => {
     await agent
       .patch(`/api/v1/host/vehicles/${id}`)
       .send({ regoExpiry: '2027-06-30', wofExpiry: '2027-03-31', onboardingStep: 3 });
+    // Insurance has no date on the car: its expiry comes with the document, for the reminder before it ends.
+    const undated = await upload(agent, id, 'VEHICLE_DOCUMENT', PDF, 'application/pdf');
+    const noExpiry = await agent
+      .post(`/api/v1/host/vehicles/${id}/documents`)
+      .send({ type: 'INSURANCE', upload: undated });
+    expect(noExpiry.status).toBe(400);
+    expect(noExpiry.body.error.fields.expiry).toBe('Enter the date the insurance expires');
     for (const type of ['REGO', 'WOF', 'INSURANCE']) {
       const key = await upload(agent, id, 'VEHICLE_DOCUMENT', PDF, 'application/pdf');
-      const attached = await agent.post(`/api/v1/host/vehicles/${id}/documents`).send({ type, upload: key });
+      const attached = await agent
+        .post(`/api/v1/host/vehicles/${id}/documents`)
+        .send({ type, upload: key, ...(type === 'INSURANCE' && { expiry: '2027-05-31' }) });
       expect(attached.status).toBe(201);
     }
+    const insurance = (await VehicleModel.findById(id).lean())!.documents.find(
+      (document) => document.type === 'INSURANCE',
+    );
+    expect(insurance!.expiry).toEqual(expect.any(Date));
 
     // Submitting now lists what's still missing, by step.
     const early = await agent.post(`/api/v1/host/vehicles/${id}/submit`);
@@ -518,6 +531,101 @@ describe('Vehicle onboarding', () => {
     expect(
       await NotificationModel.countDocuments({ type: 'LISTING_PHOTO_REJECTED', channel: 'IN_APP' }),
     ).toBe(1);
+  });
+
+  it('puts a retaken photo on a live car in place of the old one once staff approve it', async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { hostProfile: { status: 'APPROVED', appliedAt: new Date() } } },
+    );
+    const vehicle = await createVehicle(user._id);
+    await createStaff();
+    const staff = await staffAgent();
+    const publicPhotos = async () =>
+      (await request(app).get(`/api/v1/vehicles/${vehicle.slug}`)).body.vehicle.photos as {
+        type: string;
+        url: string;
+      }[];
+    const retake = async (type: string) => {
+      const key = await upload(agent, vehicle.id, 'VEHICLE_PHOTO');
+      const added = await agent
+        .post(`/api/v1/host/vehicles/${vehicle.id}/photos`)
+        .send({ type, upload: key });
+      return added.body.vehicle.photos.at(-1) as { id: string; url: string };
+    };
+
+    // One photo approved on its own: the old front stays on show until then, and goes after.
+    const front = await retake('FRONT');
+    expect((await publicPhotos()).filter((photo) => photo.type === 'FRONT')).toHaveLength(1);
+    expect((await publicPhotos())[0]!.url).not.toBe(front.url);
+    const approved = await staff
+      .post(`/api/v1/admin/vehicles/${vehicle.id}/photos/${front.id}`)
+      .send({ decision: 'APPROVE' });
+    expect(approved.status).toBe(200);
+    expect(approved.body.vehicle.photos.filter((photo: { type: string }) => photo.type === 'FRONT')).toEqual([
+      expect.objectContaining({ id: front.id, status: 'APPROVED' }),
+    ]);
+    const shown = await publicPhotos();
+    expect(shown.map((photo) => photo.type)).toEqual(['FRONT', 'REAR', 'INTERIOR']);
+    expect(shown[0]!.url).toBe(front.url);
+
+    // The listing's changes approved together; damage photos all stay.
+    const rear = await retake('REAR');
+    await retake('DAMAGE');
+    await retake('DAMAGE');
+    expect((await staff.post(`/api/v1/admin/vehicles/${vehicle.id}/approve`).send({})).status).toBe(200);
+    const after = await publicPhotos();
+    expect(after.map((photo) => photo.type)).toEqual(['FRONT', 'REAR', 'INTERIOR', 'DAMAGE', 'DAMAGE']);
+    expect(after[1]!.url).toBe(rear.url);
+  });
+
+  it("keeps a live car's required photos and kilometre terms whole", async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { hostProfile: { status: 'APPROVED', appliedAt: new Date() } } },
+    );
+    const vehicle = await createVehicle(user._id);
+    const front = vehicle.photos.find((photo) => photo.type === 'FRONT')!._id!.toString();
+
+    // The only approved front stays, even with a retake still waiting; the retake itself can go.
+    const last = await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/photos/${front}`);
+    expect(last.status).toBe(409);
+    expect(last.body.error.code).toBe('LAST_APPROVED_PHOTO');
+    const key = await upload(agent, vehicle.id, 'VEHICLE_PHOTO');
+    const added = await agent
+      .post(`/api/v1/host/vehicles/${vehicle.id}/photos`)
+      .send({ type: 'FRONT', upload: key });
+    const retake = added.body.vehicle.photos.at(-1).id as string;
+    expect((await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/photos/${front}`)).status).toBe(409);
+    expect((await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/photos/${retake}`)).status).toBe(200);
+
+    // Unlimited kilometres off needs an allowance a day.
+    await agent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ unlimitedKm: true });
+    const none = await agent
+      .patch(`/api/v1/host/vehicles/${vehicle.id}`)
+      .send({ unlimitedKm: false, kmAllowancePerDay: null });
+    expect(none.status).toBe(400);
+    expect(none.body.error.fields.kmAllowancePerDay).toBe(
+      'Set a daily kilometre allowance, or offer unlimited kilometres',
+    );
+    const cleared = await agent
+      .patch(`/api/v1/host/vehicles/${vehicle.id}`)
+      .send({ kmAllowancePerDay: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.vehicle).toMatchObject({ unlimitedKm: true });
+    const limited = await agent
+      .patch(`/api/v1/host/vehicles/${vehicle.id}`)
+      .send({ unlimitedKm: false, kmAllowancePerDay: 200 });
+    expect(limited.body.vehicle).toMatchObject({ unlimitedKm: false, kmAllowancePerDay: 200 });
+
+    // A draft's terms are checked when it's submitted instead.
+    const draft = await agent.post('/api/v1/host/vehicles');
+    const saved = await agent
+      .patch(`/api/v1/host/vehicles/${draft.body.vehicle.id}`)
+      .send({ unlimitedKm: false, kmAllowancePerDay: null });
+    expect(saved.status).toBe(200);
   });
 });
 

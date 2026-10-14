@@ -1019,6 +1019,8 @@ async function carryOut(
         {
           session,
           released: uncaptured,
+          // Refused by Stripe at once: staff are alerted (refundIntent) and return it another way.
+          refundFailed: refund?.status === 'FAILED',
           reason: input.reason,
           ...(tripPayout?.state === 'PAID' && {
             tripPayoutSentCents: tripPayout.paidCents,

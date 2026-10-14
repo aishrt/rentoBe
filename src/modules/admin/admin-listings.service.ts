@@ -385,6 +385,7 @@ export async function decideListing(
         changesApproved.push(`the ${PHOTO_ANGLE_NAMES[photo.type]} photo`);
       }
     }
+    dropReplacedPhotos(vehicle);
     for (const document of vehicle.documents) {
       if (document.status === 'PENDING') {
         document.status = 'VERIFIED';
@@ -489,6 +490,7 @@ export async function decidePhoto(
   const wasPending = photo.status === 'PENDING';
   photo.status = approve ? 'APPROVED' : 'REJECTED';
   if (!approve) photo.qualityFlag = 'ADMIN_FLAGGED';
+  else dropReplacedPhotos(vehicle);
   await vehicle.save();
   forget('vehicles:featured');
   await recordAudit({
@@ -530,6 +532,23 @@ export async function decidePhoto(
 }
 
 const isLive = (vehicle: VehicleDocument) => vehicle.status === 'ACTIVE' || vehicle.status === 'INACTIVE';
+
+/**
+ * A photo retaken on a live listing waits for approval while the one it retakes stays on show (plan §3,
+ * "Changes to live listings"). Once approved, it takes that one's place: each angle keeps its newest
+ * approved photo and any newer one still waiting; damage photos all stay. The files stay in storage, as
+ * bookings keep the photo they were made with.
+ */
+function dropReplacedPhotos(vehicle: VehicleDocument) {
+  const kept = vehicle.photos.filter(
+    (photo, index) =>
+      photo.type === 'DAMAGE' ||
+      !vehicle.photos
+        .slice(index + 1)
+        .some((later) => later.type === photo.type && later.status === 'APPROVED'),
+  );
+  if (kept.length < vehicle.photos.length) vehicle.set('photos', kept);
+}
 
 const DOCUMENT_NAMES: Record<string, string> = {
   REGO: 'registration',

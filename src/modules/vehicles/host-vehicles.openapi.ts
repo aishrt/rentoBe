@@ -146,9 +146,14 @@ export function registerHostPaths(registry: OpenAPIRegistry) {
     path: '/host/vehicles/{id}/photos/{photoId}',
     tags: ['Hosting'],
     summary: 'Remove a photo',
+    description:
+      "409 LAST_APPROVED_PHOTO for an approved car's only approved photo of an angle it needs: a new one replaces it once approved.",
     security: signedIn,
     request: { params: idParam.extend({ photoId: z.string() }) },
-    responses: { 200: jsonResponse('The car', hostVehicleResponseSchema), ...errorResponses(401, 403, 404) },
+    responses: {
+      200: jsonResponse('The car', hostVehicleResponseSchema),
+      ...errorResponses(401, 403, 404, 409),
+    },
   });
 
   registry.registerPath({
@@ -156,6 +161,7 @@ export function registerHostPaths(registry: OpenAPIRegistry) {
     path: '/host/vehicles/{id}/documents',
     tags: ['Hosting'],
     summary: 'Add an uploaded document',
+    description: 'An insurance document needs its `expiry`: 400 with that field without it.',
     security: signedIn,
     request: { params: idParam, body: jsonBody(documentAttachSchema) },
     responses: {

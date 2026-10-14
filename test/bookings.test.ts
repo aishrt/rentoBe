@@ -1166,6 +1166,40 @@ describe('Cancellations', () => {
     expect((await UserModel.findById(host._id).lean())!.hostProfile!.feesOwedCents).toBe(5_000);
   });
 
+  it('tells the Guest when Stripe refuses the refund at once, instead of that it’s on its way', async () => {
+    const spies = mockStripe();
+    spies.refund.mockImplementation(
+      async (params) =>
+        ({
+          id: 're_refused',
+          status: 'failed',
+          failure_reason: 'expired_or_canceled_card',
+          amount: params?.amount,
+        }) as Stripe.Response<Stripe.Refund>,
+    );
+    await createStaff();
+    const { ref, piId, hostAgent, guest } = await paidBooking(true, 20);
+    await webhook('payment_intent.succeeded', { id: piId, object: 'payment_intent', status: 'succeeded' });
+    expect((await hostAgent.post(`/api/v1/bookings/${ref}/cancel`)).status).toBe(200);
+
+    const told = await NotificationModel.findOne({
+      userId: guest._id,
+      type: 'BOOKING_CANCELLED',
+      channel: 'IN_APP',
+    }).lean();
+    expect((told!.payload as { body: string }).body).toBe(
+      'Your refund of $338.70 didn’t go through to your card. Our team is sorting it and will be in touch.',
+    );
+    const email = await NotificationModel.findOne({
+      userId: guest._id,
+      type: 'BOOKING_CANCELLED',
+      channel: 'EMAIL',
+    }).lean();
+    expect(email!.payload).toMatchObject({ props: { refund: '$338.70', refundFailed: true } });
+    expect(await NotificationModel.countDocuments({ type: 'REFUND_ISSUED' })).toBe(0);
+    expect(await NotificationModel.countDocuments({ type: 'REFUND_FAILED' })).toBeGreaterThan(0);
+  });
+
   it('lets staff with the refunds permission cancel a no-show', async () => {
     mockStripe();
     const { ref, piId } = await paidBooking(true, 20);
