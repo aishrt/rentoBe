@@ -2,7 +2,7 @@ import type { ClientSession } from 'mongoose';
 import { env } from '../../env.js';
 import { formatNzDateTime, formatNzdExact } from '../../lib/format.js';
 import { requestOutcomeHeadings, type RequestOutcome } from '../../emails/templates/booking-emails.js';
-import { notify } from '../notifications/notify.js';
+import { nextSmsTime, notify } from '../notifications/notify.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import type { CancellationReason } from './booking.model.js';
 import type { CancellationOutcome } from './policies.js';
@@ -33,15 +33,18 @@ function basics(booking: BookingRecord) {
   };
 }
 
-const shortDates = (booking: BookingRecord) =>
-  `${formatNzDateTime(booking.startAt).replace(/ \d{4},/, ',')} to ${formatNzDateTime(booking.endAt).replace(/ \d{4},/, ',')}`;
+/** "Mon, 12 Oct, 10:00 am": a time without the year, for a short text. */
+const shortTime = (instant: Date) => formatNzDateTime(instant).replace(/ \d{4},/, ',');
+
+const shortDates = (booking: BookingRecord) => `${shortTime(booking.startAt)} to ${shortTime(booking.endAt)}`;
 
 type Options = { session?: ClientSession };
 
 /**
- * A request to book: the Host decides within 24 h; the Guest knows it's sent (plan §8.2). When the
- * Guest's verification is in review, the Guest is told that instead, and the Host of an Instant Book
- * car hears nothing until the booking is confirmed: there is nothing for them to answer.
+ * A request to book: the Host decides within 24 h, or before the trip starts if that's sooner; the Guest
+ * knows it's sent (plan §8.2). When the Guest's verification is in review, the Guest is told that instead,
+ * and the Host of an Instant Book car hears nothing until the booking is confirmed: there is nothing for
+ * them to answer.
  */
 export async function notifyRequestReceived(
   booking: BookingRecord,
@@ -91,6 +94,10 @@ export async function notifyRequestReceived(
     if (booking.instantBook) return;
   }
 
+  // A request that runs out before quiet hours end (one sent late at night for a trip early next morning) is
+  // texted straight away: held for the morning, it would be dropped unsent (plan §7).
+  const answerBy = booking.requestExpiresAt!;
+  const urgent = answerBy <= (await nextSmsTime());
   await notify(
     {
       userId: booking.hostId,
@@ -111,10 +118,11 @@ export async function notifyRequestReceived(
         },
       },
       sms: {
-        body: `Rento Vroom: ${guestName} wants to book your ${booking.vehicleSnapshot.title}, ${shortDates(booking)}. Accept or decline within 24 hours: ${hostBookingUrl(booking)}`,
+        body: `Rento Vroom: ${guestName} wants to book your ${booking.vehicleSnapshot.title}, ${shortDates(booking)}. Accept or decline by ${shortTime(answerBy)}: ${hostBookingUrl(booking)}`,
         // Held by quiet hours: not sent if the request was answered, withdrawn or ran out meanwhile.
         whileBooking: { id: booking._id, statuses: ['PENDING'] },
-        ...(booking.requestExpiresAt && { expiresAt: booking.requestExpiresAt }),
+        expiresAt: answerBy,
+        ...(urgent && { urgent: true }),
       },
       dedupeKey: `BOOKING_REQUEST:${booking._id.toString()}`,
     },
@@ -155,6 +163,10 @@ export async function notifyConfirmed(
   const hostView = toBookingView(booking, context, 'HOST');
   const guestName = context.guest?.firstName ?? 'A guest';
   const hostName = context.host?.firstName ?? 'your host';
+  // A trip starting within 3 hours can't wait for the end of quiet hours (plan §7), and nor can one that
+  // starts before they end: held for the morning, its text would be dropped unsent.
+  const textNow =
+    booking.instantBook && (isLastMinute(booking.startAt) || booking.startAt <= (await nextSmsTime()));
 
   await notify(
     {
@@ -207,9 +219,8 @@ export async function notifyConfirmed(
         sms: {
           body: `Rento Vroom: ${guestName} has booked your ${booking.vehicleSnapshot.title}, ${shortDates(booking)}. Details: ${hostBookingUrl(booking)}`,
           whileBooking: { id: booking._id, statuses: ['CONFIRMED', 'ACTIVE'] },
-          // A trip starting within 3 hours can't wait for the end of quiet hours (plan §7); otherwise a
-          // text held past the start is no use.
-          ...(isLastMinute(booking.startAt) ? { urgent: true } : { expiresAt: booking.startAt }),
+          // Otherwise a text held past the start is no use.
+          ...(textNow ? { urgent: true } : { expiresAt: booking.startAt }),
         },
       }),
       dedupeKey: `BOOKING_CONFIRMED:${booking._id.toString()}:host`,
@@ -239,7 +250,7 @@ export async function notifyHostAccepted(
 
 /**
  * A pending booking that ended without a trip (plan §8.2): the Host declined it, nobody answered in
- * 24 h, or the Guest's verification was rejected or not finished in time.
+ * time, or the Guest's verification was rejected or not finished in time.
  */
 export async function notifyRequestEnded(
   booking: BookingRecord,

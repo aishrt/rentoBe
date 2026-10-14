@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
+import { formatNzDateTime } from '../src/lib/format.js';
 import { runHostReminders } from '../src/modules/hosts/host-reminders.service.js';
 import { ConditionReportModel } from '../src/modules/inspections/condition-report.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
@@ -21,9 +22,10 @@ describe('the Host’s to-do list', () => {
     const guest = await createUser({ email: 'kiri@example.co.nz' });
     const vehicle = await createVehicle(host._id, { wofExpiry: new Date(Date.now() + 5 * DAY_MS) });
     await VehicleModel.updateOne({ _id: vehicle._id }, { $set: { payoutsReady: false } });
+    const requestExpiresAt = new Date(Date.now() + DAY_MS);
     await createBookingRecord(
       { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
-      { status: 'PENDING', instantBook: false, requestExpiresAt: new Date(Date.now() + DAY_MS) },
+      { status: 'PENDING', instantBook: false, requestExpiresAt },
     );
     await createBookingRecord(
       { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
@@ -38,6 +40,11 @@ describe('the Host’s to-do list', () => {
     expect(items.find((item: { kind: string }) => item.kind === 'PAYOUT_SETUP')).toMatchObject({
       urgent: true,
       detail: 'An approved listing goes live once it’s done.',
+    });
+    // The request's own deadline, not a fixed 24 hours.
+    expect(items.find((item: { kind: string }) => item.kind === 'REQUESTS')).toMatchObject({
+      urgent: true,
+      detail: `Answer by ${formatNzDateTime(requestExpiresAt)} (NZ time).`,
     });
     expect(items.find((item: { kind: string }) => item.kind === 'DOCUMENT_EXPIRING')).toMatchObject({
       title: '2021 Toyota Corolla: WOF expires soon',

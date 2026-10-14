@@ -184,3 +184,63 @@ describe('Place suggestions with Google switched on', () => {
     expect(response.body.suggestions[0]).toMatchObject({ name: 'Auckland' });
   });
 });
+
+describe('Searching from a street address with Google switched on', () => {
+  const app = testApp();
+  const QUEEN_STREET = {
+    placeId: 'ChIJqueen',
+    label: '12 Queen Street, Auckland Central, Auckland 1010',
+    lat: -36.8466,
+    lng: 174.7663,
+  };
+
+  beforeEach(async () => {
+    forget();
+    fakeGoogle.details.mockReset().mockResolvedValue(QUEEN_STREET);
+    await createPlaces();
+  });
+
+  it('uses the coordinates the website sent, without asking Google again', async () => {
+    const response = await request(app).get('/api/v1/search').query({
+      where: '12 Queen Street, Auckland Central, Auckland',
+      placeId: 'google:ChIJqueen',
+      lat: QUEEN_STREET.lat,
+      lng: QUEEN_STREET.lng,
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.place).toMatchObject({
+      label: '12 Queen Street, Auckland Central, Auckland',
+      type: 'ADDRESS',
+      lat: QUEEN_STREET.lat,
+      lng: QUEEN_STREET.lng,
+    });
+    expect(fakeGoogle.details).not.toHaveBeenCalled();
+  });
+
+  it('asks Google once for an address without coordinates, then keeps it', async () => {
+    const search = () => request(app).get('/api/v1/search').query({ placeId: 'google:ChIJqueen' });
+    expect((await search()).body.place).toMatchObject({ type: 'ADDRESS', lat: QUEEN_STREET.lat });
+    expect((await search()).status).toBe(200);
+    expect((await request(app).get('/api/v1/places/google:ChIJqueen')).status).toBe(200);
+    expect(fakeGoogle.details).toHaveBeenCalledTimes(1);
+  });
+
+  it('still searches when Google fails or times out', async () => {
+    fakeGoogle.details.mockRejectedValue(
+      new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+    );
+    const response = await request(app)
+      .get('/api/v1/search')
+      .query({ where: 'Auckland', placeId: 'google:ChIJqueen' });
+    expect(response.status).toBe(200);
+    expect(response.body.place).toMatchObject({ label: 'Auckland' });
+  });
+
+  it("answers 503 for the address when Google fails, and doesn't keep the failure", async () => {
+    fakeGoogle.details.mockRejectedValueOnce(new Error('Google Place Details answered 500'));
+    const failed = await request(app).get('/api/v1/places/google:ChIJqueen');
+    expect(failed.status).toBe(503);
+    expect(failed.body.error.code).toBe('PLACES_UNAVAILABLE');
+    expect((await request(app).get('/api/v1/places/google:ChIJqueen')).status).toBe(200);
+  });
+});

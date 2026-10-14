@@ -88,6 +88,12 @@ export function smsSendTime(now: Date, quietStart: string, quietEnd: string): Da
   return fromNzWallClock(year, month, date, Math.floor(end / 60), end % 60);
 }
 
+/** When a non-urgent text queued now goes: now, or at the end of the quiet hours in settings (plan §7). */
+export async function nextSmsTime(now = new Date()): Promise<Date> {
+  const settings = await getPlatformSettings();
+  return smsSendTime(now, settings.sms.quietHoursStart, settings.sms.quietHoursEnd);
+}
+
 export async function notify(
   input: NotifyInput,
   { session, now = new Date() }: { session?: ClientSession; now?: Date } = {},
@@ -141,10 +147,7 @@ export async function notify(
   }
 
   if (input.sms && user.phone && user.phoneVerifiedAt) {
-    const settings = await getPlatformSettings();
-    const runAt = input.sms.urgent
-      ? now
-      : smsSendTime(now, settings.sms.quietHoursStart, settings.sms.quietHoursEnd);
+    const runAt = input.sms.urgent ? now : await nextSmsTime(now);
     const { whileBooking, expiresAt, whileUnread, whileOptedIn } = input.sms;
     const payload: SmsPayload = {
       body: input.sms.body,

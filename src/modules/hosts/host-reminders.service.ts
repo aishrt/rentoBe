@@ -1,7 +1,7 @@
 import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
-import { formatNzDate } from '../../lib/format.js';
+import { formatNzDate, formatNzDateTime } from '../../lib/format.js';
 import { nextNzHour, nzDate, nzTripDays } from '../../lib/nz-time.js';
 import { BookingModel } from '../bookings/booking.model.js';
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
@@ -132,18 +132,26 @@ export async function hostTodo(hostId: string, now = new Date()): Promise<TodoIt
     });
   }
 
-  const requests = await BookingModel.countDocuments({
+  // Soonest to expire first: a request expires after 24 hours, or at its trip's start if sooner (plan §8.2).
+  const requests = await BookingModel.find({
     hostId,
     status: 'PENDING',
     instantBook: false,
     hostAcceptedAt: mongoose.trusted({ $exists: false }),
     requestExpiresAt: mongoose.trusted({ $gt: now }),
-  });
-  if (requests > 0) {
+  })
+    .select('requestExpiresAt')
+    .sort({ requestExpiresAt: 1 })
+    .lean();
+  if (requests.length > 0) {
+    const answerBy = `${formatNzDateTime(requests[0]!.requestExpiresAt!)} (NZ time)`;
     items.push({
       kind: 'REQUESTS',
-      title: requests === 1 ? 'A booking request to answer' : `${requests} booking requests to answer`,
-      detail: 'Requests expire after 24 hours.',
+      title:
+        requests.length === 1
+          ? 'A booking request to answer'
+          : `${requests.length} booking requests to answer`,
+      detail: requests.length === 1 ? `Answer by ${answerBy}.` : `Answer the first by ${answerBy}.`,
       link: '/host/bookings',
       urgent: true,
     });

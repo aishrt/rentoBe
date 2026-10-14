@@ -74,6 +74,12 @@ export interface VehiclePhoto {
   _id?: Types.ObjectId;
   type: PhotoType;
   url: string;
+  /**
+   * A tiny copy of the photo as a data URI, which the website shows blurred while the photo loads (plan
+   * §12.5). Photos uploaded before 14/10/2026 have none until scripts/photo-placeholders.ts runs, and the
+   * demo cars' never do.
+   */
+  placeholder?: string;
   order: number;
   qualityFlag: (typeof PHOTO_QUALITY_FLAGS)[number];
   /** New photos on a live listing wait for support staff (plan §3, listing moderation). */
@@ -239,6 +245,12 @@ export interface Vehicle {
   documents: VehicleDocumentFile[];
   deliveryOptions: DeliveryOption[];
   recurringRules: RecurringRule[];
+  /**
+   * When each RECURRING block removed on its own (the staff calendar override) starts: rebuilding the rules
+   * leaves that occurrence out, so it stays bookable (plan §3, recurring availability). Dropped once it has
+   * started. Cars that never had one removed have none.
+   */
+  recurringSkips?: Date[];
   maintenanceReminders: MaintenanceReminder[];
   createdAt: Date;
   updatedAt: Date;
@@ -249,6 +261,7 @@ const percent = { type: Number, min: 0, max: 100, default: 0 };
 const photoSchema = new Schema<VehiclePhoto>({
   type: { type: String, enum: PHOTO_TYPES, required: true },
   url: { type: String, required: true },
+  placeholder: String,
   order: { type: Number, default: 0 },
   qualityFlag: { type: String, enum: PHOTO_QUALITY_FLAGS, default: 'OK' },
   status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'PENDING' },
@@ -399,6 +412,7 @@ const vehicleSchema = new Schema<Vehicle>(
     documents: { type: [documentSchema], default: [] },
     deliveryOptions: { type: [deliveryOptionSchema], default: [] },
     recurringRules: { type: [recurringRuleSchema], default: [] },
+    recurringSkips: { type: [Date], default: undefined },
     maintenanceReminders: { type: [maintenanceReminderSchema], default: [] },
   },
   { timestamps: true },

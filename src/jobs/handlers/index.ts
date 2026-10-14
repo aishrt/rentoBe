@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import type { JobDocument } from '../job.model.js';
 import {
+  bookingExpirySweepJob,
   expirePaymentHoldJob,
   expireRequestJob,
   paymentReceiptJob,
@@ -45,6 +46,7 @@ export const jobHandlers = {
   'notification.send': sendNotificationJob,
   'booking.expirePaymentHold': expirePaymentHoldJob,
   'booking.expireRequest': expireRequestJob,
+  'hourly.bookingExpiry': bookingExpirySweepJob,
   'payment.receipt': paymentReceiptJob,
   'payment.refundUnwanted': refundUnwantedJob,
   'payment.syncRefunds': syncRefundsJob,

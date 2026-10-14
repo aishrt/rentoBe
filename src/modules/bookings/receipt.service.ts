@@ -20,13 +20,14 @@ import type { Receipt } from './bookings.schemas.js';
  * it's set in Platform settings.
  */
 
-const RECEIPT_STATUSES = ['SUCCEEDED', 'REFUNDED', 'PARTIALLY_REFUNDED'] as const;
+/** A payment that took money has a receipt, refunded since or not; one authorised then released doesn't. */
+export const RECEIPT_STATUSES = ['SUCCEEDED', 'REFUNDED', 'PARTIALLY_REFUNDED'] as const;
 
 /**
  * When a payment was taken. One recorded before `succeededAt` existed falls back to its last change, or its
  * first refund if earlier, as a refund moves updatedAt on.
  */
-function paidTime(payment: Pick<Payment, 'succeededAt' | 'updatedAt' | 'refunds'>): Date {
+export function paidTime(payment: Pick<Payment, 'succeededAt' | 'updatedAt' | 'refunds'>): Date {
   if (payment.succeededAt) return payment.succeededAt;
   return new Date(
     Math.min(payment.updatedAt.getTime(), ...payment.refunds.map((refund) => refund.createdAt.getTime())),

@@ -13,7 +13,7 @@ import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env, isProduction } from '../../env.js';
 import { HttpError } from '../../lib/http-error.js';
-import { PHOTO_WIDTHS, documentAsJpeg, photoVariants, sharedPhoto } from './images.js';
+import { PHOTO_WIDTHS, documentAsJpeg, photoPlaceholder, photoVariants, sharedPhoto } from './images.js';
 import { localFilePath } from './local-files.js';
 
 /*
@@ -102,6 +102,12 @@ export interface StorageDriver {
    * photo replaced or removed. A URL this driver didn't make, or a file already gone, is left alone.
    */
   deletePublic(input: { url: string; widths?: readonly number[] }): Promise<void>;
+  /**
+   * A public photo's copy `width` across (one of the widths it was stored in), by the URL confirmUpload gave
+   * it; the local driver keeps the upload itself, in one size. Null for a URL this driver didn't make, such
+   * as a demo car's image.
+   */
+  readPublic(input: { url: string; width: number }): Promise<Buffer | null>;
 }
 
 const unavailable = () =>
@@ -205,6 +211,13 @@ function sharedPhotoPaths(folder: string, name: string, previewWidth: number) {
   return { path: `${folder}/${id}.jpg`, previewPath: `${folder}/${id}-${previewWidth}.webp` };
 }
 
+/** The file behind a public URL the local driver gave, or null for any other URL. */
+function localPublicRef(url: string): string | null {
+  const start = `${apiBase()}/api/v1/files/`;
+  const ref = url.startsWith(start) ? url.slice(start.length) : '';
+  return ref && !ref.includes('..') ? ref : null;
+}
+
 export function createLocalStorage(): StorageDriver {
   return {
     driver: 'local',
@@ -283,14 +296,18 @@ export function createLocalStorage(): StorageDriver {
     },
 
     async deletePublic({ url }) {
-      const start = `${apiBase()}/api/v1/files/`;
-      const ref = url.startsWith(start) ? url.slice(start.length) : '';
-      if (!ref || ref.includes('..')) return;
+      const ref = localPublicRef(url);
+      if (!ref) return;
       try {
         await unlink(localFilePath(ref));
       } catch {
         // Already gone, or not a file this driver keeps.
       }
+    },
+
+    async readPublic({ url }) {
+      const ref = localPublicRef(url);
+      return ref ? readFile(localFilePath(ref)) : null;
     },
   };
 }
@@ -346,6 +363,13 @@ export function createS3Storage(config: {
     }
   }
   const remove = (key: string) => client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+
+  /** The path a public photo's copies share, `<folder>/<uuid>`, from its URL; null for any other URL. */
+  function publicBase(url: string): string | null {
+    // The URL is the widest copy, `<folder>/<uuid>-<width>.webp`; every width shares the rest.
+    const path = url.startsWith(`${publicUrl}/`) ? url.slice(publicUrl.length + 1) : '';
+    return /^((?:[\w-]+\/)+[0-9a-f-]{36})-\d+\.webp$/.exec(path)?.[1] ?? null;
+  }
 
   /** Moves an upload to where it's kept, once: a second move finds it gone, or its new place taken. */
   async function move(from: string, to: string) {
@@ -421,11 +445,14 @@ export function createS3Storage(config: {
     },
 
     async deletePublic({ url, widths = PHOTO_WIDTHS }) {
-      // The URL is the widest copy, `<folder>/<uuid>-<width>.webp`; every width shares the rest.
-      const path = url.startsWith(`${publicUrl}/`) ? url.slice(publicUrl.length + 1) : '';
-      const base = /^((?:[\w-]+\/)+[0-9a-f-]{36})-\d+\.webp$/.exec(path)?.[1];
+      const base = publicBase(url);
       if (!base) return;
       await Promise.all(widths.map((width) => remove(`public/${base}-${width}.webp`)));
+    },
+
+    async readPublic({ url, width }) {
+      const base = publicBase(url);
+      return base ? read(`public/${base}-${width}.webp`) : null;
     },
 
     downloadUrl(path, ttlSeconds = DOWNLOAD_TTL_SECONDS) {
@@ -461,6 +488,15 @@ export function getStorage(): StorageDriver {
 /** The link to show for a saved file: public URLs as they are, private files as a short-lived link. */
 export function fileLink(stored: string): string {
   return isPrivateRef(stored) ? privateLink(stored) : stored;
+}
+
+/**
+ * The blurred placeholder for a listing photo stored with confirmUpload (plan §12.5), made from its smaller
+ * copy. Undefined for a photo storage didn't make, such as a demo car's image.
+ */
+export async function listingPhotoPlaceholder(url: string): Promise<string | undefined> {
+  const photo = await getStorage().readPublic({ url, width: Math.min(...PHOTO_WIDTHS) });
+  return photo ? photoPlaceholder(photo) : undefined;
 }
 
 /** Deletes a saved private file (a `local:` or `s3:` reference); public URLs are left alone. */

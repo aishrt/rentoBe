@@ -250,7 +250,8 @@ export async function addBlock(block: NewBlock, now = new Date()): Promise<Avail
 
 /**
  * Removes a Host block (or, for staff, any block that isn't a trip's). Returns false when there's no
- * such block on this car.
+ * such block on this car. A RECURRING one is remembered on the car, so the next rebuild of the rules
+ * doesn't put that occurrence back.
  */
 export async function removeBlock(
   vehicleId: Id,
@@ -260,11 +261,19 @@ export async function removeBlock(
   if (!mongoose.isValidObjectId(blockId)) return false;
   return withTransaction(async (session) => {
     await bumpBookingSeq(vehicleId, session);
-    const result = await AvailabilityBlockModel.deleteOne(
+    const removed = await AvailabilityBlockModel.findOneAndDelete(
       { _id: blockId, vehicleId, reason: mongoose.trusted({ $in: reasons }) },
       { session },
-    );
-    return result.deletedCount > 0;
+    ).lean();
+    if (!removed) return false;
+    if (removed.reason === 'RECURRING') {
+      await VehicleModel.updateOne(
+        { _id: vehicleId },
+        { $addToSet: { recurringSkips: removed.startAt } },
+        { session },
+      );
+    }
+    return true;
   });
 }
 
@@ -321,14 +330,17 @@ export interface RecurringResult {
 
 /**
  * Rebuilds a car's RECURRING blocks for the next 12 months from its rules (plan §3, recurring
- * availability). Blocks already in progress stay; ranges that overlap a booking or hold are skipped.
+ * availability). Blocks already in progress stay; ranges that overlap a booking or hold are skipped, and
+ * so are occurrences removed on their own. Those are matched by when they start, so one stays removed
+ * while the rules still start a block then, even with a different end.
  */
 export async function rebuildRecurringBlocks(vehicleId: Id, now = new Date()): Promise<RecurringResult> {
   return withTransaction(async (session) => {
+    // Removed occurrences that have started can't come back, so they're forgotten here.
     const vehicle = await VehicleModel.findByIdAndUpdate(
       vehicleId,
-      { $inc: { bookingSeq: 1 } },
-      { session, new: true, projection: { recurringRules: 1 } },
+      { $inc: { bookingSeq: 1 }, $pull: { recurringSkips: { $lt: now } } },
+      { session, new: true, projection: { recurringRules: 1, recurringSkips: 1 } },
     );
     if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No car with that id.');
 
@@ -337,8 +349,9 @@ export async function rebuildRecurringBlocks(vehicleId: Id, now = new Date()): P
       { session },
     );
     const until = addNzDays(now, RECURRING_MONTHS * 31);
+    const removed = new Set((vehicle.recurringSkips ?? []).map((startAt) => startAt.getTime()));
     const ranges = expandRecurringRules(vehicle.recurringRules, now, until).filter(
-      (range) => range.startAt >= now,
+      (range) => range.startAt >= now && !removed.has(range.startAt.getTime()),
     );
     if (ranges.length === 0) return { blocks: 0, skipped: [] };
 

@@ -12,6 +12,12 @@ import { HttpError } from '../../lib/http-error.js';
 /** Listing photo widths: cards and phones use the smaller one, the gallery the larger. */
 export const PHOTO_WIDTHS = [800, 1600] as const;
 
+/**
+ * A listing photo's placeholder width: enough for its colours and shapes once the website blurs it, in a
+ * few hundred bytes.
+ */
+const PLACEHOLDER_WIDTH = 20;
+
 /** A member's profile photo: shown at most 80 px across (the member page), so one copy is enough. */
 export const PROFILE_PHOTO_WIDTHS = [400] as const;
 
@@ -72,6 +78,23 @@ export async function photoVariants(
           .toBuffer(),
       })),
     );
+  } catch {
+    throw unreadable();
+  }
+}
+
+/**
+ * A tiny copy of a listing photo, which the website shows blurred while the photo loads (plan §12.5): a
+ * WebP data URI of a few hundred bytes, small enough to send with the listing and its card.
+ */
+export async function photoPlaceholder(buffer: Buffer): Promise<string> {
+  try {
+    const open = await opener(buffer);
+    const body = await open()
+      .resize({ width: PLACEHOLDER_WIDTH, height: PLACEHOLDER_WIDTH, fit: 'inside' })
+      .webp({ quality: 50 })
+      .toBuffer();
+    return `data:image/webp;base64,${body.toString('base64')}`;
   } catch {
     throw unreadable();
   }

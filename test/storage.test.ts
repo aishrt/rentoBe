@@ -11,7 +11,7 @@ import {
 } from '@aws-sdk/client-s3';
 import sharp from 'sharp';
 import { describe, expect, it, vi } from 'vitest';
-import { isHeif } from '../src/integrations/storage/images.js';
+import { isHeif, photoPlaceholder } from '../src/integrations/storage/images.js';
 import {
   createS3Storage,
   fileLink,
@@ -158,6 +158,32 @@ describe('S3 uploads', () => {
       expect(metadata.exif).toBeUndefined();
       expect(metadata.orientation).toBeUndefined();
     }
+  });
+
+  it('reads a photo back by its URL, for the tiny copy the website blurs while it loads', async () => {
+    const { objects, storage } = fakeS3();
+    const upload = await target(storage, false, 'image/jpeg');
+    const jpeg = await sharp({ create: { width: 2400, height: 1600, channels: 3, background: '#2050c0' } })
+      .jpeg()
+      .toBuffer();
+    objects.set(upload.key, { body: jpeg });
+    const url = await storage.confirmUpload({ folder: PHOTOS, isPrivate: false, ref: upload.key });
+
+    const small = await storage.readPublic({ url, width: 800 });
+    expect(await sharp(small!).metadata()).toMatchObject({ format: 'webp', width: 800, height: 533 });
+    // A demo car's image, or anything else this storage didn't make.
+    for (const other of [
+      'https://placehold.co/1600x1067/webp',
+      `https://elsewhere.example.com/${PHOTOS}/a.webp`,
+    ]) {
+      expect(await storage.readPublic({ url: other, width: 800 })).toBeNull();
+    }
+
+    const placeholder = await photoPlaceholder(small!);
+    expect(placeholder).toMatch(/^data:image\/webp;base64,/);
+    expect(placeholder.length).toBeLessThan(1000);
+    const tiny = Buffer.from(placeholder.slice(placeholder.indexOf(',') + 1), 'base64');
+    expect(await sharp(tiny).metadata()).toMatchObject({ format: 'webp', width: 20, height: 13 });
   });
 
   it('decodes HEIC photos, and leaves small photos their own size', async () => {

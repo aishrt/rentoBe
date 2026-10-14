@@ -188,7 +188,8 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
     path: '/admin/vehicles/{id}/blocks/{blockId}',
     tags: ['Admin'],
     summary: 'Calendar override: unblock dates',
-    description: 'Staff, Host and recurring blocks; never a trip’s.',
+    description:
+      'Staff, Host and recurring blocks; never a trip’s. A recurring block removed here stays removed when the rules are rebuilt.',
     security: signedIn,
     request: { params: idParam.extend({ blockId: z.string() }) },
     responses: { 204: { description: 'Removed' }, ...errorResponses(401, 403, 404) },

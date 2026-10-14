@@ -57,6 +57,7 @@ Demo Guests have verified mobiles and approved licence details, so they can book
 | `npm run db:indexes`                              | Creates or updates every collection's indexes from the Mongoose schemas, and drops indexes the schemas no longer declare                                                     |
 | `npm run openapi`                                 | Writes the API contract to `openapi.json` from the routes' Zod schemas. Commit it: `npm test` fails while it's out of date, and the website generates its API types from it. |
 | `npm run create-admin`                            | Creates or resets a staff account, also in production (the first admin). Inputs in `scripts/create-admin.ts`                                                                 |
+| `npm run photos:placeholders`                     | Gives listing photos uploaded before 14/10/2026 their blurred placeholder, once (in production: `DEPLOYING_UPDATES.md`, section 9). Safe to re-run                           |
 | `npm run email:dev`                               | Previews every email template in the browser on http://localhost:3030, with sample details. Nothing is sent.                                                                 |
 | `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                                                                        |
 | `npm run format`                                  | Prettier                                                                                                                                                                     |
@@ -136,7 +137,7 @@ Browsers upload straight to storage with a short-lived signed target from `POST 
 - `POST /bookings` checks the Guest (verified mobile, licence details and the eligibility rules in settings) and the trip, then creates a `PAYMENT_PENDING` booking and holds its dates for 30 minutes (`booking.expirePaymentHold`).
 - `POST /bookings/{id}/payment` records the Guest Agreement and creates the PaymentIntent in NZD: charged at once for Instant Book, or authorised only (manual capture) for a request. The card is saved for post-trip charges, and a customer session shows saved cards.
 - Stripe's webhook and `POST /bookings/{id}/payment/sync` (called by the website after Stripe.js confirms) apply the same function, so a booking is confirmed once, whichever arrives first. Locally there are no webhooks unless you run `stripe listen`, so the sync call is what updates the booking.
-- A request waits 24 hours for the Host (`booking.expireRequest`); accepting captures the payment, declining releases it.
+- A request waits 24 hours for the Host, or until the trip starts if that's sooner (`booking.expireRequest`); accepting captures the payment, declining releases it. An hourly sweep (`hourly.bookingExpiry`) ends any request or payment hold still waiting past its time because its own job gave up, such as through a long Stripe outage.
 - Cancellations use the booking's own copy of its cancellation tier (`src/modules/bookings/policies.ts`): Guest cancellations refund by the tier, Host cancellations refund in full and add the Host cancellation fee to what the Host owes, and withdrawn requests release the authorisation. `GET /bookings/{id}/cancellation-preview` shows the outcome first. Staff with `REFUNDS` cancel no-shows and platform cancellations at `/admin/bookings/{id}/cancel`.
 - A paid booking's GST receipt is `GET /bookings/{id}/receipt`, and the same as an A4 PDF at `/receipt.pdf` (`src/modules/bookings/receipt.service.ts`, drawn with pdfkit in Inter from `assets/fonts`, which has the macrons PDF's built-in fonts lack).
 
@@ -214,6 +215,6 @@ src/
   emails/           React Email templates, shared layout and brand theme
   lib/              HttpError, validation helper, lifecycle, shared model field types, NZD formatter
 assets/fonts/       Inter for the PDFs the API writes (SIL Open Font License, OFL.txt); copied into the Docker image
-scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, send-test-email.ts, email-preview.ts, openapi.ts
+scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, photo-placeholders.ts, send-test-email.ts, email-preview.ts, openapi.ts
 test/               API tests (Vitest + Supertest + mongodb-memory-server)
 ```

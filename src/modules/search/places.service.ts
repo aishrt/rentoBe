@@ -1,6 +1,8 @@
 import mongoose from 'mongoose';
 import { getPlacesProvider } from '../../integrations/places/places-provider.js';
 import { logger } from '../../integrations/logger.js';
+import { HttpError } from '../../lib/http-error.js';
+import { memo } from '../../lib/memo.js';
 import type { NzRegion } from '../../lib/model-fields.js';
 import { PlaceModel, toSearchName, type PlaceType } from './place.model.js';
 import type { PlaceDetails, PlaceSuggestion } from './search.schemas.js';
@@ -12,6 +14,11 @@ import type { PlaceDetails, PlaceSuggestion } from './search.schemas.js';
 
 const MAX_OURS = 8;
 const MAX_ADDRESSES = 5;
+/**
+ * How long a street address's details are kept, so each search for it doesn't ask Google again. Google's
+ * terms allow keeping the coordinates for up to 30 days.
+ */
+const ADDRESS_TTL_MS = 24 * 60 * 60 * 1000;
 
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -130,7 +137,10 @@ export async function suggestPlaces(query: string, sessionToken?: string): Promi
   }
 }
 
-/** Coordinates (and, for a street address, the NZ address) of a chosen suggestion. */
+/**
+ * Coordinates (and, for a street address, the NZ address) of a chosen suggestion. A street address is kept
+ * for a day. Throws 503 PLACES_UNAVAILABLE when Google fails or times out.
+ */
 export async function placeDetails(id: string, sessionToken?: string): Promise<PlaceDetails | null> {
   const [kind, rawId] = id.split(/:(.*)/s) as [string, string | undefined];
   if (kind === 'place' && rawId && mongoose.isValidObjectId(rawId)) {
@@ -140,7 +150,16 @@ export async function placeDetails(id: string, sessionToken?: string): Promise<P
     return { ...suggestion!, lat: suggestion!.lat!, lng: suggestion!.lng! };
   }
   if (kind === 'google' && rawId) {
-    const details = await getPlacesProvider().details(rawId, sessionToken);
+    const details = await memo(`places:google:${rawId}`, ADDRESS_TTL_MS, () =>
+      getPlacesProvider().details(rawId, sessionToken),
+    ).catch((error: unknown) => {
+      logger.warn({ err: error }, 'Google Place Details failed');
+      throw new HttpError(
+        503,
+        'PLACES_UNAVAILABLE',
+        "We couldn't look up that address just now. Please try again, or choose a town or suburb.",
+      );
+    });
     if (!details) return null;
     return {
       id,
@@ -177,8 +196,21 @@ export async function resolveSearchPlace(input: {
   where?: string;
   airport?: string;
 }): Promise<ResolvedPlace | null> {
+  if (input.placeId?.startsWith('google:') && input.lat !== undefined && input.lng !== undefined) {
+    // A street address the website already looked up sends its coordinates: Google isn't asked again.
+    return {
+      label: input.where?.trim() || 'Selected address',
+      type: 'ADDRESS',
+      lat: input.lat,
+      lng: input.lng,
+    };
+  }
   if (input.placeId) {
-    const details = await placeDetails(input.placeId);
+    // Google failing never fails the search: it goes on from the coordinates or the text instead.
+    const details = await placeDetails(input.placeId).catch((error: unknown) => {
+      if (error instanceof HttpError && error.code === 'PLACES_UNAVAILABLE') return null;
+      throw error;
+    });
     if (details) {
       return {
         label: details.label,
