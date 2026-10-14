@@ -1,4 +1,4 @@
-import Stripe from 'stripe';
+import type Stripe from 'stripe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { stripe } from '../src/integrations/stripe.js';
 import { JobModel } from '../src/jobs/job.model.js';

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Stripe from 'stripe';
+import type Stripe from 'stripe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withTransaction } from '../src/db.js';
 import { stripe } from '../src/integrations/stripe.js';
