@@ -9,7 +9,7 @@ import { JobModel } from '../src/jobs/job.model.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
-import { confirmBooking, endBooking } from '../src/modules/bookings/booking-transitions.js';
+import { confirmBooking, endBooking, markRequested } from '../src/modules/bookings/booking-transitions.js';
 import { IncidentModel } from '../src/modules/incidents/incident.model.js';
 import { maskContactDetails, MASKED } from '../src/modules/messages/masking.js';
 import { MessageModel } from '../src/modules/messages/message.model.js';
@@ -546,6 +546,99 @@ describe('automated booking messages and reminders', () => {
     expect(held!.payload).toMatchObject({ expiresAt: later.startAt });
     const morning = await JobModel.findOne({ 'payload.notificationId': held!.id });
     expect(morning!.runAt.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+  });
+
+  it('texts the Host at once about a request that runs out before quiet hours end', async () => {
+    // Quiet hours now, for 2 to 3 hours more.
+    const hour = Number(
+      new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', hour: '2-digit', hourCycle: 'h23' })
+        .format(new Date())
+        .slice(0, 2),
+    );
+    const at = (value: number) => `${String(value % 24).padStart(2, '0')}:00`;
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      { $set: { settings: { sms: { quietHoursStart: at(hour), quietHoursEnd: at(hour + 3) } } } },
+      { upsert: true },
+    );
+    // A late request for a trip early next morning: it expires at the start, before quiet hours end.
+    const startAt = new Date(Date.now() + 90 * 60_000);
+    const { booking, host } = await trip({
+      status: 'PAYMENT_PENDING',
+      instantBook: false,
+      startAt,
+      endAt: new Date(startAt.getTime() + DAY_MS),
+    });
+    await UserModel.updateOne(
+      { _id: host._id },
+      { $set: { phone: '+64211113333', phoneVerifiedAt: new Date() } },
+    );
+    await withTransaction((session) => markRequested(booking, session));
+
+    const text = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'BOOKING_REQUEST',
+      channel: 'SMS',
+    });
+    // Sent now; still dropped if the request is answered or runs out before it goes.
+    expect(text!.payload).toMatchObject({
+      expiresAt: startAt,
+      whileBooking: { id: booking.id, statuses: ['PENDING'] },
+    });
+    const delivery = await JobModel.findOne({ 'payload.notificationId': text!.id });
+    expect(delivery!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    // A request with a day to run waits for the morning.
+    const later = await createBookingRecord(
+      { guestId: booking.guestId, hostId: host._id, vehicleId: booking.vehicleId },
+      { status: 'PAYMENT_PENDING', instantBook: false },
+    );
+    await withTransaction((session) => markRequested(later, session));
+    const held = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'BOOKING_REQUEST',
+      channel: 'SMS',
+      'payload.body': new RegExp(later.ref),
+    });
+    const morning = await JobModel.findOne({ 'payload.notificationId': held!.id });
+    expect(morning!.runAt.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
+  });
+
+  it('texts the Host at once about an Instant Book that starts before quiet hours end', async () => {
+    // Quiet hours now, for 4 to 5 hours more.
+    const hour = Number(
+      new Intl.DateTimeFormat('en-NZ', { timeZone: 'Pacific/Auckland', hour: '2-digit', hourCycle: 'h23' })
+        .format(new Date())
+        .slice(0, 2),
+    );
+    const at = (value: number) => `${String(value % 24).padStart(2, '0')}:00`;
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      { $set: { settings: { sms: { quietHoursStart: at(hour), quietHoursEnd: at(hour + 5) } } } },
+      { upsert: true },
+    );
+    // Booked late at night for a trip early next morning: more than 3 hours away, but before quiet hours end.
+    const startAt = new Date(Date.now() + 4 * 60 * 60_000);
+    const { booking, host } = await trip({
+      status: 'PAYMENT_PENDING',
+      startAt,
+      endAt: new Date(startAt.getTime() + DAY_MS),
+    });
+    await UserModel.updateOne(
+      { _id: host._id },
+      { $set: { phone: '+64211113333', phoneVerifiedAt: new Date() } },
+    );
+    const payment = await createPaymentRecord(booking);
+    await withTransaction((session) => confirmBooking(booking, payment, session));
+
+    const text = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'BOOKING_CONFIRMED',
+      channel: 'SMS',
+    });
+    expect(text!.payload).not.toHaveProperty('expiresAt');
+    const delivery = await JobModel.findOne({ 'payload.notificationId': text!.id });
+    expect(delivery!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
   });
 
   it('reminds both sides before pick-up by email, text and chat, and skips a trip that moved on', async () => {

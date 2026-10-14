@@ -193,7 +193,7 @@ const hostAcceptedSchema = z.boolean().optional().meta({
 /**
  * Why a booking expired (plan §8.2: each labelled). PAYMENT_TIMEOUT: not paid within the 30-minute hold.
  * CHECKOUT_ABANDONED: the Guest left or replaced the checkout. HOST_NO_ANSWER: the Host didn't answer the
- * request within 24 hours. VERIFICATION_EXPIRED / VERIFICATION_REJECTED: the Guest's verification wasn't
+ * request in time. VERIFICATION_EXPIRED / VERIFICATION_REJECTED: the Guest's verification wasn't
  * approved in time, or was rejected. DATES_TAKEN / CAR_UNAVAILABLE: the payment went through after the dates
  * were booked by someone else, or after the car was taken off the site.
  */

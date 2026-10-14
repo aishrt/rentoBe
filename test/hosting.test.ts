@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import sharp from 'sharp';
 import type Stripe from 'stripe';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -437,6 +438,35 @@ describe('Vehicle onboarding', () => {
     expect((await request(app).get(`/api/v1/vehicles/${vehicle.slug}`)).status).toBe(404);
   });
 
+  it('keeps a tiny copy of each new photo to show blurred while it loads, without needing one', async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { hostProfile: { status: 'APPROVED', appliedAt: new Date() } } },
+    );
+    const vehicle = await createVehicle(user._id);
+    const jpeg = await sharp({ create: { width: 1600, height: 1200, channels: 3, background: '#2050c0' } })
+      .jpeg()
+      .toBuffer();
+
+    // PHOTO is only the start of a JPEG: it's attached all the same, without a placeholder.
+    for (const [type, body] of [
+      ['BOOT', jpeg],
+      ['TYRES', PHOTO],
+    ] as const) {
+      const key = await upload(agent, vehicle.id, 'VEHICLE_PHOTO', body);
+      const attached = await agent
+        .post(`/api/v1/host/vehicles/${vehicle.id}/photos`)
+        .send({ type, upload: key });
+      expect(attached.status).toBe(201);
+    }
+    const photos = (await VehicleModel.findById(vehicle.id).lean())!.photos;
+    const boot = photos.find((photo) => photo.type === 'BOOT')!;
+    expect(boot.placeholder).toMatch(/^data:image\/webp;base64,/);
+    expect(boot.placeholder!.length).toBeLessThan(1000);
+    expect(photos.find((photo) => photo.type === 'TYRES')).not.toHaveProperty('placeholder');
+  });
+
   it('keeps a plate on one listing and a draft to its Host', async () => {
     const { user, agent } = await applicant();
     await agent.post('/api/v1/me/host-application').send({ acceptHostAgreement: true });
@@ -505,6 +535,18 @@ describe('Vehicle onboarding', () => {
     expect((await staff.delete(`/api/v1/admin/vehicles/${vehicle.id}/blocks/${recurring!.id}`)).status).toBe(
       204,
     );
+    // That occurrence stays removed when the Host saves the rules again.
+    const saved = await agent
+      .put(`/api/v1/host/vehicles/${vehicle.id}/recurring-rules`)
+      .send({ rules: [{ daysOfWeek: [1, 2, 3, 4, 5], startTime: '08:00', endTime: '18:00' }] });
+    expect(saved.status).toBe(200);
+    expect(
+      await AvailabilityBlockModel.exists({
+        vehicleId: vehicle._id,
+        reason: 'RECURRING',
+        startAt: recurring!.startAt,
+      }),
+    ).toBeNull();
     // Hosts can't remove the staff's block.
     expect(
       (await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/blocks/${override.body.block.id}`)).status,

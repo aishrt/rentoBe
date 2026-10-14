@@ -81,6 +81,53 @@ describe('Vehicle listing', () => {
     expect(Math.abs(detail.location.approx.lat - lat)).toBeLessThan(0.005);
   });
 
+  it('shows the damage its Host declared, only when there is some', async () => {
+    const host = await createHost();
+    const notes = 'Scratch on the rear bumper.\nChip in the windscreen.';
+    const marked = await createVehicle(host._id, { damageNotes: notes });
+    const unmarked = await createVehicle(host._id);
+
+    expect((await request(app).get(`/api/v1/vehicles/${marked.slug}`)).body.vehicle.damageNotes).toBe(notes);
+    expect((await request(app).get(`/api/v1/vehicles/${unmarked.slug}`)).body.vehicle).not.toHaveProperty(
+      'damageNotes',
+    );
+  });
+
+  it('sends each photo’s blurred placeholder with the listing and its card, when it has one', async () => {
+    const host = await createHost();
+    const placeholder = 'data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v3AgAA=';
+    const vehicle = await createVehicle(host._id, {
+      photos: [
+        {
+          type: 'FRONT',
+          url: 'https://img.example.com/front.jpg',
+          placeholder,
+          order: 0,
+          qualityFlag: 'OK',
+          status: 'APPROVED',
+        },
+        {
+          type: 'REAR',
+          url: 'https://img.example.com/rear.jpg',
+          order: 0,
+          qualityFlag: 'OK',
+          status: 'APPROVED',
+        },
+      ],
+    });
+
+    const detail = (await request(app).get(`/api/v1/vehicles/${vehicle.slug}`)).body.vehicle;
+    expect(detail.photos[0]).toMatchObject({ type: 'FRONT', placeholder });
+    // Photos uploaded before placeholders, and the demo cars', have none.
+    expect(detail.photos[1]).not.toHaveProperty('placeholder');
+    const [card] = (await request(app).get('/api/v1/vehicles/featured')).body.vehicles;
+    expect(card.photo).toEqual({
+      url: 'https://img.example.com/front.jpg',
+      placeholder,
+      alt: '2021 Toyota Corolla: front',
+    });
+  });
+
   it('is a 404 for drafts, suspended cars and unknown ones', async () => {
     const host = await createHost();
     const draft = await createVehicle(host._id, { status: 'DRAFT' });

@@ -1,6 +1,7 @@
 import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
-import { fileLink, getStorage } from '../../integrations/storage/storage.js';
+import { logger } from '../../integrations/logger.js';
+import { fileLink, getStorage, listingPhotoPlaceholder } from '../../integrations/storage/storage.js';
 import { HttpError, forbidden, unauthenticated } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
 import { point } from '../../lib/model-fields.js';
@@ -587,6 +588,11 @@ export async function attachPhoto(
     ...uploadFolder('VEHICLE_PHOTO', vehicle.id),
     ref: input.upload,
   });
+  // A blurred copy to show while the photo loads (plan §12.5). The photo works without one.
+  const placeholder = await listingPhotoPlaceholder(url).catch((error: unknown) => {
+    logger.warn({ err: error }, 'Could not make a listing photo placeholder');
+    return undefined;
+  });
   // The browser checks resolution, darkness and blur; the size is checked here as well (plan §9, Days 8–11).
   const small =
     input.width !== undefined &&
@@ -596,6 +602,7 @@ export async function attachPhoto(
   vehicle.photos.push({
     type: input.type,
     url,
+    ...(placeholder && { placeholder }),
     order: vehicle.photos.filter((photo) => photo.type === input.type).length,
     qualityFlag: small ? 'LOW_RES' : input.qualityFlag,
     status: 'PENDING',

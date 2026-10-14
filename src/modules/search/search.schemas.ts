@@ -137,6 +137,12 @@ export const ratingSchema = z
   .object({ avg: z.number(), count: z.number().int() })
   .meta({ id: 'Rating', description: 'Average stars and how many reviews; count 0 shows as "New"' });
 
+/** A listing photo's placeholder, which the website shows blurred while the photo loads (plan §12.5). */
+export const photoPlaceholderSchema = z.string().optional().meta({
+  description:
+    'A tiny copy of the photo (a data: URI) to show blurred while it loads. Photos uploaded before it existed may have none',
+});
+
 export const vehicleCardSchema = z
   .object({
     id: z.string(),
@@ -146,7 +152,7 @@ export const vehicleCardSchema = z
     model: z.string(),
     year: z.number().int(),
     variant: z.string().optional(),
-    photo: z.object({ url: z.string(), alt: z.string() }).nullable(),
+    photo: z.object({ url: z.string(), placeholder: photoPlaceholderSchema, alt: z.string() }).nullable(),
     suburb: z.string().optional(),
     city: z.string().optional(),
     distanceKm: z.number().nullable().meta({ description: 'From the searched place; null without one' }),

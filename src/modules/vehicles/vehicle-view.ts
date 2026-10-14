@@ -38,13 +38,17 @@ export function publicPhotos(vehicle: Titled & { photos: VehiclePhoto[] }) {
       id: photo._id?.toString() ?? `${photo.type}-${photo.order}`,
       type: photo.type,
       url: photo.url,
+      // Shown blurred while the photo loads (plan §12.5); older photos and the demo cars' have none.
+      ...(photo.placeholder && { placeholder: photo.placeholder }),
       alt: `${title}: ${PHOTO_NAMES[photo.type]}`,
     }));
 }
 
 export function coverPhoto(vehicle: Titled & { photos: VehiclePhoto[] }) {
   const [first] = publicPhotos(vehicle);
-  return first ? { url: first.url, alt: first.alt } : null;
+  return first
+    ? { url: first.url, ...(first.placeholder && { placeholder: first.placeholder }), alt: first.alt }
+    : null;
 }
 
 /** Up to three features for a card: the most useful extras first, then the Host's own list. */

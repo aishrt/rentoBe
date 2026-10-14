@@ -107,13 +107,15 @@ export function registerSearchPaths(registry: OpenAPIRegistry) {
     path: '/places/{id}',
     tags: ['Search'],
     summary: 'Coordinates and address of a suggestion',
+    description:
+      'A street address is kept for a day, so asking again doesn’t reach Google. 503 PLACES_UNAVAILABLE when Google fails or times out.',
     request: {
       params: z.object({ id: z.string().meta({ description: 'A suggestion id' }) }),
       query: z.object({ sessionToken: z.string().optional() }),
     },
     responses: {
       200: jsonResponse('The place', z.object({ place: placeDetailsSchema }).meta({ id: 'PlaceResponse' })),
-      ...errorResponses(404),
+      ...errorResponses(404, 503),
     },
   });
 }

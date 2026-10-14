@@ -237,7 +237,7 @@ describe('job queue', () => {
 });
 
 describe('recurring jobs', () => {
-  it('queues the next run of each daily and monthly job once, however many instances start', async () => {
+  it('queues the next run of each hourly, daily and monthly job once, however many instances start', async () => {
     const now = new Date('2026-10-09T02:00:00.000Z');
     await scheduleRecurringJobs(now);
     await scheduleRecurringJobs(now);
@@ -247,11 +247,15 @@ describe('recurring jobs', () => {
       'daily.hostReminders',
       'daily.dataRetention',
       'daily.reviewReveal',
+      'hourly.bookingExpiry',
     ]) {
       expect(await JobModel.countDocuments({ type, status: 'QUEUED' }), type).toBe(1);
     }
     // The safety net for reviews still waiting after their window closed: 4 am NZ time, the next morning.
     const sweep = await JobModel.findOne({ type: 'daily.reviewReveal' }).lean();
     expect(toNzWallClock(sweep!.runAt)).toMatchObject({ day: 10, hour: 4, minute: 0 });
+    // The one for requests and payment holds left waiting past their time: on the next hour.
+    const expiry = await JobModel.findOne({ type: 'hourly.bookingExpiry' }).lean();
+    expect(expiry!.runAt).toEqual(new Date('2026-10-09T03:00:00.000Z'));
   });
 });

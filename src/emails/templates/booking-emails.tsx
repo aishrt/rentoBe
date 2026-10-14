@@ -40,7 +40,7 @@ export interface BookingRequestHostProps extends TripBasics {
 export function BookingRequestHostEmail(props: BookingRequestHostProps) {
   return (
     <EmailLayout
-      preview={`${props.guestFirstName} would like to book your ${props.vehicleTitle}. Answer within 24 hours.`}
+      preview={`${props.guestFirstName} would like to book your ${props.vehicleTitle}. Answer by ${props.expiresAt}.`}
     >
       <EmailHeading>New booking request</EmailHeading>
       <EmailText>
@@ -235,7 +235,7 @@ export function BookingDeclinedEmail({
             ? `the host didn't answer your request for the ${vehicleTitle} from ${start} in time.`
             : outcome === 'VERIFICATION_REJECTED'
               ? `we weren't able to verify your identity or driver licence, so your booking of the ${vehicleTitle} from ${start} can't go ahead. Reply to this email if you think we've got it wrong.`
-              : `we couldn't finish checking your ID and licence within 24 hours, so your booking of the ${vehicleTitle} from ${start} has expired. You're welcome to book again once the check is done.`}{' '}
+              : `we couldn't finish checking your ID and licence in time, so your booking of the ${vehicleTitle} from ${start} has expired. You're welcome to book again once the check is done.`}{' '}
         Your card hasn't been charged, and the authorisation has been released (your bank may take a few days
         to show it).
       </EmailText>
@@ -267,7 +267,7 @@ export function RequestExpiredHostEmail({
         Kia ora {firstName},{' '}
         {guestNotVerified
           ? `${guestFirstName}'s request to book your ${vehicleTitle} didn't go ahead because we couldn't verify them in time, so the dates are free again. It doesn't count against your response rate.`
-          : `${guestFirstName}'s request to book your ${vehicleTitle} expired after 24 hours without an answer, so the dates are free again. Answering quickly keeps your response rate high.`}
+          : `${guestFirstName}'s request to book your ${vehicleTitle} expired without an answer, so the dates are free again. Answering quickly keeps your response rate high.`}
       </EmailText>
       <EmailButton href={url}>Review your bookings</EmailButton>
     </EmailLayout>
@@ -422,6 +422,8 @@ export interface PaymentReceiptProps extends TripBasics {
   legalName: string;
   /** Shown once the business is GST-registered (plan §16, item 7). */
   gstNumber?: string;
+  /** Refunded before the receipt went out (cancelled moments after paying, say). */
+  refunded?: string;
 }
 
 export function PaymentReceiptEmail(props: PaymentReceiptProps) {
@@ -432,7 +434,11 @@ export function PaymentReceiptEmail(props: PaymentReceiptProps) {
         Thanks, {props.firstName}. We've received your payment for the {props.vehicleTitle}.
       </EmailText>
       <EmailDetails
-        rows={[...tripRows(props), { label: 'Paid', value: `${props.paidAt} by ${props.method}` }]}
+        rows={[
+          ...tripRows(props),
+          { label: 'Paid', value: `${props.paidAt} by ${props.method}` },
+          ...(props.refunded ? [{ label: 'Refunded', value: props.refunded }] : []),
+        ]}
       />
       <EmailPriceTable lines={props.lines} total={props.total} gst={props.gst} />
       <EmailNote>

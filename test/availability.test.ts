@@ -191,6 +191,61 @@ describe('Availability service', () => {
     const busy = await busyRanges(vehicle._id, new Date(), new Date(Date.now() + 30 * 24 * HOUR_MS));
     expect(busy).toHaveLength(1);
   });
+
+  it('keeps a recurring occurrence removed on its own out of later rebuilds, until it has passed', async () => {
+    const host = await createHost();
+    const everyDay = [0, 1, 2, 3, 4, 5, 6];
+    const vehicle = await createVehicle(host._id, {
+      recurringRules: [{ daysOfWeek: everyDay, startTime: '08:00', endTime: '18:00' }],
+    });
+    const now = new Date();
+    const first = await rebuildRecurringBlocks(vehicle._id, now);
+    const recurringAt = (startAt: Date) =>
+      AvailabilityBlockModel.exists({ vehicleId: vehicle._id, reason: 'RECURRING', startAt });
+    const skips = async () => (await VehicleModel.findById(vehicle._id).lean())!.recurringSkips;
+
+    const occurrence = await AvailabilityBlockModel.findOne({
+      vehicleId: vehicle._id,
+      reason: 'RECURRING',
+      startAt: at(nzDay(5, '08:00')),
+    });
+    // A Host block removed is nothing to remember.
+    const block = await addBlock({
+      vehicleId: vehicle._id,
+      startAt: at(nzDay(40)),
+      endAt: at(nzDay(41)),
+      reason: 'HOST_BLOCK',
+      createdBy: host._id,
+    });
+    expect(await removeBlock(vehicle._id, block.id)).toBe(true);
+    expect(await skips()).toBeUndefined();
+
+    expect(await removeBlock(vehicle._id, occurrence!.id, ['ADMIN', 'HOST_BLOCK', 'RECURRING'])).toBe(true);
+    expect(await skips()).toEqual([occurrence!.startAt]);
+
+    // The monthly top-up leaves it out.
+    expect((await rebuildRecurringBlocks(vehicle._id, now)).blocks).toBe(first.blocks - 1);
+    expect(await recurringAt(occurrence!.startAt)).toBeNull();
+
+    // So do new rules that still start a block then, even with another end; a different start blocks
+    // that day again.
+    await VehicleModel.updateOne(
+      { _id: vehicle._id },
+      { $set: { recurringRules: [{ daysOfWeek: everyDay, startTime: '08:00', endTime: '17:00' }] } },
+    );
+    await rebuildRecurringBlocks(vehicle._id, now);
+    expect(await recurringAt(occurrence!.startAt)).toBeNull();
+    await VehicleModel.updateOne(
+      { _id: vehicle._id },
+      { $set: { recurringRules: [{ daysOfWeek: everyDay, startTime: '09:00', endTime: '17:00' }] } },
+    );
+    await rebuildRecurringBlocks(vehicle._id, now);
+    expect(await recurringAt(at(nzDay(5, '09:00')))).not.toBeNull();
+
+    // Once it has started, it's forgotten.
+    await rebuildRecurringBlocks(vehicle._id, new Date(occurrence!.startAt.getTime() + HOUR_MS));
+    expect(await skips()).toEqual([]);
+  });
 });
 
 describe('Monthly recurring top-up', () => {

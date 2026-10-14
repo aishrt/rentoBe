@@ -104,6 +104,8 @@ export async function getVehicleDetail(slug: string, now = new Date()): Promise<
     extraKmCents: vehicle.pricing?.extraKmCents ?? 0,
     petFriendly: vehicle.petFriendly,
     childSeat: vehicle.childSeat,
+    // Existing damage the Host declared, which spec §6 lists for the listing.
+    ...(vehicle.damageNotes && { damageNotes: vehicle.damageNotes }),
     pricing: {
       dailyCents: vehicle.pricing?.dailyCents ?? 0,
       weeklyDiscountPct: vehicle.pricing?.weeklyDiscountPct ?? 0,

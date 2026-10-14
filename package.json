@@ -18,6 +18,7 @@
     "seed": "tsx scripts/seed.ts",
     "db:indexes": "tsx scripts/sync-indexes.ts",
     "create-admin": "tsx scripts/create-admin.ts",
+    "photos:placeholders": "tsx scripts/photo-placeholders.ts",
     "email:test": "tsx scripts/send-test-email.ts",
     "email:dev": "tsx watch scripts/email-preview.ts",
     "stripe:check": "tsx scripts/stripe-check.ts",

@@ -13,7 +13,9 @@ import {
   type UnwantedReason,
 } from '../../modules/bookings/booking-payments.js';
 import { expirePaymentHold, expireRequest } from '../../modules/bookings/booking.service.js';
+import { sweepExpiredBookings } from '../../modules/bookings/expiry-sweep.js';
 import { recordStripeRefunds } from '../../modules/bookings/payment-events.js';
+import { paidTime, RECEIPT_STATUSES } from '../../modules/bookings/receipt.service.js';
 import { notify } from '../../modules/notifications/notify.js';
 import { refundUnwantedCharge } from '../../modules/payments/extra-charges.service.js';
 import { PaymentModel } from '../../modules/payments/payment.model.js';
@@ -42,10 +44,16 @@ export async function expirePaymentHoldJob({ bookingId }: { bookingId: string },
   log.info({ bookingId, result }, 'Payment hold checked');
 }
 
-/** `booking.expireRequest`: 24 hours after a request without the Host's answer. */
+/** `booking.expireRequest`: 24 hours after a request without the Host's answer, or at its start if sooner. */
 export async function expireRequestJob({ bookingId }: { bookingId: string }, { log }: JobContext) {
   const expired = await expireRequest(bookingId);
   log.info({ bookingId, expired }, 'Booking request checked');
+}
+
+/** `hourly.bookingExpiry`: ends requests and payment holds whose own job gave up (the safety net). */
+export async function bookingExpirySweepJob(_payload: Record<string, never>, { log }: JobContext) {
+  const result = await sweepExpiredBookings();
+  log.info(result, 'Requests and payment holds past their time checked');
 }
 
 /** How the Guest paid, for the receipt: "Visa ending 4242", "Apple Pay (Visa ending 4242)". */
@@ -60,15 +68,19 @@ function methodLabel(charge: Stripe.Charge | null): string {
   return base;
 }
 
-/** `payment.receipt`: the payment receipt with GST (plan §8.1, item 18), once a booking is confirmed. */
+/**
+ * `payment.receipt`: the payment receipt with GST (plan §8.1, item 18), once a booking is confirmed. Money
+ * taken has a receipt even when some or all of it is refunded before this runs (a booking cancelled moments
+ * after it was paid); one only authorised and then released took nothing, so has none, as on the receipt page.
+ */
 export async function paymentReceiptJob({ paymentId }: { paymentId: string }, { log }: JobContext) {
   const payment = await PaymentModel.findById(paymentId);
-  if (!payment || payment.status !== 'SUCCEEDED') return;
+  if (!payment || !(RECEIPT_STATUSES as readonly string[]).includes(payment.status)) return;
   const booking = await BookingModel.findById(payment.bookingId).lean();
   if (!booking) return;
   const guest = await UserModel.findById(booking.guestId).select('firstName').lean();
 
-  let paidAt = payment.updatedAt;
+  let paidAt = paidTime(payment);
   let method = payment.method ?? 'card';
   try {
     const intent = await stripe().paymentIntents.retrieve(payment.stripePaymentIntentId, {
@@ -86,12 +98,18 @@ export async function paymentReceiptJob({ paymentId }: { paymentId: string }, { 
     log.warn({ err: error, paymentId }, 'Could not read the charge for the receipt');
   }
 
+  // The receipt covers what was paid; a refund made already is noted, and its own email has the details.
+  const refundedCents = payment.refunds
+    .filter((refund) => refund.status !== 'FAILED')
+    .reduce((sum, refund) => sum + refund.amountCents, 0);
+  const refunded = refundedCents > 0 ? formatNzdExact(refundedCents) : null;
+
   const settings = await getPlatformSettings();
   await notify({
     userId: booking.guestId,
     type: 'PAYMENT_RECEIPT',
     title: `Receipt for ${booking.ref}`,
-    body: `${formatNzdExact(booking.price.totalCents)} paid by ${method}.`,
+    body: `${formatNzdExact(booking.price.totalCents)} paid by ${method}${refunded ? `, ${refunded} refunded since` : ''}.`,
     link: `/trips/${booking.ref}`,
     email: {
       template: 'paymentReceipt',
@@ -111,6 +129,7 @@ export async function paymentReceiptJob({ paymentId }: { paymentId: string }, { 
         gst: formatNzdExact(booking.price.gstCents),
         legalName: settings.business.legalName,
         ...(settings.business.gstNumber && { gstNumber: settings.business.gstNumber }),
+        ...(refunded && { refunded }),
         url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/trips/${booking.ref}`,
       },
     },
@@ -131,7 +150,8 @@ export async function refundUnwantedJob(
   { log }: JobContext,
 ) {
   if (reason === 'CHARGE_CANCELLED' || reason === 'CHARGE_DUPLICATE') {
-    if (await refundUnwantedCharge(paymentId, reason)) log.warn({ paymentId, reason }, 'Refunded an unwanted extra charge payment');
+    if (await refundUnwantedCharge(paymentId, reason))
+      log.warn({ paymentId, reason }, 'Refunded an unwanted extra charge payment');
     return;
   }
   const payment = await PaymentModel.findById(paymentId);

@@ -2,13 +2,19 @@ import request from 'supertest';
 import Stripe from 'stripe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderEmail } from '../src/emails/index.js';
-import type { BookingCancelledProps, RefundIssuedProps } from '../src/emails/templates/booking-emails.js';
+import type {
+  BookingCancelledProps,
+  BookingRequestHostProps,
+  PaymentReceiptProps,
+  RefundIssuedProps,
+} from '../src/emails/templates/booking-emails.js';
 import { env } from '../src/env.js';
 import { stripe } from '../src/integrations/stripe.js';
-import { refundUnwantedJob } from '../src/jobs/handlers/booking-jobs.js';
+import { paymentReceiptJob, refundUnwantedJob } from '../src/jobs/handlers/booking-jobs.js';
 import type { JobContext } from '../src/jobs/handlers/index.js';
 import { JobModel } from '../src/jobs/job.model.js';
 import { createJobRunner } from '../src/jobs/runner.js';
+import { formatNzDateTime } from '../src/lib/format.js';
 import { forget } from '../src/lib/memo.js';
 import { parseNzDateTime } from '../src/lib/nz-time.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
@@ -20,12 +26,13 @@ import {
   expireRequest,
   updateResponseRate,
 } from '../src/modules/bookings/booking.service.js';
+import { sweepExpiredBookings } from '../src/modules/bookings/expiry-sweep.js';
 import { guestCancellation, refundPctFor } from '../src/modules/bookings/policies.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { smsSendTime } from '../src/modules/notifications/notify.js';
 import { PaymentModel } from '../src/modules/payments/payment.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
-import { createHost, createVehicle, nzDay } from './fixtures.js';
+import { createBookingRecord, createHost, createPaymentRecord, createVehicle, nzDay } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent, testApp } from './helpers.js';
 
 const client = stripe();
@@ -543,6 +550,17 @@ describe('Request to book', () => {
     expect(await JobModel.countDocuments({ type: 'booking.expireRequest', status: 'QUEUED' })).toBe(1);
     const hostNotes = await NotificationModel.find({ type: 'BOOKING_REQUEST' }).lean();
     expect(hostNotes.map((note) => note.channel).sort()).toEqual(['EMAIL', 'IN_APP', 'SMS']);
+    // The text and the email give the request's own deadline, not a fixed 24 hours.
+    const answerBy = formatNzDateTime(booking!.requestExpiresAt!);
+    const text = hostNotes.find((note) => note.channel === 'SMS')!.payload as { body: string };
+    expect(text.body).toContain(`Accept or decline by ${answerBy.replace(/ \d{4},/, ',')}:`);
+    const email = hostNotes.find((note) => note.channel === 'EMAIL')!.payload as {
+      props: BookingRequestHostProps;
+    };
+    expect(email.props.expiresAt).toBe(answerBy);
+    const rendered = await renderEmail('bookingRequestHost', email.props);
+    expect(rendered.html).toContain('Answer by');
+    expect(rendered.html).not.toContain('24 hours');
 
     const hostView = await hostAgent.get(`/api/v1/bookings/${ref}`);
     expect(hostView.body.booking).toMatchObject({
@@ -587,6 +605,50 @@ describe('Request to book', () => {
     // A request the Host let run out stays in their bookings.
     const hostList = await hostAgent.get('/api/v1/bookings').query({ role: 'host', group: 'cancelled' });
     expect(hostList.body.bookings).toEqual([expect.objectContaining({ ref, status: 'EXPIRED' })]);
+  });
+
+  it('is ended by the hourly sweep when its own job gave up, one failure not stopping the others', async () => {
+    const spies = mockStripe();
+    await createStaff();
+    const { id, piId, guest, host, vehicle } = await requested();
+    const expiresAt = (await BookingModel.findById(id).lean())!.requestExpiresAt!;
+    const after = (ms: number) => new Date(expiresAt.getTime() + ms);
+    // Stripe is down for this request's release, so its job fails until the queue gives up.
+    spies.cancel.mockImplementation(async (intentId) => {
+      if (intentId === piId) throw new Error('Stripe is unavailable');
+      return intent({ id: String(intentId), status: 'canceled' });
+    });
+
+    // Just past its time, the request is left to its own job.
+    expect(await sweepExpiredBookings(after(5 * 60_000))).toEqual({ expired: 0, failed: 0 });
+
+    // A checkout left unpaid whose own job gave up too: the request failing again doesn't stop it ending.
+    const checkout = await createBookingRecord(
+      { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
+      {
+        status: 'PAYMENT_PENDING',
+        holdExpiresAt: new Date(),
+        statusHistory: [{ status: 'PAYMENT_PENDING', at: new Date(), by: guest._id }],
+      },
+    );
+    await createPaymentRecord(checkout, { status: 'PENDING' });
+    expect(await sweepExpiredBookings(after(HOUR_MS))).toEqual({ expired: 1, failed: 1 });
+    expect((await BookingModel.findById(checkout._id).lean())!.status).toBe('EXPIRED');
+    expect((await BookingModel.findById(id).lean())!.status).toBe('PENDING');
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_EXPIRY_STUCK' })).toBe(0);
+
+    // Still stuck hours later: support hears of it, once.
+    await sweepExpiredBookings(after(7 * HOUR_MS));
+    await sweepExpiredBookings(after(8 * HOUR_MS));
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_EXPIRY_STUCK', channel: 'EMAIL' })).toBe(
+      1,
+    );
+
+    // Stripe is back: the next sweep ends it as its own job would have, telling both sides.
+    spies.cancel.mockImplementation(async (intentId) => intent({ id: String(intentId), status: 'canceled' }));
+    expect(await sweepExpiredBookings(after(9 * HOUR_MS))).toEqual({ expired: 1, failed: 0 });
+    expect((await BookingModel.findById(id).lean())!.status).toBe('EXPIRED');
+    expect(await NotificationModel.countDocuments({ type: 'BOOKING_EXPIRED', channel: 'EMAIL' })).toBe(2);
   });
 
   it('lets the Guest withdraw before the Host answers', async () => {
@@ -1148,6 +1210,39 @@ describe('Cancellations', () => {
     expect(await NotificationModel.countDocuments({ type: 'BOOKING_CANCELLED', channel: 'EMAIL' })).toBe(2);
     expect(await NotificationModel.countDocuments({ type: 'REFUND_ISSUED' })).toBe(2);
     expect((await agent.post(`/api/v1/bookings/${ref}/cancel`)).status).toBe(409);
+  });
+
+  it('still sends the receipt for a payment refunded before its job ran, and never for money not taken', async () => {
+    mockStripe();
+    const { ref, agent, piId } = await paidBooking(true, 3);
+    await webhook('payment_intent.succeeded', { id: piId, object: 'payment_intent', status: 'succeeded' });
+    // Cancelled moments after paying, before the receipt job ran: half is refunded under the policy.
+    expect(
+      (await agent.post(`/api/v1/bookings/${ref}/cancel`).send({ reason: 'Plans changed' })).status,
+    ).toBe(200);
+    const payment = await PaymentModel.findOne({ stripePaymentIntentId: piId }).lean();
+    expect(payment!.status).toBe('PARTIALLY_REFUNDED');
+    const context = { log: { warn: vi.fn() } } as unknown as JobContext;
+
+    await paymentReceiptJob({ paymentId: payment!._id.toString() }, context);
+    const receipt = await NotificationModel.findOne({ type: 'PAYMENT_RECEIPT', channel: 'EMAIL' }).lean();
+    expect(receipt!.payload).toMatchObject({
+      template: 'paymentReceipt',
+      props: { total: '$338.70', refunded: '$191.85' },
+    });
+    const rendered = await renderEmail(
+      'paymentReceipt',
+      (receipt!.payload as { props: PaymentReceiptProps }).props,
+    );
+    expect(rendered.text).toContain('$191.85');
+
+    // Only authorised and then released, failed, or never finished: nothing was taken, so no receipt.
+    await NotificationModel.deleteMany({ type: 'PAYMENT_RECEIPT' });
+    for (const status of ['CANCELLED', 'FAILED', 'PENDING', 'AUTHORISED'] as const) {
+      await PaymentModel.updateOne({ _id: payment!._id }, { $set: { status } });
+      await paymentReceiptJob({ paymentId: payment!._id.toString() }, context);
+    }
+    expect(await NotificationModel.countDocuments({ type: 'PAYMENT_RECEIPT' })).toBe(0);
   });
 
   it('refunds everything when the Host cancels, and adds the Host fee to what they owe', async () => {

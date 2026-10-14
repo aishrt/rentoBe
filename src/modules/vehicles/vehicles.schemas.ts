@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { cancellationTierSchema } from '../admin/platform-settings.schemas.js';
-import { nzAddressInputSchema, ratingSchema, vehicleCardSchema } from '../search/search.schemas.js';
+import {
+  nzAddressInputSchema,
+  photoPlaceholderSchema,
+  ratingSchema,
+  vehicleCardSchema,
+} from '../search/search.schemas.js';
 import {
   BODY_TYPES,
   DELIVERY_TYPES,
@@ -100,6 +105,10 @@ export const vehicleDetailSchema = z
     extraKmCents: z.number().int(),
     petFriendly: z.boolean(),
     childSeat: z.boolean(),
+    damageNotes: z.string().optional().meta({
+      description:
+        'Existing damage the Host declared (spec §6), as plain text with line breaks; left out when none',
+    }),
     pricing: z.object({
       dailyCents: z.number().int(),
       weeklyDiscountPct: z.number(),
@@ -114,7 +123,13 @@ export const vehicleDetailSchema = z
     }),
     cancellationTier: cancellationTierSchema,
     photos: z.array(
-      z.object({ id: z.string(), type: z.enum(PHOTO_TYPES), url: z.string(), alt: z.string() }),
+      z.object({
+        id: z.string(),
+        type: z.enum(PHOTO_TYPES),
+        url: z.string(),
+        placeholder: photoPlaceholderSchema,
+        alt: z.string(),
+      }),
     ),
     compliance: complianceSchema,
     location: z.object({

@@ -7,6 +7,7 @@ export default defineConfig({
     seed: 'scripts/seed.ts',
     'sync-indexes': 'scripts/sync-indexes.ts',
     'create-admin': 'scripts/create-admin.ts',
+    'photo-placeholders': 'scripts/photo-placeholders.ts',
   },
   format: 'esm',
   platform: 'node',
