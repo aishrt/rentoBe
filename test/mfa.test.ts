@@ -307,7 +307,9 @@ describe('encryption', () => {
     expect(decrypt(first)).toBe('JBSWY3DPEHPK3PXP');
 
     const [version, iv, tag, ciphertext] = first.split(':');
-    const tampered = [version, iv, tag, `A${ciphertext!.slice(1)}`].join(':');
+    // A different first character: the ciphertext may already start with "A" (1 run in 64).
+    const changed = `${ciphertext!.startsWith('A') ? 'B' : 'A'}${ciphertext!.slice(1)}`;
+    const tampered = [version, iv, tag, changed].join(':');
     expect(() => decrypt(tampered)).toThrow();
   });
 });

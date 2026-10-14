@@ -287,6 +287,8 @@ export interface BookingCancelledProps extends TripBasics {
     | 'PLATFORM';
   /** Guest: what's refunded. */
   refund?: string;
+  /** Guest: Stripe refused the refund at once, so it isn't on its way yet: our team returns it another way. */
+  refundFailed?: boolean;
   /** Guest: what's kept under the cancellation policy. */
   fee?: string;
   /** Host: their share of a kept fee. */
@@ -381,7 +383,9 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
       {props.audience === 'GUEST' && props.refund && (
         <EmailText>
           {hostAtFault ? `You get a full refund of ${props.refund}. ` : ''}
-          Refunds go back to the card you paid with and usually show within 5–10 working days.
+          {props.refundFailed
+            ? 'The refund didn’t go through to the card you paid with. Our team is sorting it and will be in touch.'
+            : 'Refunds go back to the card you paid with and usually show within 5–10 working days.'}
         </EmailText>
       )}
       {props.audience === 'GUEST' && props.released && (

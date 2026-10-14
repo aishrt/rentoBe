@@ -22,7 +22,7 @@ import { PlaceModel } from '../search/place.model.js';
 import { discardFiles, uploadFolder } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import type { HostVehicleView, VehiclePatch } from './host-vehicles.schemas.js';
-import { DOCUMENT_NAMES, listingChecklist } from './listing-checklist.js';
+import { DOCUMENT_NAMES, listingChecklist, PHOTO_ANGLE_NAMES } from './listing-checklist.js';
 import { vehicleTitle } from './vehicle-view.js';
 import {
   VehicleModel,
@@ -394,6 +394,16 @@ export async function patchVehicle(
         fields[`pricing.${key}`] = `Discounts can be up to ${limits.maxDiscountPct}%`;
     }
   }
+  // An approved car keeps its kilometre terms whole (spec §6): unlimited, or an allowance a day. A draft's
+  // are checked when it's submitted.
+  if ((patch.unlimitedKm !== undefined || patch.kmAllowancePerDay !== undefined) && wasApproved(vehicle)) {
+    const unlimitedKm = patch.unlimitedKm ?? vehicle.unlimitedKm;
+    const allowance =
+      patch.kmAllowancePerDay === null ? undefined : (patch.kmAllowancePerDay ?? vehicle.kmAllowancePerDay);
+    if (!unlimitedKm && !allowance) {
+      fields.kmAllowancePerDay = 'Set a daily kilometre allowance, or offer unlimited kilometres';
+    }
+  }
   const minDays = patch.rules?.minDays ?? vehicle.rules.minDays;
   const maxDays = patch.rules?.maxDays ?? vehicle.rules.maxDays;
   if (minDays > maxDays) fields['rules.minDays'] = "The minimum trip can't be longer than the maximum";
@@ -597,8 +607,22 @@ export async function attachPhoto(
 export async function removePhoto(userId: string, id: string, photoId: string): Promise<HostVehicleView> {
   const vehicle = await ownVehicle(userId, id);
   assertEditable(vehicle);
-  if (!vehicle.photos.some((photo) => photo._id?.toString() === photoId)) {
-    throw new HttpError(404, 'NOT_FOUND', 'No such photo.');
+  const gone = vehicle.photos.find((photo) => photo._id?.toString() === photoId);
+  if (!gone) throw new HttpError(404, 'NOT_FOUND', 'No such photo.');
+  const settings = await getPlatformSettings();
+  // An approved car keeps an approved photo of each angle it needs (spec §6), as it does each document: the
+  // last one stays until a new one has been approved, which then takes its place.
+  if (
+    gone.status === 'APPROVED' &&
+    wasApproved(vehicle) &&
+    settings.vehicles.requiredPhotoAngles.includes(gone.type) &&
+    !vehicle.photos.some((photo) => photo !== gone && photo.type === gone.type && photo.status === 'APPROVED')
+  ) {
+    throw new HttpError(
+      409,
+      'LAST_APPROVED_PHOTO',
+      `This is the only approved ${PHOTO_ANGLE_NAMES[gone.type]} photo of this car, so it can’t be removed. Upload a new one: once our team has approved it, it takes this one’s place.`,
+    );
   }
   vehicle.set(
     'photos',
@@ -606,7 +630,7 @@ export async function removePhoto(userId: string, id: string, photoId: string): 
   );
   await vehicle.save();
   forget('vehicles:featured');
-  return toHostVehicleView(vehicle, await getPlatformSettings());
+  return toHostVehicleView(vehicle, settings);
 }
 
 /** POST /host/vehicles/{id}/documents: a private file, checked by support staff. */
@@ -619,6 +643,10 @@ export async function attachDocument(
   assertEditable(vehicle);
   if (vehicle.documents.length >= MAX_DOCUMENTS) {
     throw new HttpError(409, 'TOO_MANY_DOCUMENTS', `A listing can have up to ${MAX_DOCUMENTS} documents.`);
+  }
+  // The car has no insurance date of its own: the Host's reminder before it runs out works from this one.
+  if (input.type === 'INSURANCE' && !input.expiry) {
+    throw invalid({ expiry: 'Enter the date the insurance expires' });
   }
   const url = await getStorage().confirmUpload({
     ...uploadFolder('VEHICLE_DOCUMENT', vehicle.id),

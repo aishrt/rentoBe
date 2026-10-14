@@ -307,12 +307,15 @@ export async function notifyCancelled(
   {
     session,
     released = false,
+    refundFailed = false,
     reason,
     tripPayoutSentCents,
     hostOwesCents,
     hostRefundReliefCents,
   }: Options & {
     released?: boolean;
+    /** Stripe refused the refund at once: it isn't on its way, and staff return it another way. */
+    refundFailed?: boolean;
     /** Why it was cancelled, so each party is told (plan §8.2: each labelled): a no-show, say. */
     reason?: CancellationReason;
     /** The trip's payout already went to the Host (a no-show after their check-in): what it was. */
@@ -334,7 +337,9 @@ export async function notifyCancelled(
       title: withdrawn ? 'Your request is withdrawn' : `Booking ${booking.ref} is cancelled`,
       body:
         outcome.refundCents > 0
-          ? `${formatNzdExact(outcome.refundCents)} is on its way back to your card.`
+          ? refundFailed
+            ? `Your refund of ${formatNzdExact(outcome.refundCents)} didn’t go through to your card. Our team is sorting it and will be in touch.`
+            : `${formatNzdExact(outcome.refundCents)} is on its way back to your card.`
           : released && !withdrawn
             ? "Your card hasn't been charged."
             : undefined,
@@ -350,6 +355,7 @@ export async function notifyCancelled(
           ...(withdrawn && { withdrawn: true }),
           ...(released && !withdrawn && { released: true }),
           ...(outcome.refundCents > 0 && { refund: formatNzdExact(outcome.refundCents) }),
+          ...(outcome.refundCents > 0 && refundFailed && { refundFailed: true }),
           ...(outcome.feeCents > 0 && { fee: formatNzdExact(outcome.feeCents) }),
           url: tripUrl(booking),
         },
@@ -394,7 +400,7 @@ export async function notifyCancelled(
       { session },
     );
   }
-  if (outcome.refundCents > 0) {
+  if (outcome.refundCents > 0 && !refundFailed) {
     await notify(
       {
         userId: booking.guestId,
