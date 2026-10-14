@@ -211,9 +211,15 @@ describe('platform settings', () => {
     expect(settings.protectionPlans).toEqual(DEFAULT_SETTINGS.protectionPlans);
   });
 
-  it('refuses invalid saved values', () => {
-    expect(() => resolveSettings({ cancellation: { defaultTier: 'NONE' } })).toThrow(/defaultTier/);
-    expect(() => resolveSettings({ fees: { gstRatePct: 150 } })).toThrow();
+  it('uses the launch default for a saved group that breaks the rules, and keeps the other groups', () => {
+    const settings = resolveSettings({
+      cancellation: { defaultTier: 'NONE' },
+      fees: { gstRatePct: 150 },
+      reviews: { windowDays: 10 },
+    });
+    expect(settings.cancellation).toEqual(DEFAULT_SETTINGS.cancellation);
+    expect(settings.fees).toEqual(DEFAULT_SETTINGS.fees);
+    expect(settings.reviews).toEqual({ ...DEFAULT_SETTINGS.reviews, windowDays: 10 });
   });
 
   it('saves the defaults once and never overwrites saved settings', async () => {

@@ -15,12 +15,22 @@ import {
   listBookings,
 } from './booking.service.js';
 import {
+  BOOKINGS_PAGE_SIZE,
   bookingsQuerySchema,
   cancelBookingSchema,
   createBookingSchema,
   declineBookingSchema,
   preparePaymentSchema,
 } from './bookings.schemas.js';
+import { bookingReceipt, receiptPdf } from './receipt.service.js';
+import { INSPECTION_STAGES, type InspectionStage } from '../inspections/condition-report.model.js';
+import { flagDamageSchema, inspectionInputSchema } from '../inspections/inspections.schemas.js';
+import {
+  confirmInspection,
+  flagDamage,
+  getHandover,
+  submitInspection,
+} from '../inspections/inspections.service.js';
 
 /** Mounted at /api/v1/bookings (plan §11): the booking flow, trips and the Host's answers. */
 export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: true }) {
@@ -39,9 +49,17 @@ export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: tr
     res.status(201).json({ booking: await bookingView(booking, 'GUEST') });
   });
 
+  // A page at a time, so a long history is still all there (plan §9, Days 16–19).
   router.get('/', async (req, res) => {
-    const { role, group } = validate(bookingsQuerySchema, req.query);
-    res.json({ bookings: await listBookings(req.auth!.userId, role, group) });
+    const { role, group, page } = validate(bookingsQuerySchema, req.query);
+    const rows = await listBookings(req.auth!.userId, role, group, new Date(), {
+      skip: (page - 1) * BOOKINGS_PAGE_SIZE,
+      limit: BOOKINGS_PAGE_SIZE + 1,
+    });
+    res.json({
+      bookings: rows.slice(0, BOOKINGS_PAGE_SIZE),
+      ...(rows.length > BOOKINGS_PAGE_SIZE && { nextPage: page + 1 }),
+    });
   });
 
   router.get('/:id', async (req, res) => {
@@ -66,6 +84,21 @@ export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: tr
     res.json({ booking: await bookingView(fresh, 'GUEST') });
   });
 
+  // The GST receipt (plan §8.1, item 18), as data for the receipt page and as a PDF to download.
+  router.get('/:id/receipt', async (req, res) => {
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    res.json({ receipt: await bookingReceipt(booking, viewer) });
+  });
+
+  router.get('/:id/receipt.pdf', async (req, res) => {
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    const pdf = await receiptPdf(await bookingReceipt(booking, viewer));
+    res
+      .type('application/pdf')
+      .set('Content-Disposition', `attachment; filename="rento-vroom-receipt-${booking.ref}.pdf"`)
+      .send(pdf);
+  });
+
   router.get('/:id/cancellation-preview', async (req, res) => {
     const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
     res.json(await cancellationPreview(booking, viewer));
@@ -73,12 +106,46 @@ export function bookingsRouter(options: { rateLimit: boolean } = { rateLimit: tr
 
   // Cancels, or withdraws a request that's waiting for the Host (plan §8.2).
   router.post('/:id/cancel', async (req, res) => {
-    const { reason } = validate(cancelBookingSchema, req.body ?? {});
+    const { reason, expectedRefundCents } = validate(cancelBookingSchema, req.body ?? {});
     const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
     if (viewer === 'STAFF')
       throw new HttpError(403, 'FORBIDDEN', 'Staff cancel bookings from the staff portal.');
-    const cancelled = await cancelBooking(booking, viewer, req.auth!.userId, reason);
+    const cancelled = await cancelBooking(booking, viewer, req.auth!.userId, {
+      note: reason,
+      expectedRefundCents,
+    });
     res.json({ booking: await bookingView(cancelled, viewer) });
+  });
+
+  // The digital vehicle handover (spec §14): check-in starts the trip, check-out ends it.
+  router.get('/:id/inspections', async (req, res) => {
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    res.json({ handover: await getHandover(booking, viewer) });
+  });
+
+  router.post('/:id/inspections', async (req, res) => {
+    const input = validate(inspectionInputSchema, req.body);
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    if (viewer === 'STAFF')
+      throw new HttpError(403, 'FORBIDDEN', 'Staff complete trips from the staff portal.');
+    await submitInspection(booking, viewer, req.auth!.userId, input);
+    const { booking: fresh } = await findBookingFor(actor(req), booking.id);
+    res.status(201).json({ handover: await getHandover(fresh, viewer) });
+  });
+
+  router.post('/:id/inspections/:stage/confirm', async (req, res) => {
+    const stage = String(req.params.stage).toUpperCase() as InspectionStage;
+    if (!INSPECTION_STAGES.includes(stage)) throw new HttpError(404, 'NOT_FOUND', 'No such report.');
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    await confirmInspection(booking, viewer, stage);
+    res.json({ handover: await getHandover(booking, viewer) });
+  });
+
+  router.post('/:id/inspections/CHECK_OUT/damage', async (req, res) => {
+    const input = validate(flagDamageSchema, req.body);
+    const { booking, viewer } = await findBookingFor(actor(req), String(req.params.id));
+    await flagDamage(booking, viewer, req.auth!.userId, input);
+    res.json({ handover: await getHandover(booking, viewer) });
   });
 
   router.post('/:id/accept', async (req, res) => {

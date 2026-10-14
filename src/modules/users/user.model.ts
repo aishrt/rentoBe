@@ -67,13 +67,49 @@ export interface StaffMfa {
 export const VERIFICATION_STATUSES = ['NONE', 'PENDING', 'APPROVED', 'REJECTED'] as const;
 export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 
+/** An earlier identity check the person started again: its images go 90 days after it began (plan §14). */
+export interface EarlierIdentitySession {
+  /** Stripe Identity's VerificationSession id. */
+  providerRef: string;
+  startedAt: Date;
+  redactedAt?: Date;
+}
+
 /** Identity check for Guests and Hosts (plan §9, Days 19–20). ID images stay with the provider. */
 export interface IdentityVerification {
+  /** NONE until it passes; PENDING while support reviews it by hand (plan §8.2). */
   status: VerificationStatus;
   provider?: string;
+  /** Stripe Identity's VerificationSession id. */
   providerRef?: string;
+  /** Stripe's own state of the session: requires_input, processing, verified or canceled. */
+  sessionStatus?: string;
+  /** Why the last attempt didn't pass, to show the person so they can try again. */
+  lastError?: string;
+  /** Why it needs a person to look at it, for support staff. */
+  reviewReason?: string;
+  /** The document checked: driving_license, passport or id_card. */
+  documentType?: string;
+  /**
+   * A keyed hash of the licence number Stripe read from a driver licence used as the ID, so staff can see
+   * whether it matches the licence on the account, even after the person changes it.
+   */
+  documentNumberHash?: string;
+  /** Whether the date of birth Stripe read from the ID matched the account's when it was checked. */
+  documentDobMatched?: boolean;
+  /**
+   * A keyed hash of that date of birth, so details entered after the check (a licence saved once the ID check
+   * has passed) are compared with what the ID said.
+   */
+  documentDobHash?: string;
+  /** When the latest check began: a check that never passes is redacted this long after it (plan §14). */
+  startedAt?: Date;
   verifiedAt?: Date;
   reviewedBy?: Types.ObjectId;
+  /** When Stripe deleted the ID images, keeping only the result (plan §14: 90 days). */
+  redactedAt?: Date;
+  /** Checks started before this one, each redacted 90 days after it began. */
+  earlierSessions?: EarlierIdentitySession[];
 }
 
 export const LICENCE_CLASSES = ['NZ_FULL', 'NZ_RESTRICTED', 'NZ_LEARNER', 'OVERSEAS'] as const;
@@ -110,7 +146,18 @@ export interface HostProfile {
   reviewedBy?: Types.ObjectId;
   reviewNotes?: string;
   stripeAccountId?: string;
+  /** Times Stripe refused to make the Host's account: each try after a refusal uses a new idempotency key. */
+  connectRefusals?: number;
   payoutsEnabled: boolean;
+  /** What Stripe still needs from the Host before payouts can be sent (plan §8.1, item 20). */
+  payoutRequirements?: string[];
+  /** Business days Stripe takes to pay the Host's bank after a transfer, from their account. */
+  payoutDelayDays?: number;
+  /**
+   * When the payout state above was true at Stripe: the `account.updated` event's time, or when the account was
+   * read. Stripe doesn't send events in order, so an older one is ignored (plan §8.1, item 20).
+   */
+  payoutStateAt?: Date;
   bio?: string;
   /** Share of booking requests answered, 0–100. */
   responseRate?: number;
@@ -118,8 +165,21 @@ export interface HostProfile {
   rating: Rating;
   /** Host cancellation fees not yet deducted from a payout. */
   feesOwedCents: number;
+  /**
+   * Host-funded refunds made after the booking's payout was sent, to come off the next payout (plan §8.1,
+   * item 15). Hosts from before it have none stored: read with `?? []`.
+   */
+  refundsOwed?: RefundOwed[];
   gstRegistered: boolean;
   gstNumber?: string;
+}
+
+/** A Host-funded refund the Host still owes, or the part of it not yet taken off a payout. */
+export interface RefundOwed {
+  bookingId: Types.ObjectId;
+  stripeRefundId: string;
+  amountCents: number;
+  createdAt: Date;
 }
 
 /** Choices for non-essential messages (plan §7). Booking and account messages are always sent. */
@@ -128,6 +188,20 @@ export interface NotificationPrefs {
   marketingSms: boolean;
   /** SMS when a message is still unread after 10 minutes. */
   unreadMessageSms: boolean;
+  /** Email when a message is still unread after 10 minutes: on unless turned off (missing on older accounts). */
+  unreadMessageEmail?: boolean;
+}
+
+export const EMAIL_PROBLEMS = ['BOUNCED', 'SUPPRESSED'] as const;
+
+/**
+ * Why emails aren't reaching the person (plan §7), from Resend's delivery webhook: the address bounced, or
+ * Resend refused to send to it after earlier bounces or a spam complaint. Shown to staff on their record.
+ */
+export interface EmailProblem {
+  kind: (typeof EMAIL_PROBLEMS)[number];
+  detail?: string;
+  at: Date;
 }
 
 /** The last search, for estimated totals in Saved cars. */
@@ -161,6 +235,8 @@ export interface User {
   status: UserStatus;
   suspendedReason?: string;
   emailVerifiedAt?: Date;
+  /** Cleared when an email to the address is delivered again, or the address changes. */
+  emailProblem?: EmailProblem;
   /** E.164, e.g. +64211234567. Set only once verified by SMS code. */
   phone?: string;
   phoneVerifiedAt?: Date;
@@ -207,6 +283,17 @@ const userSchema = new Schema<User>(
     status: { type: String, enum: USER_STATUSES, default: 'ACTIVE' },
     suspendedReason: String,
     emailVerifiedAt: Date,
+    emailProblem: {
+      type: new Schema<EmailProblem>(
+        {
+          kind: { type: String, enum: EMAIL_PROBLEMS, required: true },
+          detail: String,
+          at: { type: Date, required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     phone: String,
     phoneVerifiedAt: Date,
     pendingPhone: String,
@@ -249,6 +336,7 @@ const userSchema = new Schema<User>(
           marketingEmail: { type: Boolean, default: false },
           marketingSms: { type: Boolean, default: false },
           unreadMessageSms: { type: Boolean, default: false },
+          unreadMessageEmail: { type: Boolean, default: true },
         },
         { _id: false },
       ),
@@ -279,8 +367,30 @@ const userSchema = new Schema<User>(
           status: { type: String, enum: VERIFICATION_STATUSES, default: 'NONE' },
           provider: String,
           providerRef: String,
+          sessionStatus: String,
+          lastError: String,
+          reviewReason: String,
+          documentType: String,
+          documentNumberHash: String,
+          documentDobMatched: Boolean,
+          documentDobHash: String,
+          startedAt: Date,
           verifiedAt: Date,
           reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+          redactedAt: Date,
+          earlierSessions: {
+            type: [
+              new Schema<EarlierIdentitySession>(
+                {
+                  providerRef: { type: String, required: true },
+                  startedAt: { type: Date, required: true },
+                  redactedAt: Date,
+                },
+                { _id: false },
+              ),
+            ],
+            default: undefined,
+          },
         },
         { _id: false },
       ),
@@ -314,12 +424,30 @@ const userSchema = new Schema<User>(
           reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
           reviewNotes: String,
           stripeAccountId: String,
+          connectRefusals: Number,
           payoutsEnabled: { type: Boolean, default: false },
+          payoutRequirements: { type: [String], default: undefined },
+          payoutDelayDays: { type: Number, min: 0 },
+          payoutStateAt: Date,
           bio: { type: String, maxlength: 1000 },
           responseRate: { type: Number, min: 0, max: 100 },
           tripCount: { type: Number, min: 0, default: 0 },
           rating: { type: ratingSchema, default: () => ({}) },
           feesOwedCents: cents({ default: 0 }),
+          refundsOwed: {
+            type: [
+              new Schema<RefundOwed>(
+                {
+                  bookingId: { type: Schema.Types.ObjectId, ref: 'Booking', required: true },
+                  stripeRefundId: { type: String, required: true },
+                  amountCents: cents({ required: true }),
+                  createdAt: { type: Date, required: true },
+                },
+                { _id: false },
+              ),
+            ],
+            default: undefined,
+          },
           gstRegistered: { type: Boolean, default: false },
           gstNumber: String,
         },

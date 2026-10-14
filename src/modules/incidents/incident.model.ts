@@ -26,6 +26,24 @@ export const INCIDENT_STATUSES = [
 ] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 
+/** A case still being worked on: it holds payouts and keeps the booking's messages open (plan §3, §8). */
+export const OPEN_INCIDENT_STATUSES = ['OPEN', 'INVESTIGATING', 'AWAITING_RESPONSE'] as const;
+
+/**
+ * Where staff can move a case from each status (spec §15). Nothing goes back to OPEN, which means nobody has
+ * looked at it yet. A RESOLVED case can be reopened, to INVESTIGATING or to AWAITING_RESPONSE to ask a party
+ * something, when its outcome is disputed or new evidence arrives; that holds the booking's unpaid payouts
+ * again. CLOSED is final, so a charge or payout settled on a closed case stays settled: anything new about
+ * the booking is a new case, which staff can open themselves.
+ */
+export const INCIDENT_TRANSITIONS: Record<IncidentStatus, readonly IncidentStatus[]> = {
+  OPEN: ['INVESTIGATING', 'AWAITING_RESPONSE', 'RESOLVED', 'CLOSED'],
+  INVESTIGATING: ['AWAITING_RESPONSE', 'RESOLVED', 'CLOSED'],
+  AWAITING_RESPONSE: ['INVESTIGATING', 'RESOLVED', 'CLOSED'],
+  RESOLVED: ['INVESTIGATING', 'AWAITING_RESPONSE', 'CLOSED'],
+  CLOSED: [],
+};
+
 /** Who can see an event on the case: both parties, one of them, or support staff only. */
 export const EVENT_VISIBILITIES = ['BOTH', 'GUEST', 'HOST', 'INTERNAL'] as const;
 
@@ -38,6 +56,12 @@ export interface IncidentEvent {
   note?: string;
   attachments: FileAttachment[];
   visibility: (typeof EVENT_VISIBILITIES)[number];
+  /** The case's status after this event, when it changed it. */
+  status?: IncidentStatus;
+  /** On an ASSIGNED event: the staff member the case went to. */
+  assigneeId?: Types.ObjectId;
+  /** On a CHARGE_ADDED event: the booking's extra charge it records, so each charge has one entry. */
+  extraChargeId?: Types.ObjectId;
   createdAt: Date;
 }
 
@@ -53,6 +77,8 @@ export interface Incident {
   description: string;
   status: IncidentStatus;
   assignedTo?: Types.ObjectId;
+  /** The check-out damage pins the case was opened with, so another case doesn't take them again. */
+  damagePinIds?: Types.ObjectId[];
   events: IncidentEvent[];
   createdAt: Date;
   updatedAt: Date;
@@ -65,6 +91,9 @@ const incidentEventSchema = new Schema<IncidentEvent>(
     note: { type: String, maxlength: 5000 },
     attachments: { type: [attachmentSchema], default: [] },
     visibility: { type: String, enum: EVENT_VISIBILITIES, default: 'BOTH' },
+    status: { type: String, enum: INCIDENT_STATUSES },
+    assigneeId: { type: Schema.Types.ObjectId, ref: 'User' },
+    extraChargeId: Schema.Types.ObjectId,
     createdAt: { type: Date, required: true, default: Date.now },
   },
   { _id: false },
@@ -79,6 +108,7 @@ const incidentSchema = new Schema<Incident>(
     description: { type: String, required: true, maxlength: 5000 },
     status: { type: String, enum: INCIDENT_STATUSES, default: 'OPEN' },
     assignedTo: { type: Schema.Types.ObjectId, ref: 'User' },
+    damagePinIds: { type: [Schema.Types.ObjectId], default: undefined },
     events: { type: [incidentEventSchema], default: [] },
   },
   { timestamps: true },

@@ -1,11 +1,31 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { auditStaffWrites } from '../../middleware/audit-log.js';
-import { requireActiveAccount, requireAuth, requirePermission, requireRole } from '../../middleware/auth.js';
-import { adminCancelBooking, bookingView, findBookingFor } from '../bookings/booking.service.js';
-import { adminCancelSchema, identityReviewSchema } from '../bookings/bookings.schemas.js';
+import {
+  hasPermission,
+  requireActiveAccount,
+  requireAuth,
+  requirePermission,
+  requireRole,
+} from '../../middleware/auth.js';
+import {
+  adminCancelBooking,
+  adminCancellationPreview,
+  bookingView,
+  findBookingFor,
+} from '../bookings/booking.service.js';
+import {
+  adminCancellationPreviewQuerySchema,
+  adminCancelSchema,
+  identityReviewSchema,
+} from '../bookings/bookings.schemas.js';
+import { recordAudit } from '../audit/audit.service.js';
 import { resetStaffMfa } from '../auth/mfa.service.js';
+import { AvailabilityBlockModel } from '../availability/availability-block.model.js';
 import { createTestPayment, getTestPayment } from '../payments/test-payment.service.js';
+import { cancelExtraCharge } from '../payments/extra-charges.service.js';
+import { cancelExtraChargeSchema } from '../payments/payments.schemas.js';
+import { adminBookingDetail } from './admin-bookings.service.js';
 import { staffInviteInputSchema } from '../staff/staff.schemas.js';
 import { inviteSupport, listStaff, removeSupport, revokeInvite } from '../staff/staff.service.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -21,9 +41,11 @@ import {
 import { VehicleModel } from '../vehicles/vehicle.model.js';
 import {
   documentDecisionSchema,
+  hostApplicationsQuerySchema,
   photoDecisionSchema,
   requiredNotesSchema,
   reviewNotesSchema,
+  vehicleListQuerySchema,
 } from './admin-listings.schemas.js';
 import {
   decideDocument,
@@ -31,22 +53,55 @@ import {
   decideListing,
   decidePhoto,
   getVehicleForReview,
-  isHostStatus,
   listHostApplications,
   listReviewQueue,
+  listVehicles,
 } from './admin-listings.service.js';
-import { getAdminOverview } from './admin.service.js';
+import { adminOpsRouter } from './admin-ops.routes.js';
+import { assertNotOwnRecord, isOwnRecord, OWN_RECORD_MESSAGE } from './own-record.js';
 import { platformSettingsUpdateSchema } from './platform-settings.schemas.js';
 import { getPlatformSettingsForAdmin, updatePlatformSettings } from './platform-settings.service.js';
 import { reviewIdentity } from './admin-verification.service.js';
+import {
+  licenceReviewSchema,
+  revealLicenceNumber,
+  reviewLicence,
+  verificationQueue,
+} from './verification-queue.service.js';
+import {
+  incidentAssigneeSchema,
+  incidentChargeSchema,
+  staffIncidentListQuerySchema,
+  staffIncidentUpdateSchema,
+  staffNewIncidentSchema,
+} from '../incidents/incidents.schemas.js';
+import {
+  assignIncident,
+  chargeFromIncident,
+  getIncident,
+  listIncidentAssignees,
+  listIncidentsForStaff,
+  openIncidentAsStaff,
+  updateIncidentAsStaff,
+} from '../incidents/incidents.service.js';
+import { correctReading, settleExtraKilometres } from '../inspections/extra-km.service.js';
+import { readingCorrectionSchema, staffCompletionSchema } from '../inspections/inspections.schemas.js';
+import { getHandover, submitInspection } from '../inspections/inspections.service.js';
+import { staffThreadQuerySchema } from '../messages/messages.schemas.js';
+import { moderateReviewSchema } from '../reviews/reviews.schemas.js';
+import { moderateReview, reviewsForModeration } from '../reviews/reviews.service.js';
+import { openThreadForStaff } from '../messages/messages.service.js';
 
 async function findVehicleForCalendar(id: string) {
   const vehicle = mongoose.isValidObjectId(id)
-    ? await VehicleModel.findById(id).select('_id rules').lean()
+    ? await VehicleModel.findById(id).select('_id hostId rules').lean()
     : null;
   if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No such car.');
   return vehicle;
 }
+
+const NEEDS_REFUNDS_PERMISSION =
+  'Cancelling it refunds the Guest, which needs the refunds permission: ask the administrator.';
 
 /**
  * Mounted at /api/v1/admin. Every route needs an active staff account, and every write is recorded
@@ -57,10 +112,6 @@ async function findVehicleForCalendar(id: string) {
 export function adminRouter() {
   const router = Router();
   router.use(requireAuth, requireActiveAccount, requireRole('ADMIN', 'SUPPORT'), auditStaffWrites);
-
-  router.get('/overview', async (_req, res) => {
-    res.json(await getAdminOverview());
-  });
 
   // The staff (plan §6.2): the one admin, set by ADMIN_EMAIL, and the support team, who join only by
   // accepting the admin's invitation.
@@ -112,8 +163,7 @@ export function adminRouter() {
 
   // Host applications (plan §9, Days 8–11).
   router.get('/host-applications', async (req, res) => {
-    const status = isHostStatus(req.query.status) ? req.query.status : 'APPLIED';
-    res.json({ applications: await listHostApplications(status) });
+    res.json(await listHostApplications(validate(hostApplicationsQuerySchema, req.query)));
   });
 
   router.post('/host-applications/:userId/approve', async (req, res) => {
@@ -129,6 +179,11 @@ export function adminRouter() {
   // Listing reviews, including new photos and documents on live listings.
   router.get('/vehicles', async (_req, res) => {
     res.json({ vehicles: await listReviewQueue() });
+  });
+
+  // Every car, to search (plan §12.6): before /vehicles/:id, which would take "search" for a car's id.
+  router.get('/vehicles/search', async (req, res) => {
+    res.json(await listVehicles(validate(vehicleListQuerySchema, req.query)));
   });
 
   router.get('/vehicles/:id', async (req, res) => {
@@ -188,15 +243,206 @@ export function adminRouter() {
     });
   });
 
-  // Staff cancel a booking: a no-show or a platform cancellation, with its refund (plan §8.2).
-  router.post('/bookings/:id/cancel', requirePermission('REFUNDS'), async (req, res) => {
+  // Staff cancel a booking: a no-show, a Host cancellation or a platform cancellation, with its refund
+  // (plan §8.2). Support edit booking status; a cancellation that refunds money also needs the refunds
+  // permission (plan §6.2), while one that refunds nothing (a request, whose authorisation is released) doesn't.
+  router.post('/bookings/:id/cancel', async (req, res) => {
     const { reason, note } = validate(adminCancelSchema, req.body);
     const { booking } = await findBookingFor(
       { userId: req.auth!.userId, roles: req.auth!.roles },
       String(req.params.id),
     );
+    await assertNotOwnRecord(req.auth!.userId, [booking.guestId, booking.hostId]);
+    const preview = await adminCancellationPreview(booking, reason);
+    if (preview.refundCents > 0 && !(await hasPermission(req.auth!.userId, 'REFUNDS'))) {
+      throw new HttpError(403, 'FORBIDDEN', NEEDS_REFUNDS_PERMISSION);
+    }
     const cancelled = await adminCancelBooking(booking, req.auth!.userId, reason, note);
     res.json({ booking: await bookingView(cancelled, 'STAFF') });
+  });
+
+  // What a cancellation for that reason would refund and cost, shown before staff confirm (plan §8.2).
+  router.get('/bookings/:id/cancellation-preview', async (req, res) => {
+    const { reason } = validate(adminCancellationPreviewQuerySchema, req.query);
+    const { booking } = await findBookingFor(
+      { userId: req.auth!.userId, roles: req.auth!.roles },
+      String(req.params.id),
+    );
+    const preview = await adminCancellationPreview(booking, reason);
+    // Their own trip or car is for another team member to cancel (plan §6.2).
+    if (await isOwnRecord(req.auth!.userId, [booking.guestId, booking.hostId])) {
+      res.json({ ...preview, allowed: false, message: OWN_RECORD_MESSAGE });
+      return;
+    }
+    if (preview.allowed && preview.refundCents > 0 && !(await hasPermission(req.auth!.userId, 'REFUNDS'))) {
+      res.json({ ...preview, allowed: false, message: `${preview.message} ${NEEDS_REFUNDS_PERMISSION}` });
+      return;
+    }
+    res.json(preview);
+  });
+
+  // An extra charge that hasn't been paid, cancelled by staff with the refunds permission: a mistake, or one
+  // written off after its retries (plan §8.1, items 6 and 11). The reason goes to the audit log.
+  router.post(
+    '/bookings/:id/extra-charges/:chargeId/cancel',
+    requirePermission('REFUNDS'),
+    async (req, res) => {
+      const { reason } = validate(cancelExtraChargeSchema, req.body);
+      const actor = { userId: req.auth!.userId, roles: req.auth!.roles };
+      const { booking } = await findBookingFor(actor, String(req.params.id));
+      await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
+      await cancelExtraCharge(actor.userId, booking._id, String(req.params.chargeId), reason, req.ip);
+      res.json(await adminBookingDetail(actor, booking.id));
+    },
+  );
+
+  // A trip whose check-out is missing 24 h after the return: support completes it with the Host's
+  // odometer and fuel reading and any photos, which become the check-out record (plan §8.2).
+  router.post('/bookings/:id/complete', async (req, res) => {
+    const input = validate(staffCompletionSchema, req.body ?? {});
+    const { booking } = await findBookingFor(
+      { userId: req.auth!.userId, roles: req.auth!.roles },
+      String(req.params.id),
+    );
+    await assertNotOwnRecord(req.auth!.userId, [booking.guestId, booking.hostId]);
+    await submitInspection(booking, 'STAFF', req.auth!.userId, { ...input, stage: 'CHECK_OUT' });
+    const { booking: fresh } = await findBookingFor(
+      { userId: req.auth!.userId, roles: req.auth!.roles },
+      booking.id,
+    );
+    res.json({ handover: await getHandover(fresh, 'STAFF') });
+  });
+
+  // A mistyped reading on a condition report, corrected by staff with a note for the audit log (plan §8.2).
+  // A completed trip's extra kilometres are worked out again from it, so it needs the refunds permission.
+  router.post('/bookings/:id/readings', requirePermission('REFUNDS'), async (req, res) => {
+    const input = validate(readingCorrectionSchema, req.body ?? {});
+    const actor = { userId: req.auth!.userId, roles: req.auth!.roles };
+    const { booking } = await findBookingFor(actor, String(req.params.id));
+    await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
+    const extraKm = await correctReading(actor.userId, booking, input, req.ip);
+    const { booking: fresh } = await findBookingFor(actor, booking.id);
+    res.json({ handover: await getHandover(fresh, 'STAFF'), ...(extraKm && { extraKm }) });
+  });
+
+  // Staff charge the extra kilometres from the readings as they stand: one held above the daily review
+  // limit once they've checked it, or one they won't wait for the other party to confirm.
+  router.post('/bookings/:id/extra-km', requirePermission('REFUNDS'), async (req, res) => {
+    const actor = { userId: req.auth!.userId, roles: req.auth!.roles };
+    const { booking } = await findBookingFor(actor, String(req.params.id));
+    await assertNotOwnRecord(actor.userId, [booking.guestId, booking.hostId]);
+    const extraKm = await settleExtraKilometres(
+      actor.userId,
+      booking,
+      'Charged by staff after checking the readings',
+      req.ip,
+    );
+    const { booking: fresh } = await findBookingFor(actor, booking.id);
+    res.json({ handover: await getHandover(fresh, 'STAFF'), extraKm });
+  });
+
+  // Incidents and disputes (spec §15): the support team's cases.
+  router.get('/incidents', async (req, res) => {
+    res.json(await listIncidentsForStaff(validate(staffIncidentListQuerySchema, req.query)));
+  });
+
+  // Support opens a case themselves, outside the damage-report window (plan §3).
+  router.post('/incidents', async (req, res) => {
+    const input = validate(staffNewIncidentSchema, req.body);
+    res.status(201).json({ incident: await openIncidentAsStaff(req.auth!.userId, input, req.ip) });
+  });
+
+  // Who a case can be handed to: before /incidents/:ref, which would take "assignees" for a case number.
+  router.get('/incidents/assignees', async (req, res) => {
+    res.json(await listIncidentAssignees(req.auth!.userId));
+  });
+
+  router.get('/incidents/:ref', async (req, res) => {
+    res.json({
+      incident: await getIncident(
+        { userId: req.auth!.userId, roles: req.auth!.roles },
+        String(req.params.ref),
+      ),
+    });
+  });
+
+  router.post('/incidents/:ref/events', async (req, res) => {
+    const input = validate(staffIncidentUpdateSchema, req.body);
+    res.json({
+      incident: await updateIncidentAsStaff(
+        req.auth!.userId,
+        req.auth!.roles,
+        String(req.params.ref),
+        input,
+        req.ip,
+      ),
+    });
+  });
+
+  router.post('/incidents/:ref/assignee', async (req, res) => {
+    const input = validate(incidentAssigneeSchema, req.body);
+    res.json({
+      incident: await assignIncident(
+        req.auth!.userId,
+        req.auth!.roles,
+        String(req.params.ref),
+        input,
+        req.ip,
+      ),
+    });
+  });
+
+  // An extra charge from a resolved case moves money, so it needs the refunds permission (plan §6.2).
+  router.post('/incidents/:ref/charges', requirePermission('REFUNDS'), async (req, res) => {
+    const input = validate(incidentChargeSchema, req.body);
+    res.json({
+      incident: await chargeFromIncident(
+        req.auth!.userId,
+        req.auth!.roles,
+        String(req.params.ref),
+        input,
+        req.ip,
+      ),
+    });
+  });
+
+  // Review moderation (spec §16): held reviews to clear or hide, and published ones to hide, with a
+  // recorded reason.
+  router.get('/reviews', async (req, res) => {
+    const state = (['PUBLISHED', 'HIDDEN'] as const).find((value) => value === req.query.state) ?? 'HELD';
+    res.json({ reviews: await reviewsForModeration(state) });
+  });
+
+  router.post('/reviews/:id/moderate', async (req, res) => {
+    const { action, reason } = validate(moderateReviewSchema, req.body);
+    res.json({
+      review: await moderateReview(req.auth!.userId, String(req.params.id), action, reason, req.ip),
+    });
+  });
+
+  // A booking's messages, opened only from a report, incident or ticket about it; each opening is in
+  // the audit log (plan §6.2).
+  router.get('/bookings/:id/thread', async (req, res) => {
+    const { context } = validate(staffThreadQuerySchema, req.query);
+    res.json(
+      await openThreadForStaff(req.auth!.userId, req.auth!.roles, String(req.params.id), context, req.ip),
+    );
+  });
+
+  // The verification queue (plan §9, Days 19–20): identity checks to review, then licences to check.
+  router.get('/verifications', async (_req, res) => {
+    res.json({ items: await verificationQueue() });
+  });
+
+  router.post('/users/:id/licence-review', async (req, res) => {
+    const { decision, note } = validate(licenceReviewSchema, req.body);
+    res.json(await reviewLicence(String(req.params.id), decision, req.auth!.userId, note, req.ip));
+  });
+
+  // The full licence number, to check by hand: each time it's shown is in the audit log (plan §14).
+  router.get('/users/:id/licence-number', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(await revealLicenceNumber(String(req.params.id), req.auth!.userId, req.ip));
   });
 
   // An identity check that needed a manual review: approving confirms the Guest's waiting bookings,
@@ -220,17 +466,59 @@ export function adminRouter() {
     });
   });
 
+  // Each override is audit-logged with its dates (plan §3: "written to the audit log"), including what an
+  // unblock freed, which the calendar no longer shows once the block is gone.
   router.post('/vehicles/:id/blocks', async (req, res) => {
     const vehicle = await findVehicleForCalendar(String(req.params.id));
+    // A support member who hosts the car leaves its calendar to someone else (plan §6.2).
+    await assertNotOwnRecord(req.auth!.userId, [vehicle.hostId]);
     const input = validate(blockInputSchema, req.body);
-    res.status(201).json({ block: await blockDates(vehicle._id, input, req.auth!.userId, 'ADMIN') });
+    const block = await blockDates(vehicle._id, input, req.auth!.userId, 'ADMIN');
+    await recordAudit({
+      actorId: req.auth!.userId,
+      action: 'calendar.blocked',
+      entity: 'vehicle',
+      entityId: vehicle._id.toString(),
+      after: {
+        blockId: block.id,
+        start: block.start,
+        end: block.end,
+        ...(block.note && { note: block.note }),
+      },
+      ...(req.ip && { ip: req.ip }),
+    });
+    res.status(201).json({ block });
   });
 
   router.delete('/vehicles/:id/blocks/:blockId', async (req, res) => {
     const vehicle = await findVehicleForCalendar(String(req.params.id));
-    await unblockDates(vehicle._id, String(req.params.blockId), ['ADMIN', 'HOST_BLOCK', 'RECURRING']);
+    await assertNotOwnRecord(req.auth!.userId, [vehicle.hostId]);
+    const blockId = String(req.params.blockId);
+    const block = mongoose.isValidObjectId(blockId)
+      ? await AvailabilityBlockModel.findOne({ _id: blockId, vehicleId: vehicle._id }).lean()
+      : null;
+    await unblockDates(vehicle._id, blockId, ['ADMIN', 'HOST_BLOCK', 'RECURRING']);
+    await recordAudit({
+      actorId: req.auth!.userId,
+      action: 'calendar.unblocked',
+      entity: 'vehicle',
+      entityId: vehicle._id.toString(),
+      ...(block && {
+        before: {
+          blockId,
+          reason: block.reason,
+          start: block.startAt.toISOString(),
+          end: block.endAt.toISOString(),
+          ...(block.note && { note: block.note }),
+        },
+      }),
+      ...(req.ip && { ip: req.ip }),
+    });
     res.status(204).end();
   });
+
+  // Users, bookings, money, the support inbox, moderation, content, reports, the audit log and jobs.
+  router.use(adminOpsRouter());
 
   return router;
 }

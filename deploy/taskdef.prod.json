@@ -82,8 +82,16 @@
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:STRIPE_WEBHOOK_SECRET::"
         },
         {
+          "name": "STRIPE_CONNECT_WEBHOOK_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:STRIPE_CONNECT_WEBHOOK_SECRET::"
+        },
+        {
           "name": "GOOGLE_MAPS_SERVER_KEY",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:GOOGLE_MAPS_SERVER_KEY::"
+        },
+        {
+          "name": "RESEND_WEBHOOK_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:RESEND_WEBHOOK_SECRET::"
         }
       ],
       "logConfiguration": {

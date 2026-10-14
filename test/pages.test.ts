@@ -204,6 +204,21 @@ describe('destination pages (/pages/rental/:city)', () => {
     const response = await request(testApp()).get('/pages/rental/atlantis');
     expect(response.status).toBe(404);
   });
+
+  it('answers 404 for an unpublished page, and the sitemap leaves it out', async () => {
+    const destination = await queenstown();
+    await DestinationModel.updateOne({ _id: destination._id }, { $set: { published: false } });
+
+    const response = await request(testApp()).get('/pages/rental/queenstown');
+    expect(response.status).toBe(404);
+    expect(response.text).toContain('noindex');
+    const sitemap = await request(testApp()).get('/pages/sitemap.xml');
+    expect(sitemap.text).not.toContain('/rental/queenstown');
+
+    // Published again, it's back.
+    await DestinationModel.updateOne({ _id: destination._id }, { $set: { published: true } });
+    expect((await request(testApp()).get('/pages/rental/queenstown')).status).toBe(200);
+  });
 });
 
 describe('sitemap.xml', () => {

@@ -5,14 +5,22 @@ import { CHARGE_CURRENCY, stripe } from '../../integrations/stripe.js';
 import { logger } from '../../integrations/logger.js';
 import { reportError } from '../../integrations/sentry.js';
 import { enqueue } from '../../jobs/queue.js';
+import { formatNzdExact } from '../../lib/format.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
+import { getPlatformSettings } from '../admin/platform-settings.service.js';
+import { tripDatesStillHeld } from '../availability/availability.service.js';
+import { otherLivePayments } from '../payments/booking-payment.js';
 import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
+import { ensureCustomer } from '../payments/stripe-customer.js';
+import { alertStaff } from '../staff/staff-alerts.js';
+import { checkFailedPayments, queuePaymentRiskCheck } from '../risk/risk-signals.js';
 import { AGREEMENT_VERSIONS } from '../users/agreements.js';
 import { verificationInReview } from '../users/driver-licence.service.js';
 import { UserModel } from '../users/user.model.js';
+import { VehicleModel } from '../vehicles/vehicle.model.js';
 import { BookingModel, type BookingDocument } from './booking.model.js';
 import { notifyPaymentFailed } from './booking-notifications.js';
-import { confirmBooking, markRequested } from './booking-transitions.js';
+import { confirmBooking, endBooking, markRequested } from './booking-transitions.js';
 import { loadBookingContext, type BookingRecord } from './booking-view.js';
 import type { PaymentSession } from './bookings.schemas.js';
 
@@ -26,32 +34,29 @@ import type { PaymentSession } from './bookings.schemas.js';
 
 type Intent = Pick<Stripe.PaymentIntent, 'id' | 'status' | 'last_payment_error' | 'amount' | 'metadata'>;
 
-/** The Guest's Stripe customer, created on their first payment (plan §8.1, item 7). */
-async function ensureCustomer(userId: string): Promise<string> {
-  const user = await UserModel.findById(userId).select('email firstName lastName stripeCustomerId');
-  if (!user) throw unauthenticated();
-  if (user.stripeCustomerId) return user.stripeCustomerId;
-  const customer = await stripe().customers.create(
-    { email: user.email, name: `${user.firstName} ${user.lastName}`, metadata: { userId: user.id } },
-    { idempotencyKey: `customer-${user.id}` },
-  );
-  await UserModel.updateOne(
-    { _id: user._id, stripeCustomerId: mongoose.trusted({ $exists: false }) },
-    { $set: { stripeCustomerId: customer.id } },
-  );
-  return customer.id;
-}
-
 const REUSABLE: Stripe.PaymentIntent.Status[] = [
   'requires_payment_method',
   'requires_confirmation',
   'requires_action',
 ];
 
+/** A PaymentIntent whose money is taken, held on the card, or with the bank: it can't simply be dropped. */
+const TAKEN: Stripe.PaymentIntent.Status[] = ['succeeded', 'requires_capture', 'processing'];
+
+const alreadyPaid = (status?: Stripe.PaymentIntent.Status) =>
+  new HttpError(
+    409,
+    'ALREADY_PAID',
+    status === 'processing'
+      ? 'Your payment is with your bank. We’ll confirm the booking as soon as it goes through.'
+      : 'This booking is already paid for or has ended.',
+  );
+
 /**
  * POST /bookings/{id}/payment: records the Guest Agreement (plan §6.1) and returns what Stripe.js
  * needs for the payment step, with the Guest's saved cards. Reuses the booking's unfinished
- * PaymentIntent, so retrying never charges twice.
+ * PaymentIntent, so retrying never charges twice; one already paid or authorised (its webhook not in
+ * yet, or the website's sync lost when the tab closed) is applied instead of starting a second payment.
  */
 export async function preparePayment(
   guestId: string,
@@ -59,9 +64,7 @@ export async function preparePayment(
   ip?: string,
   now = new Date(),
 ): Promise<PaymentSession> {
-  if (booking.status !== 'PAYMENT_PENDING') {
-    throw new HttpError(409, 'ALREADY_PAID', 'This booking is already paid for or has ended.');
-  }
+  if (booking.status !== 'PAYMENT_PENDING') throw alreadyPaid();
   if (!booking.holdExpiresAt || booking.holdExpiresAt <= now) {
     throw new HttpError(
       409,
@@ -69,6 +72,8 @@ export async function preparePayment(
       'We held these dates for 30 minutes and the time is up. Please start again.',
     );
   }
+
+  if (!(await vehicleTakesBookings(booking.vehicleId))) throw vehicleSuspended();
 
   const user = await UserModel.findById(guestId);
   if (!user) throw unauthenticated();
@@ -81,9 +86,10 @@ export async function preparePayment(
     await user.save();
   }
 
-  // A check that needs a manual review turns even an Instant Book into a request (plan §8.2): the
-  // card is authorised now, and charged once support approves the check.
-  const inReview = verificationInReview(user);
+  // A check that needs a manual review (the identity check, or a licence no ID document confirmed) turns
+  // even an Instant Book into a request (plan §8.2): the card is authorised now, and charged once support
+  // approves it.
+  const inReview = verificationInReview(user, await getPlatformSettings());
   if (inReview !== (booking.verificationReview?.status === 'PENDING')) {
     booking.verificationReview = inReview ? { status: 'PENDING' } : undefined;
     await booking.save();
@@ -101,14 +107,30 @@ export async function preparePayment(
   }).sort({ createdAt: -1 });
   if (existing) {
     const current = await client.paymentIntents.retrieve(existing.stripePaymentIntentId);
+    if (TAKEN.includes(current.status)) {
+      // Paid or authorised already: a second PaymentIntent would charge the Guest twice (plan §8.1).
+      await withTransaction((session) => applyPaymentIntent(current, session, now));
+      throw alreadyPaid(current.status);
+    }
     if (REUSABLE.includes(current.status)) {
       if (current.capture_method === captureMethod) {
         intent = current;
       } else {
-        // The check finished, or went to review, since this payment was started: start a new one.
-        await cancelIntent(existing).catch(() => undefined);
-        existing.status = 'CANCELLED';
-        await existing.save();
+        // The check finished, or went to review, since this payment was started: start a new one, once the old
+        // one is stopped. If Stripe can't be reached to stop it, it may still be paid, so none is started.
+        const outcome = await releasePayment(existing, now).catch((error: unknown) => {
+          if (error instanceof HttpError) throw error;
+          throw new HttpError(
+            503,
+            'PAYMENTS_UNAVAILABLE',
+            'We couldn’t reach our payment provider. Please try again in a moment.',
+          );
+        });
+        if (outcome !== 'released') throw alreadyPaid(outcome === 'processing' ? 'processing' : undefined);
+        await PaymentModel.updateOne(
+          { _id: existing._id, status: 'PENDING' },
+          { $set: { status: 'CANCELLED' } },
+        );
       }
     }
   }
@@ -185,33 +207,46 @@ export async function applyPaymentIntent(
 
   switch (intent.status) {
     case 'succeeded': {
-      if (payment.status === 'PENDING' || payment.status === 'AUTHORISED' || payment.status === 'FAILED') {
+      // Already taken before this call: a cancellation since then decided what's refunded, not this.
+      const wasPaid = ['SUCCEEDED', 'PARTIALLY_REFUNDED', 'REFUNDED'].includes(payment.status);
+      // Stripe's word wins: one recorded as cancelled (its booking ended as Stripe took it) was taken all the same.
+      if (['PENDING', 'AUTHORISED', 'FAILED', 'CANCELLED'].includes(payment.status)) {
+        // An authorised request was checked when it was authorised.
+        if (payment.status !== 'AUTHORISED') await queuePaymentRiskCheck(payment.id, session);
         payment.status = 'SUCCEEDED';
         payment.failureReason = undefined;
         await payment.save({ session });
       }
       if (booking.status === 'PAYMENT_PENDING' || booking.status === 'PENDING') {
-        await confirmBooking(booking, payment, session, now);
-      } else if (
-        ['EXPIRED', 'CANCELLED', 'DECLINED'].includes(booking.status) &&
-        payment.refunds.length === 0
-      ) {
-        // Paid after the dates were released (a very late payment): give it all back.
-        await enqueue(
-          'payment.refundUnwanted',
-          { paymentId: payment.id },
-          { uniqueKey: `refund-unwanted:${payment.id}`, session },
-        );
+        const unwanted = await whyUnwanted(booking, session, now);
+        if (unwanted) await endUnwanted(booking, payment, unwanted, session, now);
+        else if (await confirmBooking(booking, payment, session, now)) {
+          await releaseOtherAuthorisations(booking, payment, session);
+        }
+      } else if (!wasPaid && payment.refunds.length === 0) {
+        await returnUnwanted(booking, payment, session, now);
       }
       return;
     }
     case 'requires_capture': {
-      if (payment.status === 'PENDING' || payment.status === 'FAILED') {
+      const newlyAuthorised = payment.status === 'PENDING' || payment.status === 'FAILED';
+      if (newlyAuthorised) {
+        await queuePaymentRiskCheck(payment.id, session);
         payment.status = 'AUTHORISED';
         payment.failureReason = undefined;
         await payment.save({ session });
       }
-      if (booking.status === 'PAYMENT_PENDING') await markRequested(booking, session, now);
+      if (booking.status === 'PAYMENT_PENDING') {
+        const unwanted = await whyUnwanted(booking, session, now);
+        if (unwanted) await endUnwanted(booking, payment, unwanted, session, now);
+        else await markRequested(booking, session, now, payment);
+      } else if (newlyAuthorised && (await hasOtherPayment(booking, payment, session))) {
+        // A second authorisation for a booking another payment already made: the hold on the card is released.
+        // Recorded as cancelled straight away, so it's never the one captured when the Host accepts.
+        payment.status = 'CANCELLED';
+        await payment.save({ session });
+        await returnUnwanted(booking, payment, session, now);
+      }
       return;
     }
     case 'canceled': {
@@ -226,6 +261,7 @@ export async function applyPaymentIntent(
       if (reason && payment.status === 'PENDING') {
         payment.failureReason = reason.slice(0, 300);
         await payment.save({ session });
+        await checkFailedPayments(booking.guestId, session, now);
         if (booking.status === 'PAYMENT_PENDING') {
           await notifyPaymentFailed(
             booking.toObject() as BookingRecord,
@@ -242,6 +278,154 @@ export async function applyPaymentIntent(
   }
 }
 
+/**
+ * Whether a car can take new bookings: not suspended by staff, its Host not suspended (plan §8.2), and not
+ * rejected or a draft (a car rejected after a review of its key details keeps its bookings for staff, but none
+ * is confirmed on it). A car back for review keeps and confirms the bookings it has.
+ */
+export async function vehicleTakesBookings(vehicleId: BookingDocument['vehicleId'], session?: ClientSession) {
+  const live = await VehicleModel.exists({
+    _id: vehicleId,
+    status: mongoose.trusted({ $nin: ['SUSPENDED', 'REJECTED', 'DRAFT'] }),
+    hostSuspended: mongoose.trusted({ $ne: true }),
+  }).session(session ?? null);
+  return Boolean(live);
+}
+
+export const vehicleSuspended = () =>
+  new HttpError(409, 'VEHICLE_SUSPENDED', 'This car can’t take new bookings at the moment.');
+
+/**
+ * DUPLICATE: a second payment for a booking another payment already made (the Guest paid again before the
+ * first was applied), refunded in full, or released if only authorised. CHARGE_CANCELLED: an extra charge's
+ * payment that went through as staff cancelled the charge, refunded in full. CHARGE_DUPLICATE: a second
+ * payment for an extra charge another payment had paid already, refunded in full.
+ */
+export type UnwantedReason =
+  'DATES_TAKEN' | 'CAR_UNAVAILABLE' | 'DUPLICATE' | 'CHARGE_CANCELLED' | 'CHARGE_DUPLICATE';
+
+/**
+ * A booking another payment just confirmed keeps no other authorisation on the card: each is recorded as
+ * cancelled at once (so it's never captured) and released by `payment.refundUnwanted` (plan §8.1).
+ */
+async function releaseOtherAuthorisations(
+  booking: BookingDocument,
+  payment: PaymentDocument,
+  session: ClientSession,
+) {
+  const others = await PaymentModel.find({
+    bookingId: booking._id,
+    type: 'BOOKING',
+    _id: mongoose.trusted({ $ne: payment._id }),
+    status: 'AUTHORISED',
+  }).session(session);
+  for (const other of others) {
+    other.status = 'CANCELLED';
+    await other.save({ session });
+    await enqueue(
+      'payment.refundUnwanted',
+      { paymentId: other.id, reason: 'DUPLICATE' as const },
+      { uniqueKey: `refund-unwanted:${other.id}`, refId: booking.id, session },
+    );
+  }
+}
+
+/** Another payment for the booking went through or is authorised: this one isn't the one that made it. */
+async function hasOtherPayment(booking: BookingDocument, payment: PaymentDocument, session: ClientSession) {
+  return Boolean(
+    await PaymentModel.exists({
+      bookingId: booking._id,
+      type: 'BOOKING',
+      _id: mongoose.trusted({ $ne: payment._id }),
+      status: mongoose.trusted({ $in: ['AUTHORISED', 'SUCCEEDED', 'PARTIALLY_REFUNDED', 'REFUNDED'] }),
+    }).session(session),
+  );
+}
+
+/**
+ * A payment that went through (or was authorised) without making its booking: the booking had ended (a very
+ * late payment), or another payment had already made it (a second payment). It's given back in full by the
+ * `payment.refundUnwanted` job, which checks Stripe first; staff are told about a second payment.
+ */
+async function returnUnwanted(
+  booking: BookingDocument,
+  payment: PaymentDocument,
+  session: ClientSession,
+  now: Date,
+) {
+  const confirmedBefore = booking.statusHistory.some((change) => change.status === 'CONFIRMED');
+  const duplicate = confirmedBefore || (await hasOtherPayment(booking, payment, session));
+  if (!duplicate && !['EXPIRED', 'CANCELLED', 'DECLINED'].includes(booking.status)) return;
+  if (!duplicate) {
+    await BookingModel.updateOne({ _id: booking._id }, { $set: { paymentReturnedAt: now } }, { session });
+  }
+  await enqueue(
+    'payment.refundUnwanted',
+    { paymentId: payment.id, ...(duplicate && { reason: 'DUPLICATE' as const }) },
+    { uniqueKey: `refund-unwanted:${payment.id}`, refId: booking.id, session },
+  );
+  if (duplicate) {
+    await alertStaff(
+      {
+        type: 'DUPLICATE_PAYMENT',
+        title: `A second payment on ${booking.ref}`,
+        body: `the guest paid for booking ${booking.ref} a second time (${formatNzdExact(payment.amountCents)}). The second payment is being given back automatically; check it in Stripe if that doesn’t go through.`,
+        link: `/admin/bookings/${booking.ref}`,
+        dedupeKey: `DUPLICATE_PAYMENT:${payment.id}`,
+      },
+      { session },
+    );
+  }
+}
+
+/**
+ * Why a payment that just went through can't make its booking, if it can't: a new checkout whose car was
+ * suspended meanwhile, or whose dates went to someone else after its hold ran out (plan §8.2).
+ */
+async function whyUnwanted(
+  booking: BookingDocument,
+  session: ClientSession,
+  now: Date,
+): Promise<UnwantedReason | null> {
+  if (booking.status === 'PAYMENT_PENDING' && !(await vehicleTakesBookings(booking.vehicleId, session))) {
+    return 'CAR_UNAVAILABLE';
+  }
+  return (await tripDatesStillHeld(booking, session, now)) ? null : 'DATES_TAKEN';
+}
+
+/**
+ * The booking can't be made after all: it ends, the money goes back (a charge is refunded, an authorisation
+ * released) and the Guest is told why.
+ */
+async function endUnwanted(
+  booking: BookingDocument,
+  payment: PaymentDocument,
+  reason: UnwantedReason,
+  session: ClientSession,
+  now: Date,
+) {
+  const ended = await endBooking(
+    booking,
+    {
+      to: 'EXPIRED',
+      from: ['PAYMENT_PENDING', 'PENDING'],
+      reason:
+        reason === 'DATES_TAKEN'
+          ? 'The dates were booked by someone else while the payment was processing'
+          : 'The car was suspended while the payment was processing',
+      now,
+    },
+    session,
+  );
+  if (!ended) return;
+  await BookingModel.updateOne({ _id: booking._id }, { $set: { paymentReturnedAt: now } }, { session });
+  await enqueue(
+    'payment.refundUnwanted',
+    { paymentId: payment.id, reason },
+    { uniqueKey: `refund-unwanted:${payment.id}`, refId: booking.id, session },
+  );
+}
+
 /** POST /bookings/{id}/payment/sync: after Stripe.js confirms, apply the result straight away. */
 export async function syncBookingPayment(booking: BookingDocument): Promise<void> {
   const payment = await PaymentModel.findOne({ bookingId: booking._id, type: 'BOOKING' }).sort({
@@ -252,7 +436,10 @@ export async function syncBookingPayment(booking: BookingDocument): Promise<void
   await withTransaction((session) => applyPaymentIntent(intent, session));
 }
 
-/** Releases an authorisation, or stops an unfinished payment. An intent that's already final is left. */
+/**
+ * Releases an authorisation, or stops an unfinished payment. An intent that's already final is left, and
+ * its state returned: callers that end a booking use releasePayment(), which checks it.
+ */
 export async function cancelIntent(payment: PaymentDocument | null): Promise<Stripe.PaymentIntent | null> {
   if (!payment) return null;
   const client = stripe();
@@ -268,6 +455,46 @@ export async function cancelIntent(payment: PaymentDocument | null): Promise<Str
       return client.paymentIntents.retrieve(payment.stripePaymentIntentId);
     }
     throw error;
+  }
+}
+
+/**
+ * Releases a booking payment before its booking ends: a withdrawn request, an abandoned checkout, a
+ * decline, an expiry (plan §8.1, items 5 and 14). Stripe may have taken the money a moment ago (the Host
+ * accepted, 3-D Secure finished, a capture that timed out went through): then that's applied instead, which
+ * confirms the booking, and the caller doesn't end it. 'paid': applied (paid or authorised); 'processing':
+ * the bank is still deciding, and its webhook settles it.
+ */
+export async function releasePayment(
+  payment: PaymentDocument | null,
+  now = new Date(),
+): Promise<'released' | 'paid' | 'processing'> {
+  const intent = await cancelIntent(payment);
+  if (!intent || !TAKEN.includes(intent.status)) return 'released';
+  if (intent.status === 'processing') return 'processing';
+  await withTransaction((session) => applyPaymentIntent(intent, session, now));
+  return 'paid';
+}
+
+/**
+ * A booking that ended keeps no other payment live at Stripe (a second checkout attempt, a second
+ * authorisation): each is stopped too, and one Stripe took meanwhile is applied, which gives it back (plan §8.1,
+ * item 14). Best effort: one Stripe can't be reached for runs out on its own, and its webhook is applied as usual.
+ */
+export async function releaseOtherPayments(
+  booking: { _id: BookingDocument['_id'] },
+  payment: PaymentDocument | null,
+  now = new Date(),
+) {
+  for (const other of await otherLivePayments(booking, payment)) {
+    const intent = await cancelIntent(other).catch((error: unknown) => {
+      logger.warn(
+        { err: error, paymentId: other.id },
+        'Could not stop a second payment for an ended booking',
+      );
+      return null;
+    });
+    if (intent) await withTransaction((session) => applyPaymentIntent(intent, session, now));
   }
 }
 
@@ -308,6 +535,17 @@ export async function refundIntent(
       },
       { idempotencyKey: key },
     );
+    if (refund.status === 'failed') {
+      // Stripe usually reports a failed refund later (refund.failed); one that fails at once is alerted here,
+      // as the webhook skips a refund already recorded as failed (plan §8.1, item 21).
+      await alertStaff({
+        type: 'REFUND_FAILED',
+        title: 'A refund failed',
+        body: `a refund of ${formatNzdExact(amount)} failed (${refund.failure_reason ?? 'unknown'}). Please return the money to the guest another way.`,
+        link: '/admin/payments',
+        dedupeKey: `REFUND_FAILED:${refund.id}`,
+      });
+    }
     return {
       amountCents: amount,
       stripeRefundId: refund.id,
@@ -320,11 +558,18 @@ export async function refundIntent(
   }
 }
 
-/** A payment's status after its refunds. */
+/**
+ * A payment's status after its refunds. Failed refunds don't count: a paid payment whose only refunds failed
+ * is SUCCEEDED again, so staff can refund it another way (plan §8.1, item 21).
+ */
 export function statusAfterRefunds(payment: PaymentDocument): PaymentDocument['status'] {
   const refunded = payment.refunds
     .filter((refund) => refund.status !== 'FAILED')
     .reduce((sum, refund) => sum + refund.amountCents, 0);
-  if (refunded <= 0) return payment.status;
+  if (refunded <= 0) {
+    return payment.status === 'REFUNDED' || payment.status === 'PARTIALLY_REFUNDED'
+      ? 'SUCCEEDED'
+      : payment.status;
+  }
   return refunded >= payment.amountCents ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
 }

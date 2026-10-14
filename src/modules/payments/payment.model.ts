@@ -18,12 +18,29 @@ export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 /** Who pays for a refund: the platform (goodwill, its own fees) or the Host (plan §8.1, item 15). */
 export const REFUND_FUNDERS = ['PLATFORM', 'HOST'] as const;
 
+/**
+ * Why a refund was made, for reports: a cancellation's own refund, the return of a payment that arrived after
+ * its booking ended, or one staff issued. Refunds recorded before this field existed have none.
+ */
+export const REFUND_KINDS = ['CANCELLATION', 'LATE_PAYMENT', 'STAFF'] as const;
+
 export interface Refund {
   _id?: Types.ObjectId;
   amountCents: number;
   reason: string;
+  kind?: (typeof REFUND_KINDS)[number];
   issuedBy?: Types.ObjectId;
   fundedBy: (typeof REFUND_FUNDERS)[number];
+  /**
+   * HOST: the Host's share of it, what they pay back (plan §8.1, item 15); the platform covers its
+   * commission. Refunds recorded before this field existed have none: the Host paid all of it.
+   */
+  hostCents?: number;
+  /**
+   * HOST, made before the booking was cancelled: what the cancellation took off the Host's share of it, as the
+   * Guest got that part back under the cancellation anyway (plan §8.1, item 15). `hostCents` is what's left.
+   */
+  hostReliefCents?: number;
   stripeRefundId?: string;
   /** A failed refund alerts support (plan §8.1, item 21). */
   status: 'PENDING' | 'SUCCEEDED' | 'FAILED';
@@ -43,11 +60,18 @@ export interface Dispute {
 export interface Payment {
   bookingId: Types.ObjectId;
   type: (typeof PAYMENT_TYPES)[number];
+  /** EXTRA_CHARGE: which of the booking's extra charges it pays. */
+  extraChargeId?: Types.ObjectId;
   stripePaymentIntentId: string;
   amountCents: number;
   status: PaymentStatus;
   method?: string;
   failureReason?: string;
+  /**
+   * When the money was taken: set as the payment is first recorded as paid, so a refund later (which moves
+   * updatedAt) doesn't change it. Payments recorded before this field existed have none.
+   */
+  succeededAt?: Date;
   refunds: Refund[];
   dispute?: Dispute;
   createdAt: Date;
@@ -57,8 +81,11 @@ export interface Payment {
 const refundSchema = new Schema<Refund>({
   amountCents: { ...cents({ required: true }), min: 1 },
   reason: { type: String, required: true },
+  kind: { type: String, enum: REFUND_KINDS },
   issuedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   fundedBy: { type: String, enum: REFUND_FUNDERS, required: true },
+  hostCents: cents(),
+  hostReliefCents: cents(),
   stripeRefundId: String,
   status: { type: String, enum: ['PENDING', 'SUCCEEDED', 'FAILED'], default: 'PENDING' },
   failureReason: String,
@@ -69,11 +96,13 @@ const paymentSchema = new Schema<Payment>(
   {
     bookingId: { type: Schema.Types.ObjectId, ref: 'Booking', required: true },
     type: { type: String, enum: PAYMENT_TYPES, required: true },
+    extraChargeId: Schema.Types.ObjectId,
     stripePaymentIntentId: { type: String, required: true },
     amountCents: cents({ required: true }),
     status: { type: String, enum: PAYMENT_STATUSES, default: 'PENDING' },
     method: String,
     failureReason: String,
+    succeededAt: Date,
     refunds: { type: [refundSchema], default: [] },
     dispute: {
       type: new Schema<Dispute>(
@@ -90,6 +119,15 @@ const paymentSchema = new Schema<Payment>(
   },
   { timestamps: true },
 );
+
+const PAID: readonly PaymentStatus[] = ['SUCCEEDED', 'PARTIALLY_REFUNDED', 'REFUNDED'];
+
+// Every change of status is saved through the document, so the moment it's first paid is caught here.
+paymentSchema.pre('save', function stampSucceededAt() {
+  if (!this.succeededAt && PAID.includes(this.status) && (this.isNew || this.isModified('status'))) {
+    this.succeededAt = new Date();
+  }
+});
 
 paymentSchema.index({ stripePaymentIntentId: 1 }, { unique: true });
 paymentSchema.index({ bookingId: 1 });

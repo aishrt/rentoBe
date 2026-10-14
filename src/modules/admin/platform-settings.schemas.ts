@@ -6,6 +6,11 @@ const percent = z.number().min(0).max(100);
 const wholeCents = z.number().int().min(0);
 const count = z.number().int().min(0);
 const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, { error: 'Use HH:mm' });
+/** A phone number to show, or empty for none yet. */
+const phone = z
+  .string()
+  .trim()
+  .regex(/^(\+?[\d ()-]{6,20})?$/, { error: 'Enter a phone number, like 0800 123 456' });
 
 const range = (bound: z.ZodNumber) =>
   z
@@ -32,6 +37,10 @@ export const protectionPlanSchema = z.object({
   coverSummary: z.string().min(1),
   /** The plan every booking includes unless the Guest picks another. */
   mandatory: z.boolean(),
+  /** The plan's own roadside assistance number, when its insurer gives one; else roadsideAssistance.phone. */
+  roadsidePhone: phone.optional().meta({
+    description: 'The plan’s own roadside assistance number; empty or missing means roadsideAssistance.phone',
+  }),
 });
 export type ProtectionPlan = z.infer<typeof protectionPlanSchema>;
 
@@ -51,6 +60,8 @@ export const DECISION_KEYS = [
   'company',
   'bookingRules',
   'verificationServices',
+  /** The retention periods wait for the client's legal adviser (plan §16, item 11). */
+  'retentionAndRisk',
 ] as const;
 export type DecisionKey = (typeof DECISION_KEYS)[number];
 
@@ -147,6 +158,11 @@ export const platformSettingsSchema = z.object({
     damageReportWindowHours: count,
     /** A message thread becomes read-only this long after the trip ends. */
     threadReadOnlyDays: count,
+    /**
+     * Extra kilometres above this many a trip day aren't charged automatically: staff check the readings
+     * first (a mistyped odometer reading), then charge or correct them.
+     */
+    extraKmReviewAboveKmPerDay: z.number().int().min(1),
   }),
   search: z.object({
     maxTripDays: z.number().int().min(1),
@@ -157,19 +173,23 @@ export const platformSettingsSchema = z.object({
         path: ['default'],
       }),
   }),
-  /** Proposed periods, to be confirmed by the client's legal adviser (plan §14). */
+  /**
+   * Proposed periods, to be confirmed by the client's legal adviser (plan §14). Each has a floor, so a
+   * mistyped value can't have the daily retention job delete the audit log or trip evidence: NZ business
+   * and tax records are kept 7 years, and audit logs as long.
+   */
   retention: z.object({
-    financialRecordsYears: count,
-    idImagesDays: count,
-    tripRecordsYears: count,
-    auditLogYears: count,
+    financialRecordsYears: z.number().int().min(7, { error: 'Keep financial records at least 7 years' }),
+    idImagesDays: z.number().int().min(1),
+    tripRecordsYears: z.number().int().min(1),
+    auditLogYears: z.number().int().min(7, { error: 'Keep audit logs at least 7 years' }),
   }),
-  /** When suspicious activity raises a risk flag for admins (plan §14). */
+  /** When suspicious activity raises a risk flag for admins (plan §14). 0 would flag everyone. */
   risk: z.object({
-    failedPaymentsPerDay: count,
-    bookingsPerDay: count,
-    reportsBeforeFlag: count,
-    hostCancellationsPer90Days: count,
+    failedPaymentsPerDay: z.number().int().min(1),
+    bookingsPerDay: z.number().int().min(1),
+    reportsBeforeFlag: z.number().int().min(1),
+    hostCancellationsPer90Days: z.number().int().min(1),
   }),
   /** Non-urgent SMS in these NZ hours wait until the end (plan §7). */
   sms: z.object({ quietHoursStart: timeOfDay, quietHoursEnd: timeOfDay }),
@@ -194,13 +214,11 @@ export const platformSettingsSchema = z.object({
    * only: the card hold is designed and built once the client decides to have one (plan §5).
    */
   securityDeposit: z.object({ amountCents: wholeCents }),
-  /** From the insurance partner (plan §16, item 9). Empty until it arrives; shown with the protection plans. */
-  roadsideAssistance: z.object({
-    phone: z
-      .string()
-      .trim()
-      .regex(/^(\+?[\d ()-]{6,20})?$/, { error: 'Enter a phone number, like 0800 123 456' }),
-  }),
+  /**
+   * From the insurance partner (plan §16, item 9). Empty until it arrives; shown with the protection plans.
+   * A plan with its own roadsidePhone uses that instead.
+   */
+  roadsideAssistance: z.object({ phone }),
   /** The logo, trade mark and company name checks (plan §16, item 1). Recorded only. */
   brandChecks: z.object({
     finalLogoSupplied: z.boolean(),

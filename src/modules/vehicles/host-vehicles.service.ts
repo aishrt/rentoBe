@@ -19,14 +19,15 @@ import { BookingModel } from '../bookings/booking.model.js';
 import { hostAnswers } from '../bookings/booking-view.js';
 import { notify } from '../notifications/notify.js';
 import { PlaceModel } from '../search/place.model.js';
-import { uploadFolder } from '../uploads/upload-folders.js';
+import { discardFiles, uploadFolder } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import type { HostVehicleView, VehiclePatch } from './host-vehicles.schemas.js';
-import { listingChecklist } from './listing-checklist.js';
+import { DOCUMENT_NAMES, listingChecklist } from './listing-checklist.js';
 import { vehicleTitle } from './vehicle-view.js';
 import {
   VehicleModel,
   type DeliveryOption,
+  type DocumentType,
   type VehicleDocument,
   type VehicleStatus,
 } from './vehicle.model.js';
@@ -39,6 +40,24 @@ import {
  */
 
 const LIVE: VehicleStatus[] = ['ACTIVE', 'INACTIVE'];
+const EXPIRY_FIELDS = ['regoExpiry', 'wofExpiry', 'cofExpiry'] as const;
+export type ExpiryField = (typeof EXPIRY_FIELDS)[number];
+/** The document that shows each expiry date. */
+export const EXPIRY_DOCUMENTS: Record<ExpiryField, DocumentType> = {
+  regoExpiry: 'REGO',
+  wofExpiry: 'WOF',
+  cofExpiry: 'COF',
+};
+
+/**
+ * A car staff have approved: live, suspended, or back for review over its key details (plan §3). Its expiry
+ * dates move later only with a document staff have verified; a draft's or a first review's apply as entered.
+ */
+export const wasApproved = (vehicle: Pick<VehicleDocument, 'status' | 'keyReviewFrom' | 'keyChanges'>) =>
+  LIVE.includes(vehicle.status) ||
+  vehicle.status === 'SUSPENDED' ||
+  vehicle.keyReviewFrom !== undefined ||
+  Array.isArray(vehicle.keyChanges);
 /** Statuses that hold a plate: a plate can be on only one of these (plan §3, Validation rules). */
 const LISTED: VehicleStatus[] = ['UNDER_REVIEW', 'CHANGES_REQUESTED', 'ACTIVE', 'INACTIVE', 'SUSPENDED'];
 const KEY_FIELDS = ['regoPlate', 'vin', 'chassisNo', 'make', 'model', 'year'] as const;
@@ -54,6 +73,26 @@ const notFound = () => new HttpError(404, 'NOT_FOUND', "We couldn't find that ca
 function expiryFromDate(value: string): Date {
   const [year, month, day] = value.split('-').map(Number) as [number, number, number];
   return fromNzWallClock(year, month, day, 23, 59);
+}
+
+/**
+ * Staff verified a rego, WOF or CoF document on a car they had approved (plan §3): the car's expiry moves to
+ * the date the document shows (the date sent with it, or else the Host's new date waiting for it) when that's
+ * later than the date checked before, and the Host's new date stops waiting once a document shows it.
+ */
+export function applyVerifiedExpiry(
+  vehicle: VehicleDocument,
+  document: VehicleDocument['documents'][number],
+): void {
+  if (!wasApproved(vehicle)) return;
+  const key = EXPIRY_FIELDS.find((field) => EXPIRY_DOCUMENTS[field] === document.type);
+  if (!key) return;
+  const pending = vehicle.pendingExpiries?.[key];
+  const shown = document.expiry ?? pending;
+  if (!shown) return;
+  const current = vehicle[key];
+  if (!current || shown > current) vehicle.set(key, shown);
+  if (pending && pending <= shown) vehicle.set(`pendingExpiries.${key}`, undefined);
 }
 
 async function hostUser(userId: string) {
@@ -87,6 +126,7 @@ export function toHostVehicleView(
     slug: vehicle.slug,
     title: vehicleTitle(vehicle),
     status: vehicle.status,
+    waitingForPayouts: vehicle.payoutsReady === false,
     ...(vehicle.reviewNotes && { reviewNotes: vehicle.reviewNotes }),
     onboardingStep: vehicle.onboardingStep,
     ...(vehicle.regoPlate && { regoPlate: vehicle.regoPlate }),
@@ -109,6 +149,14 @@ export function toHostVehicleView(
     ...(vehicle.regoExpiry && { regoExpiry: day(vehicle.regoExpiry) }),
     ...(vehicle.wofExpiry && { wofExpiry: day(vehicle.wofExpiry) }),
     ...(vehicle.cofExpiry && { cofExpiry: day(vehicle.cofExpiry) }),
+    ...(EXPIRY_FIELDS.some((key) => vehicle.pendingExpiries?.[key]) && {
+      pendingExpiries: Object.fromEntries(
+        EXPIRY_FIELDS.flatMap((key) => {
+          const pending = vehicle.pendingExpiries?.[key];
+          return pending ? [[key, day(pending)]] : [];
+        }),
+      ),
+    }),
     ...(vehicle.rucValidToKm !== undefined && { rucValidToKm: vehicle.rucValidToKm }),
     ownerIsHost: vehicle.ownerIsHost,
     ...(vehicle.pricing && {
@@ -209,6 +257,7 @@ export async function listHostVehicles(userId: string) {
       slug: vehicle.slug,
       title: vehicleTitle(vehicle),
       status: vehicle.status,
+      waitingForPayouts: vehicle.payoutsReady === false,
       onboardingStep: vehicle.onboardingStep,
       photo: cover?.url ?? null,
       missingCount: listingChecklist(vehicle, settings).missing.length,
@@ -377,8 +426,6 @@ export async function patchVehicle(
     'variant',
     'powertrain',
     'damageNotes',
-    'wofExpiry',
-    'cofExpiry',
     'rucValidToKm',
     'kmAllowancePerDay',
   ] as const;
@@ -402,9 +449,22 @@ export async function patchVehicle(
   set('petFriendly', (value) => (vehicle.petFriendly = value));
   set('childSeat', (value) => (vehicle.childSeat = value));
   set('damageNotes', (value) => (vehicle.damageNotes = value));
-  set('regoExpiry', (value) => (vehicle.regoExpiry = expiryFromDate(value)));
-  set('wofExpiry', (value) => (vehicle.wofExpiry = expiryFromDate(value)));
-  set('cofExpiry', (value) => (vehicle.cofExpiry = expiryFromDate(value)));
+  // On a car staff have approved, a later expiry date waits for staff to verify a document of that type
+  // showing it (plan §3): search and booking keep using the date checked. An earlier one, or none, only
+  // restricts the car, so it applies at once. A draft's and a first review's dates apply as entered.
+  const approved = wasApproved(vehicle);
+  for (const key of EXPIRY_FIELDS) {
+    const value = patch[key];
+    if (value === undefined) continue;
+    const next = value === null ? undefined : expiryFromDate(value);
+    const current = vehicle[key];
+    if (approved && next && (!current || next > current)) {
+      vehicle.set(`pendingExpiries.${key}`, next);
+    } else {
+      vehicle.set(key, next);
+      vehicle.set(`pendingExpiries.${key}`, undefined);
+    }
+  }
   set('rucValidToKm', (value) => (vehicle.rucValidToKm = value));
   set('ownerIsHost', (value) => (vehicle.ownerIsHost = value));
   set('pricing', (value) => vehicle.set('pricing', value));
@@ -429,9 +489,48 @@ export async function patchVehicle(
   if (patch.onboardingStep) vehicle.onboardingStep = patch.onboardingStep;
 
   const changedKeys = KEY_FIELDS.filter((key) => String(before[key] ?? '') !== String(vehicle[key] ?? ''));
-  if (LIVE.includes(vehicle.status) && changedKeys.length > 0) {
-    vehicle.status = 'UNDER_REVIEW';
-    vehicle.reviewNotes = undefined;
+  // A listing already back for review over its key details keeps adding to them until staff decide (its
+  // list stays, even emptied by edits put back, until then).
+  const keyReview =
+    ['UNDER_REVIEW', 'CHANGES_REQUESTED'].includes(vehicle.status) && Array.isArray(vehicle.keyChanges);
+  if ((LIVE.includes(vehicle.status) || keyReview) && changedKeys.length > 0) {
+    if (LIVE.includes(vehicle.status)) {
+      // Approval puts it back as it was: a car its Host switched off stays hidden (plan §8.2).
+      vehicle.keyReviewFrom = vehicle.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE';
+      vehicle.status = 'UNDER_REVIEW';
+      vehicle.reviewNotes = undefined;
+    }
+    // What the reviewer compares (plan §3, changes to live listings): each detail as it was while live and
+    // as it is now. Edits before the review keep the live value with the latest one, and a detail put back
+    // as it was drops out.
+    type KeyField = (typeof KEY_FIELDS)[number];
+    const text = (value: unknown) =>
+      value === undefined || value === null || value === '' ? undefined : String(value);
+    const changedAt = new Date();
+    const changes = new Map<KeyField, { field: KeyField; before?: string; after?: string; changedAt: Date }>(
+      (vehicle.keyChanges ?? []).map((change) => [
+        change.field,
+        {
+          field: change.field,
+          ...(change.before !== undefined && { before: change.before }),
+          ...(change.after !== undefined && { after: change.after }),
+          changedAt: change.changedAt,
+        },
+      ]),
+    );
+    for (const key of changedKeys) {
+      const live = changes.has(key) ? changes.get(key)!.before : text(before[key]);
+      const now = text(vehicle.get(key));
+      if (live === now) changes.delete(key);
+      else
+        changes.set(key, {
+          field: key,
+          ...(live !== undefined && { before: live }),
+          ...(now !== undefined && { after: now }),
+          changedAt,
+        });
+    }
+    vehicle.set('keyChanges', [...changes.values()]);
     await recordAudit({
       actorId: userId,
       action: 'vehicle.key-details-changed',
@@ -542,15 +641,38 @@ export async function removeDocument(
 ): Promise<HostVehicleView> {
   const vehicle = await ownVehicle(userId, id);
   assertEditable(vehicle);
-  if (!vehicle.documents.some((document) => document._id?.toString() === documentId)) {
-    throw new HttpError(404, 'NOT_FOUND', 'No such document.');
+  const gone = vehicle.documents.find((document) => document._id?.toString() === documentId);
+  if (!gone) throw new HttpError(404, 'NOT_FOUND', 'No such document.');
+  const settings = await getPlatformSettings();
+  // An approved car keeps a checked copy of each document it needs (spec §22): the last one stays until a new
+  // one has been checked. A CoF counts as the WOF (plan §3).
+  if (gone.status === 'VERIFIED' && wasApproved(vehicle)) {
+    const inspection: DocumentType[] = ['WOF', 'COF'];
+    const kind = (type: DocumentType) => (inspection.includes(type) ? inspection : [type]);
+    const required = [
+      ...settings.vehicles.requiredDocuments.flatMap(kind),
+      ...(vehicle.ownerIsHost ? [] : (['OWNER_CONSENT'] as DocumentType[])),
+    ];
+    const another = vehicle.documents.some(
+      (document) =>
+        document !== gone && document.status === 'VERIFIED' && kind(gone.type).includes(document.type),
+    );
+    if (required.includes(gone.type) && !another) {
+      throw new HttpError(
+        409,
+        'LAST_VERIFIED_DOCUMENT',
+        `This is the only checked ${DOCUMENT_NAMES[gone.type]} for this car, so it can’t be removed. Upload a new one: once our team has checked it, you can remove this one.`,
+      );
+    }
   }
   vehicle.set(
     'documents',
     vehicle.documents.filter((document) => document._id?.toString() !== documentId),
   );
   await vehicle.save();
-  return toHostVehicleView(vehicle, await getPlatformSettings());
+  // Nothing else points to the file, so it doesn't stay in storage (plan §14).
+  await discardFiles([gone.url]);
+  return toHostVehicleView(vehicle, settings);
 }
 
 /** A readable, unique address for the listing page, set when it's first submitted. */
@@ -672,6 +794,38 @@ export async function hostCalendar(vehicleId: Types.ObjectId, from: Date, to: Da
       }),
     };
   });
+}
+
+/** Cars without a calendar to show: drafts, and listings taken down for good (as on the Calendar tab). */
+const NO_CALENDAR: VehicleStatus[] = ['DRAFT', 'REJECTED', 'SUSPENDED'];
+
+/** The car's cover, as on My Vehicles: the front, or else the first photo not rejected. */
+function coverPhoto(vehicle: VehicleDocument): string | null {
+  const cover =
+    vehicle.photos.find((photo) => photo.type === 'FRONT' && photo.status !== 'REJECTED') ??
+    vehicle.photos.find((photo) => photo.status !== 'REJECTED');
+  return cover?.url ?? null;
+}
+
+/**
+ * GET /host/calendar: the Calendar tab across all the Host's cars (plan §12.6). Only their own cars with a
+ * calendar, in the order they were added, each with its blocks as the car's own calendar shows them, so
+ * the labels match.
+ */
+export async function allCarsCalendar(userId: string, from: Date, to: Date) {
+  const vehicles = await VehicleModel.find({
+    hostId: userId,
+    status: mongoose.trusted({ $nin: NO_CALENDAR }),
+  }).sort({ _id: 1 });
+  return Promise.all(
+    vehicles.map(async (vehicle) => ({
+      id: vehicle.id,
+      title: vehicleTitle(vehicle),
+      photo: coverPhoto(vehicle),
+      status: vehicle.status,
+      blocks: await hostCalendar(vehicle._id, from, to),
+    })),
+  );
 }
 
 /** POST /host/vehicles/{id}/blocks (and the staff calendar override, plan §9, Days 10–11). */

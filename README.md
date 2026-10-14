@@ -138,6 +138,14 @@ Browsers upload straight to storage with a short-lived signed target from `POST 
 - Stripe's webhook and `POST /bookings/{id}/payment/sync` (called by the website after Stripe.js confirms) apply the same function, so a booking is confirmed once, whichever arrives first. Locally there are no webhooks unless you run `stripe listen`, so the sync call is what updates the booking.
 - A request waits 24 hours for the Host (`booking.expireRequest`); accepting captures the payment, declining releases it.
 - Cancellations use the booking's own copy of its cancellation tier (`src/modules/bookings/policies.ts`): Guest cancellations refund by the tier, Host cancellations refund in full and add the Host cancellation fee to what the Host owes, and withdrawn requests release the authorisation. `GET /bookings/{id}/cancellation-preview` shows the outcome first. Staff with `REFUNDS` cancel no-shows and platform cancellations at `/admin/bookings/{id}/cancel`.
+- A paid booking's GST receipt is `GET /bookings/{id}/receipt`, and the same as an A4 PDF at `/receipt.pdf` (`src/modules/bookings/receipt.service.ts`, drawn with pdfkit in Inter from `assets/fonts`, which has the macrons PDF's built-in fonts lack).
+
+## Guest dashboard
+
+- `GET /me/saved-cars` prices each saved car for the Guest's last searched dates, when it can be booked for them.
+- `GET /me/payment-methods`, `POST /me/payment-methods/setup` (a SetupIntent) and `DELETE /me/payment-methods/{id}` manage the cards saved to the Guest's Stripe customer; `GET /me/payments` is the payment history.
+- `POST /me/privacy-requests` opens a PRIVACY support ticket (a copy of their information, a correction, or closing the account); `GET /me/account-closure` lists what stops an account closing (plan §8.2).
+- `GET /help/articles` and `/help/articles/{slug}` are the help centre; `GET /support/tickets`, `/support/tickets/{ref}` and `POST /support/tickets/{ref}/messages` let a user follow up their own tickets.
 
 ## Notifications
 
@@ -195,8 +203,8 @@ src/
     auth/ users/ admin/ audit/ hosts/          accounts, staff, the Host application
     search/ vehicles/ pricing/ availability/   search, listings, onboarding, the pricing engine, the calendar
     bookings/ payments/ notifications/         the booking flow, Stripe, policies, notify()
-    cms/ support/ uploads/ currency/           public content, the contact form, uploads, exchange rates
-    payouts/ messages/ reviews/ inspections/ incidents/ moderation/ help/   models only, until Phase 3
+    cms/ support/ help/ uploads/ currency/     public content, support tickets, the help centre, uploads, exchange rates
+    payouts/ messages/ reviews/ inspections/ incidents/ moderation/   models only so far (Phase 3)
   jobs/             Job queue: job.model.ts, queue.ts, runner.ts, handlers/ (one per job type)
   realtime/         Socket.IO server, auth and MongoDB adapter
   pages/            Page tags for vehicle and destination pages, and sitemap.xml (/pages)
@@ -205,6 +213,7 @@ src/
                     places (Google Places + local), storage (S3 + local, and photo resizing)
   emails/           React Email templates, shared layout and brand theme
   lib/              HttpError, validation helper, lifecycle, shared model field types, NZD formatter
+assets/fonts/       Inter for the PDFs the API writes (SIL Open Font License, OFL.txt); copied into the Docker image
 scripts/            seed.ts (+ seed-data/), sync-indexes.ts, create-admin.ts, send-test-email.ts, email-preview.ts, openapi.ts
 test/               API tests (Vitest + Supertest + mongodb-memory-server)
 ```

@@ -1,3 +1,4 @@
+import { logger } from '../../integrations/logger.js';
 import { HttpError } from '../../lib/http-error.js';
 import { validate } from '../../lib/validate.js';
 import { recordAudit } from '../audit/audit.service.js';
@@ -18,7 +19,19 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
 }
 
 export function resolveSettings(saved: unknown): PlatformSettings {
-  return platformSettingsSchema.parse(mergeDeep(DEFAULT_SETTINGS, saved));
+  const merged = mergeDeep(DEFAULT_SETTINGS, saved) as Record<string, unknown>;
+  const parsed = platformSettingsSchema.safeParse(merged);
+  if (parsed.success) return parsed.data;
+  // A group saved before its rules were tightened (such as the retention floors) falls back to its launch
+  // default, rather than stopping every page that reads the settings.
+  const groups = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0])))].filter(
+    (key): key is keyof PlatformSettings => key in DEFAULT_SETTINGS,
+  );
+  logger.warn({ groups }, 'Saved platform settings break the rules: using the launch defaults for these');
+  return platformSettingsSchema.parse({
+    ...merged,
+    ...Object.fromEntries(groups.map((key) => [key, DEFAULT_SETTINGS[key]])),
+  });
 }
 
 /** The settings in force, with when and by whom they were last saved, for the admin's settings tab. */

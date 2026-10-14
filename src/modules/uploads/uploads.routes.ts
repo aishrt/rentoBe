@@ -1,21 +1,47 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
-import { dirname, extname } from 'node:path';
-import express, { Router, type Response } from 'express';
+import { dirname, extname, relative } from 'node:path';
+import express, { Router, type RequestHandler, type Response } from 'express';
 import mongoose from 'mongoose';
-import { localFilePath } from '../../integrations/storage/local-files.js';
+import { localFilePath, localUploadRoot } from '../../integrations/storage/local-files.js';
 import {
   MAX_UPLOAD_BYTES,
   getStorage,
+  linkSecondsLeft,
   readUploadToken,
   verifyPrivateLink,
 } from '../../integrations/storage/storage.js';
 import { HttpError, forbidden } from '../../lib/http-error.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { uploadRateLimit } from '../../middleware/rate-limit.js';
+import { findBookingFor } from '../bookings/booking.service.js';
 import { isStaff } from '../users/user.service.js';
 import { VehicleModel } from '../vehicles/vehicle.model.js';
-import { DOCUMENT_TYPES_ALLOWED, PHOTO_TYPES_ALLOWED, uploadRequestSchema } from './uploads.schemas.js';
-import { uploadFolder } from './upload-folders.js';
+import {
+  BOOKING_UPLOAD_PURPOSES,
+  DOCUMENT_TYPES_ALLOWED,
+  PHOTO_TYPES_ALLOWED,
+  uploadRequestSchema,
+  type BookingUploadPurpose,
+  type UploadPurpose,
+} from './uploads.schemas.js';
+import {
+  bookingUploadFolder,
+  profilePhotoFolder,
+  supportUploadFolder,
+  uploadFolder,
+} from './upload-folders.js';
+
+/** Purposes that take photos only; documents, incident evidence and support ticket files can also be a PDF. */
+const PHOTO_PURPOSES: UploadPurpose[] = [
+  'VEHICLE_PHOTO',
+  'MESSAGE_PHOTO',
+  'INSPECTION_PHOTO',
+  'PROFILE_PHOTO',
+];
+
+const isBookingPurpose = (purpose: UploadPurpose): purpose is BookingUploadPurpose =>
+  (BOOKING_UPLOAD_PURPOSES as readonly string[]).includes(purpose);
 
 const CONTENT_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -39,31 +65,48 @@ async function sendLocalFile(res: Response, key: string, cacheControl: string) {
     // The website shows these images from another port or subdomain of the same site.
     .set('Cross-Origin-Resource-Policy', 'same-site')
     .type(CONTENT_TYPES[extname(key)] ?? 'application/octet-stream')
-    .sendFile(path);
+    // Relative to the folder: Express refuses any path through a dot-folder, such as the default .uploads.
+    .sendFile(relative(localUploadRoot(), path), { root: localUploadRoot() });
 }
 
 /** Mounted at /api/v1/uploads. */
-export function uploadsRouter() {
+export function uploadsRouter(options: { rateLimit: boolean } = { rateLimit: true }) {
   const router = Router();
+  const limit = (make: () => RequestHandler) => (options.rateLimit ? [make()] : []);
 
   // A signed upload target for one file (plan §11: POST /uploads/signature).
-  router.post('/signature', requireAuth, async (req, res) => {
+  router.post('/signature', requireAuth, ...limit(uploadRateLimit), async (req, res) => {
     const input = validate(uploadRequestSchema, req.body);
-    const allowed: readonly string[] =
-      input.purpose === 'VEHICLE_PHOTO' ? PHOTO_TYPES_ALLOWED : DOCUMENT_TYPES_ALLOWED;
+    const photosOnly = PHOTO_PURPOSES.includes(input.purpose);
+    const allowed: readonly string[] = photosOnly ? PHOTO_TYPES_ALLOWED : DOCUMENT_TYPES_ALLOWED;
     if (!allowed.includes(input.contentType)) {
       throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
-        contentType:
-          input.purpose === 'VEHICLE_PHOTO'
-            ? 'Photos can be JPEG, PNG, WebP or HEIC'
-            : 'Documents can be a PDF or a photo',
+        contentType: photosOnly ? 'Photos can be JPEG, PNG, WebP or HEIC' : 'Files can be a PDF or a photo',
       });
     }
-    const vehicle = await VehicleModel.findById(input.vehicleId).select('hostId').lean();
-    if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No car with that id.');
-    if (!vehicle.hostId.equals(req.auth!.userId) && !isStaff(req.auth!.roles)) throw forbidden();
 
-    const { folder, isPrivate } = uploadFolder(input.purpose, input.vehicleId);
+    let target: { folder: string; isPrivate: boolean };
+    if (isBookingPurpose(input.purpose)) {
+      // Only the booking's Guest and Host, or support staff, add files to it.
+      const { booking } = await findBookingFor(
+        { userId: req.auth!.userId, roles: req.auth!.roles },
+        input.bookingId!,
+      );
+      target = bookingUploadFolder(input.purpose, booking.id);
+    } else if (input.purpose === 'SUPPORT_FILE') {
+      // Anyone signed in can write to support; their files go in their own folder (plan §3).
+      target = supportUploadFolder(req.auth!.userId);
+    } else if (input.purpose === 'PROFILE_PHOTO') {
+      // Only ever their own photo (PUT /me/photo checks the key is in this folder).
+      target = profilePhotoFolder(req.auth!.userId);
+    } else {
+      const vehicle = await VehicleModel.findById(input.vehicleId).select('hostId').lean();
+      if (!vehicle) throw new HttpError(404, 'NOT_FOUND', 'No car with that id.');
+      if (!vehicle.hostId.equals(req.auth!.userId) && !isStaff(req.auth!.roles)) throw forbidden();
+      target = uploadFolder(input.purpose, input.vehicleId!);
+    }
+
+    const { folder, isPrivate } = target;
     res.json(
       await getStorage().createUpload({
         folder,
@@ -109,25 +152,32 @@ export function filesRouter() {
   const router = Router();
 
   // Private documents open only through a signed link that expires. In S3, the file itself is behind a
-  // one-minute S3 link made when the signed link is opened.
+  // short-lived S3 link made when the signed link is opened.
   router.get('/private/*key', async (req, res) => {
     const key = (req.params.key as unknown as string[]).join('/');
     const { e, s } = req.query;
     if (typeof e !== 'string' || typeof s !== 'string' || !verifyPrivateLink(key, e, s)) {
       throw new HttpError(403, 'LINK_EXPIRED', 'This link has expired. Open the document again.');
     }
-    const download = await getStorage().downloadUrl(key);
+    // A link stays the same for 10 minutes or more (privateLink), so the browser keeps the file, in its own
+    // cache only, while the link works, rather than downloading it again each time a page refreshes.
+    const left = linkSecondsLeft(e);
+    const cacheControl = `private, max-age=${left}`;
+    const download = await getStorage().downloadUrl(key, left);
     if (download) {
-      res.set('Cache-Control', 'private, no-store').redirect(302, download);
+      res.set('Cache-Control', cacheControl).redirect(302, download);
       return;
     }
-    await sendLocalFile(res, key, 'private, no-store');
+    await sendLocalFile(res, key, cacheControl);
   });
 
-  // Listing photos are public once uploaded; documents never are.
+  // Listing and profile photos are public once uploaded; documents never are.
   router.get('/*key', async (req, res) => {
     const key = (req.params.key as unknown as string[]).join('/');
-    if (!/^vehicles\/[0-9a-f]{24}\/photos\//.test(key) || !mongoose.isValidObjectId(key.split('/')[1])) {
+    if (
+      !/^(vehicles\/[0-9a-f]{24}\/photos|members\/[0-9a-f]{24}\/photo)\//.test(key) ||
+      !mongoose.isValidObjectId(key.split('/')[1])
+    ) {
       throw new HttpError(404, 'NOT_FOUND', 'No such file.');
     }
     await sendLocalFile(res, key, 'public, max-age=31536000, immutable');

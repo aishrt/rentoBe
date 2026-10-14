@@ -17,6 +17,7 @@ export const destinationSummarySchema = z
     lat: z.number(),
     lng: z.number(),
     airports: z.array(z.string()).meta({ description: 'IATA codes of the airports that serve it' }),
+    featured: z.boolean().meta({ description: 'A homepage tile' }),
   })
   .meta({ id: 'DestinationSummary' });
 
@@ -136,3 +137,90 @@ export const featuredReviewsResponseSchema = z
     reviews: z.array(featuredReviewSchema),
   })
   .meta({ id: 'FeaturedReviews' });
+
+// Homepage text and footer links (plan §12.6) -----------------------------------------------------------------
+
+const isHttps = (value: string) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname !== '';
+  } catch {
+    return false;
+  }
+};
+/**
+ * A path on this website, like /help or /faq#booking. Never two slashes or a backslash after the first,
+ * which browsers read as another website's address.
+ */
+const isSitePath = (value: string) => /^\/(?![/\\])[^\s\\]*$/.test(value);
+
+/** A full https:// address, or a path on this website. */
+export const isLinkAddress = (value: string) => isHttps(value) || isSitePath(value);
+
+/** A full https:// address. */
+export const httpsAddress = z
+  .string()
+  .trim()
+  .max(500, { error: 'Use 500 characters or fewer' })
+  .refine(isHttps, { error: 'Use a full address starting with https://' });
+
+/** A full https:// address, or a path on this website such as /help. */
+export const linkAddress = z
+  .string()
+  .trim()
+  .max(500, { error: 'Use 500 characters or fewer' })
+  .refine(isLinkAddress, {
+    error: 'Use a full address starting with https://, or a path on this website starting with /',
+  });
+
+export const homeHeroSchema = z
+  .object({
+    headline: z
+      .string()
+      .trim()
+      .min(10, { error: 'Write at least 10 characters' })
+      .max(100, { error: 'Use 100 characters or fewer' }),
+    subheading: z
+      .string()
+      .trim()
+      .min(10, { error: 'Write at least 10 characters' })
+      .max(300, { error: 'Use 300 characters or fewer' })
+      .meta({ description: 'The supporting line under the headline' }),
+  })
+  .meta({ id: 'HomeHero' });
+export type HomeHero = z.infer<typeof homeHeroSchema>;
+
+const linkLabel = z
+  .string()
+  .trim()
+  .min(1, { error: 'Give the link a name' })
+  .max(40, { error: 'Use 40 characters or fewer' });
+
+export const footerLinkSchema = z.object({ label: linkLabel, href: linkAddress }).meta({ id: 'FooterLink' });
+
+export const socialLinkSchema = z
+  .object({ label: linkLabel, href: httpsAddress })
+  .meta({ id: 'SocialLink', description: 'A social media account, e.g. Instagram' });
+
+export const footerGroupSchema = z
+  .object({
+    title: z
+      .string()
+      .trim()
+      .min(1, { error: 'Give the group a heading' })
+      .max(30, { error: 'Use 30 characters or fewer' }),
+    links: z.array(footerLinkSchema).max(8, { error: 'Up to 8 links in a group' }),
+  })
+  .meta({ id: 'FooterGroup' });
+
+export const siteFooterSchema = z
+  .object({
+    groups: z
+      .array(footerGroupSchema)
+      .min(1, { error: 'Keep at least one group' })
+      .max(4, { error: 'Up to 4 groups' })
+      .meta({ description: 'The footer’s columns of links; a group with no links is left out' }),
+    socialLinks: z.array(socialLinkSchema).max(6, { error: 'Up to 6 social links' }),
+  })
+  .meta({ id: 'SiteFooter' });
+export type SiteFooter = z.infer<typeof siteFooterSchema>;

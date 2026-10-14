@@ -1,12 +1,17 @@
+import mongoose from 'mongoose';
+import type Stripe from 'stripe';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
 import { forget } from '../src/lib/memo.js';
+import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { AvailabilityBlockModel } from '../src/modules/availability/availability-block.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
+import { applyAccountState } from '../src/modules/payouts/connect.service.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
+import { nzDate } from '../src/lib/nz-time.js';
 import { createPlaces, createVehicle, nzDay } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent, testApp } from './helpers.js';
 
@@ -130,6 +135,78 @@ describe('Host application', () => {
     expect(await JobModel.countDocuments({ type: 'notification.send' })).toBe(1);
     expect(await NotificationModel.countDocuments({ channel: 'IN_APP' })).toBe(1);
   });
+
+  it('approves without the identity check when the identityForHosts setting is off', async () => {
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { verification: { identityForHosts: false } },
+    });
+    const { user, agent } = await applicant();
+    await agent.post('/api/v1/me/host-application').send({ acceptHostAgreement: true });
+    expect((await agent.get('/api/v1/me/host-profile')).body.host.identityRequired).toBe(false);
+
+    await createStaff();
+    const staff = await staffAgent();
+    const [application] = (await staff.get('/api/v1/admin/host-applications')).body.applications;
+    expect(application).toMatchObject({ identityStatus: 'NONE', identityRequired: false });
+    const approved = await staff.post(`/api/v1/admin/host-applications/${user.id}/approve`).send({});
+    expect(approved.body.status).toBe('APPROVED');
+  });
+});
+
+describe('Applying again', () => {
+  it('keeps an approved Host’s Stripe payout state, what they owe and their record', async () => {
+    const { user, agent } = await applicant();
+    const bookingId = new mongoose.Types.ObjectId();
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          roles: ['GUEST', 'HOST'],
+          hostProfile: {
+            status: 'APPROVED',
+            appliedAt: new Date('2026-09-01T00:00:00Z'),
+            reviewNotes: 'All good',
+            stripeAccountId: 'acct_hana',
+            connectRefusals: 2,
+            payoutsEnabled: false,
+            payoutRequirements: ['external_account'],
+            payoutDelayDays: 3,
+            bio: 'Old bio',
+            responseRate: 90,
+            tripCount: 4,
+            rating: { avg: 4.5, count: 4 },
+            feesOwedCents: 2_500,
+            refundsOwed: [{ bookingId, stripeRefundId: 're_1', amountCents: 1_000, createdAt: new Date() }],
+            gstRegistered: false,
+          },
+        },
+      },
+    );
+
+    const updated = await agent
+      .post('/api/v1/me/host-application')
+      .send({ acceptHostAgreement: true, bio: 'New bio', gstRegistered: true, gstNumber: '123456789' });
+    expect(updated.status).toBe(200);
+    const profile = (await UserModel.findById(user._id).lean())!.hostProfile!;
+    expect(profile).toMatchObject({
+      status: 'APPROVED',
+      reviewNotes: 'All good',
+      stripeAccountId: 'acct_hana',
+      connectRefusals: 2,
+      payoutRequirements: ['external_account'],
+      payoutDelayDays: 3,
+      bio: 'New bio',
+      gstRegistered: true,
+      gstNumber: '123-456-789',
+      responseRate: 90,
+      tripCount: 4,
+      rating: { avg: 4.5, count: 4 },
+      feesOwedCents: 2_500,
+      refundsOwed: [expect.objectContaining({ stripeRefundId: 're_1', amountCents: 1_000 })],
+    });
+    expect(profile.appliedAt).toEqual(new Date('2026-09-01T00:00:00Z'));
+  });
 });
 
 describe('Vehicle onboarding', () => {
@@ -237,7 +314,7 @@ describe('Vehicle onboarding', () => {
     const queue = await staff.get('/api/v1/admin/vehicles');
     expect(queue.body.vehicles).toEqual([expect.objectContaining({ id, status: 'UNDER_REVIEW', flags: 1 })]);
     const review = await staff.get(`/api/v1/admin/vehicles/${id}`);
-    expect(review.body.host).toMatchObject({ name: 'Hana Tester', status: 'APPLIED' });
+    expect(review.body.host).toMatchObject({ name: 'Hana Tester', status: 'APPLIED', payoutsEnabled: false });
     // Staff open documents through short-lived links.
     const link = new URL(review.body.vehicle.documents[0].link);
     expect((await staff.get(`${link.pathname}${link.search}`)).status).toBe(200);
@@ -251,16 +328,30 @@ describe('Vehicle onboarding', () => {
         userId: user.id,
         emailVerified: true,
         phoneVerified: true,
+        identityStatus: 'NONE',
+        identityRequired: true,
         vehicles: { total: 1, underReview: 1 },
       }),
     ]);
+    // Hosts pass the identity check before they're approved (the identityForHosts setting, spec §22).
+    const unverified = await staff.post(`/api/v1/admin/host-applications/${user.id}/approve`).send({});
+    expect(unverified.status).toBe(409);
+    expect(unverified.body.error.code).toBe('IDENTITY_NOT_VERIFIED');
+    expect((await agent.get('/api/v1/me/host-profile')).body.host).toMatchObject({
+      status: 'APPLIED',
+      identityRequired: true,
+    });
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { identityVerification: { status: 'APPROVED', verifiedAt: new Date() } } },
+    );
     expect(
       (await staff.post(`/api/v1/admin/host-applications/${user.id}/approve`).send({})).body.status,
     ).toBe('APPROVED');
 
     const approved = await staff.post(`/api/v1/admin/vehicles/${id}/approve`).send({});
     expect(approved.status).toBe(200);
-    expect(approved.body.vehicle.status).toBe('ACTIVE');
+    expect(approved.body.vehicle).toMatchObject({ status: 'ACTIVE', waitingForPayouts: true });
     expect(
       approved.body.vehicle.photos.every((photo: { status: string }) => photo.status === 'APPROVED'),
     ).toBe(true);
@@ -268,8 +359,29 @@ describe('Vehicle onboarding', () => {
       approved.body.vehicle.documents.every((document: { status: string }) => document.status === 'VERIFIED'),
     ).toBe(true);
     expect(await AuditLogModel.countDocuments({ action: 'vehicle.approved' })).toBe(1);
+    // Approved, but it waits for the Host's payout setup before going live (plan §8.2), and the email says so.
+    const email = await NotificationModel.findOne({ type: 'LISTING_APPROVED', channel: 'EMAIL' }).lean();
+    expect(email!.payload).toMatchObject({
+      template: 'listingDecision',
+      props: {
+        decision: 'APPROVED',
+        waitingForPayouts: true,
+        url: expect.stringMatching(/\/host\/earnings$/),
+      },
+    });
     expect(await NotificationModel.countDocuments({ type: 'LISTING_APPROVED', channel: 'EMAIL' })).toBe(1);
 
+    expect((await request(app).get('/api/v1/search').query({ where: 'Ponsonby' })).body.results).toEqual([]);
+    expect((await agent.get('/api/v1/host/vehicles')).body.vehicles[0].waitingForPayouts).toBe(true);
+    await UserModel.updateOne({ _id: user._id }, { $set: { 'hostProfile.stripeAccountId': 'acct_test' } });
+    await applyAccountState({
+      id: 'acct_test',
+      payouts_enabled: true,
+      capabilities: { transfers: 'active' },
+      requirements: { currently_due: [], past_due: [] },
+    } as unknown as Stripe.Account);
+
+    expect((await agent.get(`/api/v1/host/vehicles/${id}`)).body.vehicle.waitingForPayouts).toBe(false);
     // Live: in search, with the approved photos served publicly.
     const search = await request(app).get('/api/v1/search').query({ where: 'Ponsonby' });
     expect(search.body.results.map((card: { id: string }) => card.id)).toEqual([id]);
@@ -403,6 +515,92 @@ describe('Vehicle onboarding', () => {
       status: 'REJECTED',
       qualityFlag: 'ADMIN_FLAGGED',
     });
-    expect(await NotificationModel.countDocuments({ type: 'LISTING_PHOTO_REJECTED' })).toBe(1);
+    expect(
+      await NotificationModel.countDocuments({ type: 'LISTING_PHOTO_REJECTED', channel: 'IN_APP' }),
+    ).toBe(1);
+  });
+});
+
+describe('expiry dates on an approved car', () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const inDays = (days: number) => nzDate(new Date(Date.now() + days * DAY_MS));
+
+  it('moves a date later only with a document staff verify, and keeps the last checked copy', async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { hostProfile: { status: 'APPROVED', appliedAt: new Date() } } },
+    );
+    const checked = (type: string) => ({ type, url: `local:vehicles/x/${type}.pdf`, status: 'VERIFIED' });
+    const vehicle = await createVehicle(user._id, {
+      documents: [checked('REGO'), checked('WOF'), checked('INSURANCE')] as never,
+    });
+    const rego = nzDate(vehicle.regoExpiry!);
+
+    // A later rego date waits for the document; an earlier WOF date applies at once.
+    const later = await agent
+      .patch(`/api/v1/host/vehicles/${vehicle.id}`)
+      .send({ regoExpiry: inDays(400), wofExpiry: inDays(100) });
+    expect(later.status).toBe(200);
+    expect(later.body.vehicle).toMatchObject({
+      status: 'ACTIVE',
+      regoExpiry: rego,
+      wofExpiry: inDays(100),
+      pendingExpiries: { regoExpiry: inDays(400) },
+    });
+    // Saving the WOF date again later than the checked one waits too; put back, it stops waiting.
+    const wof = await agent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ wofExpiry: inDays(150) });
+    expect(wof.body.vehicle.pendingExpiries).toEqual({ regoExpiry: inDays(400), wofExpiry: inDays(150) });
+    const back = await agent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ wofExpiry: inDays(100) });
+    expect(back.body.vehicle.pendingExpiries).toEqual({ regoExpiry: inDays(400) });
+
+    // The new registration, with the date it shows: staff verify it, and the car's date moves.
+    const key = await upload(agent, vehicle.id, 'VEHICLE_DOCUMENT', PDF, 'application/pdf');
+    const attached = await agent
+      .post(`/api/v1/host/vehicles/${vehicle.id}/documents`)
+      .send({ type: 'REGO', upload: key, expiry: inDays(400) });
+    const newRego = attached.body.vehicle.documents.find(
+      (document: { type: string; status: string }) =>
+        document.type === 'REGO' && document.status === 'PENDING',
+    );
+    await createStaff();
+    const staff = await staffAgent();
+    const review = await staff.get(`/api/v1/admin/vehicles/${vehicle.id}`);
+    expect(review.body.vehicle.pendingExpiries).toEqual({ regoExpiry: inDays(400) });
+    const verified = await staff
+      .post(`/api/v1/admin/vehicles/${vehicle.id}/documents/${newRego.id}`)
+      .send({ decision: 'VERIFY' });
+    expect(verified.status).toBe(200);
+    expect(verified.body.vehicle.regoExpiry).toBe(inDays(400));
+    expect(verified.body.vehicle.pendingExpiries).toBeUndefined();
+    const audit = await AuditLogModel.findOne({ action: 'vehicle.document-verified' }).lean();
+    expect(audit!.after).toMatchObject({ type: 'REGO', regoExpiry: inDays(400) });
+
+    // The only checked WOF stays until a new one is checked; the old registration can go now.
+    const fresh = (await VehicleModel.findById(vehicle._id).lean())!;
+    const idOf = (type: string) =>
+      fresh.documents
+        .find((document) => document.type === type && document.url.includes(type))!
+        ._id!.toString();
+    const lastWof = await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/documents/${idOf('WOF')}`);
+    expect(lastWof.status).toBe(409);
+    expect(lastWof.body.error).toMatchObject({
+      code: 'LAST_VERIFIED_DOCUMENT',
+      message: expect.stringMatching(/only checked WOF/),
+    });
+    const oldRego = await agent.delete(`/api/v1/host/vehicles/${vehicle.id}/documents/${idOf('REGO')}`);
+    expect(oldRego.status).toBe(200);
+  });
+
+  it('applies a draft’s dates as entered', async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { hostProfile: { status: 'APPROVED', appliedAt: new Date() } } },
+    );
+    const vehicle = await createVehicle(user._id, { status: 'DRAFT' });
+    const saved = await agent.patch(`/api/v1/host/vehicles/${vehicle.id}`).send({ regoExpiry: inDays(500) });
+    expect(saved.body.vehicle.regoExpiry).toBe(inDays(500));
+    expect(saved.body.vehicle.pendingExpiries).toBeUndefined();
   });
 });

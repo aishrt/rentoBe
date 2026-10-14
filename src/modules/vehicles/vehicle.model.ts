@@ -1,4 +1,4 @@
-import { Schema, model, type HydratedDocument, type Types } from 'mongoose';
+import mongoose, { Schema, model, type HydratedDocument, type Types } from 'mongoose';
 import {
   NZ_REGIONS,
   cents,
@@ -149,6 +149,18 @@ export interface TripRules {
 }
 
 /**
+ * One key detail a Host changed on a live listing, which sent it back for review (plan §3, changes to live
+ * listings): what it was while live and what it is now, as text. A detail added or removed has no value on
+ * that side.
+ */
+export interface KeyChange {
+  field: 'regoPlate' | 'vin' | 'chassisNo' | 'make' | 'model' | 'year';
+  before?: string;
+  after?: string;
+  changedAt: Date;
+}
+
+/**
  * The `vehicles` collection (plan §3). A draft is saved at every onboarding step, so only the owner and
  * slug are required here; the Zod schemas check the rest when the Host submits the listing.
  */
@@ -174,6 +186,12 @@ export interface Vehicle {
   regoExpiry?: Date;
   /** For vehicles that need a Certificate of Fitness instead of a WOF. */
   cofExpiry?: Date;
+  /**
+   * Later rego, WOF or CoF expiry dates the Host entered on a car staff have approved (plan §3: new documents
+   * stay pending until support staff approve them). Search and booking keep the dates above until staff
+   * verify a document of that type showing the new one.
+   */
+  pendingExpiries?: { regoExpiry?: Date; wofExpiry?: Date; cofExpiry?: Date };
   /** Road User Charges licence end reading (diesel, EV and PHEV). */
   rucValidToKm?: number;
   powertrain?: Powertrain;
@@ -190,6 +208,16 @@ export interface Vehicle {
   rules: TripRules;
   status: VehicleStatus;
   reviewNotes?: string;
+  /**
+   * The key details changed since the listing was last live, for the reviewer to compare. Kept until staff
+   * approve or reject the listing; listings that never changed them have none.
+   */
+  keyChanges?: KeyChange[];
+  /**
+   * Whether a live listing sent back for review by a key-detail change was on (ACTIVE) or switched off by its
+   * Host (INACTIVE): approval puts it back as it was (plan §3, §8.2). Kept, and cleared, with keyChanges.
+   */
+  keyReviewFrom?: 'ACTIVE' | 'INACTIVE';
   onboardingStep: number;
   location?: GeoPoint;
   suburb?: string;
@@ -197,6 +225,14 @@ export interface Vehicle {
   region?: NzRegion;
   rating: Rating;
   tripCount: number;
+  /**
+   * False while an approved listing waits for its Host to finish payout setup (plan §8.2): it goes live
+   * once Stripe Connect onboarding is done. Listings approved before this rule have no value and count as
+   * ready.
+   */
+  payoutsReady?: boolean;
+  /** Its Host's account is suspended: hidden until the suspension is lifted (plan §8.2, user suspended). */
+  hostSuspended?: boolean;
   /** Written first in every booking transaction, so simultaneous bookings for this car conflict (plan §3). */
   bookingSeq: number;
   photos: VehiclePhoto[];
@@ -280,6 +316,7 @@ const vehicleSchema = new Schema<Vehicle>(
     wofExpiry: Date,
     regoExpiry: Date,
     cofExpiry: Date,
+    pendingExpiries: { regoExpiry: Date, wofExpiry: Date, cofExpiry: Date },
     rucValidToKm: { type: Number, min: 0 },
     powertrain: {
       type: new Schema<Powertrain>(
@@ -329,6 +366,25 @@ const vehicleSchema = new Schema<Vehicle>(
     },
     status: { type: String, enum: VEHICLE_STATUSES, default: 'DRAFT' },
     reviewNotes: String,
+    keyChanges: {
+      type: [
+        new Schema<KeyChange>(
+          {
+            field: {
+              type: String,
+              enum: ['regoPlate', 'vin', 'chassisNo', 'make', 'model', 'year'],
+              required: true,
+            },
+            before: String,
+            after: String,
+            changedAt: { type: Date, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
+    keyReviewFrom: { type: String, enum: ['ACTIVE', 'INACTIVE'] },
     onboardingStep: { type: Number, min: 1, max: 6, default: 1 },
     location: { type: pointSchema },
     suburb: { type: String, trim: true },
@@ -337,6 +393,8 @@ const vehicleSchema = new Schema<Vehicle>(
     rating: { type: ratingSchema, default: () => ({}) },
     tripCount: { type: Number, min: 0, default: 0 },
     bookingSeq: { type: Number, default: 0 },
+    payoutsReady: Boolean,
+    hostSuspended: Boolean,
     photos: { type: [photoSchema], default: [] },
     documents: { type: [documentSchema], default: [] },
     deliveryOptions: { type: [deliveryOptionSchema], default: [] },
@@ -355,3 +413,17 @@ vehicleSchema.index({ regoPlate: 1 });
 
 export const VehicleModel = model<Vehicle>('Vehicle', vehicleSchema);
 export type VehicleDocument = HydratedDocument<Vehicle>;
+
+/**
+ * The query for a listing Guests can see and book: ACTIVE, and not waiting for its Host's payout setup
+ * (plan §8.2). Works in find() and in aggregation stages.
+ */
+export const liveVehicleFilter = () => ({
+  status: 'ACTIVE',
+  payoutsReady: mongoose.trusted({ $ne: false }),
+  hostSuspended: mongoose.trusted({ $ne: true }),
+});
+
+/** liveVehicleFilter() for a car already loaded: whether Guests can see and book it. Keep the two in step. */
+export const isLiveVehicle = (vehicle: Pick<Vehicle, 'status' | 'payoutsReady' | 'hostSuspended'>) =>
+  vehicle.status === 'ACTIVE' && vehicle.payoutsReady !== false && vehicle.hostSuspended !== true;

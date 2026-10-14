@@ -3,7 +3,10 @@ import { HttpError } from '../../lib/http-error.js';
 import { addNzDays } from '../../lib/nz-time.js';
 import { validate } from '../../lib/validate.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { maintenanceInputSchema } from '../hosts/host-reminders.schemas.js';
+import { getMaintenance, hostTodo, saveMaintenance } from '../hosts/host-reminders.service.js';
 import {
+  allCarsCalendarQuerySchema,
   blockInputSchema,
   documentAttachSchema,
   photoAttachSchema,
@@ -11,6 +14,7 @@ import {
   vehiclePatchSchema,
 } from './host-vehicles.schemas.js';
 import {
+  allCarsCalendar,
   attachDocument,
   attachPhoto,
   blockDates,
@@ -112,6 +116,19 @@ export function hostRouter() {
     });
   });
 
+  // The Calendar tab across all the Host's cars (plan §12.6): their own cars only, two months at most.
+  router.get('/calendar', async (req, res) => {
+    const query = validate(allCarsCalendarQuerySchema, req.query);
+    // Checked above: real dates, so they're always NZ days the calendar can read.
+    const from = parseCalendarTime(query.from)!;
+    const to = parseCalendarTime(query.to)!;
+    res.json({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      vehicles: await allCarsCalendar(req.auth!.userId, from, to),
+    });
+  });
+
   router.post('/vehicles/:id/blocks', async (req, res) => {
     const vehicle = await ownVehicle(req.auth!.userId, id(req.params));
     if (vehicle.status === 'SUSPENDED') throw new HttpError(409, 'NOT_EDITABLE', 'This car is suspended.');
@@ -123,6 +140,23 @@ export function hostRouter() {
     const vehicle = await ownVehicle(req.auth!.userId, id(req.params));
     await unblockDates(vehicle._id, String(req.params.blockId), ['HOST_BLOCK']);
     res.status(204).end();
+  });
+
+  // The to-do list on the Host's dashboard (spec §9).
+  router.get('/todo', async (req, res) => {
+    res.json({ items: await hostTodo(req.auth!.userId) });
+  });
+
+  // Maintenance reminders the Host sets for a car (plan §3 vehicles.maintenanceReminders).
+  router.get('/vehicles/:id/maintenance-reminders', async (req, res) => {
+    const vehicle = await ownVehicle(req.auth!.userId, String(req.params.id));
+    res.json(await getMaintenance(vehicle.toObject()));
+  });
+
+  router.put('/vehicles/:id/maintenance-reminders', async (req, res) => {
+    const input = validate(maintenanceInputSchema, req.body);
+    const vehicle = await ownVehicle(req.auth!.userId, String(req.params.id));
+    res.json(await saveMaintenance(vehicle._id, input));
   });
 
   router.put('/vehicles/:id/recurring-rules', async (req, res) => {

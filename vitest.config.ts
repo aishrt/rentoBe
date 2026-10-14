@@ -25,6 +25,7 @@ export default defineConfig({
       // Fake sandbox keys: tests replace every Stripe API call, and sign webhooks with this secret.
       STRIPE_SECRET_KEY: 'sk_test_fake',
       STRIPE_WEBHOOK_SECRET: 'whsec_fake',
+      STRIPE_CONNECT_WEBHOOK_SECRET: 'whsec_connect',
       // Local uploads in tests go to a temporary folder, never backend/.uploads.
       UPLOAD_DIR: join(tmpdir(), 'rento-vroom-test-uploads'),
       API_PUBLIC_URL: 'http://localhost:4000',

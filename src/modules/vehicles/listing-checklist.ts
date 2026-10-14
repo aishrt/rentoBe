@@ -37,7 +37,7 @@ export const PHOTO_ANGLE_NAMES: Record<PhotoType, string> = {
   DAMAGE: 'existing damage',
 };
 
-const DOCUMENT_NAMES: Record<DocumentType, string> = {
+export const DOCUMENT_NAMES: Record<DocumentType, string> = {
   REGO: 'registration',
   WOF: 'WOF',
   COF: 'CoF',

@@ -1,10 +1,12 @@
 import type { ClientSession, Types } from 'mongoose';
+import { afterCommit, withTransaction } from '../../db.js';
 import type { EmailTemplateName, EmailTemplateProps } from '../../emails/index.js';
 import { enqueue } from '../../jobs/queue.js';
 import { fromNzWallClock, toNzWallClock, addNzDays } from '../../lib/nz-time.js';
 import { emitToUser } from '../../realtime/realtime.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
-import { UserModel } from '../users/user.model.js';
+import type { BookingStatus } from '../bookings/booking.model.js';
+import { UserModel, type NotificationPrefs } from '../users/user.model.js';
 import { NotificationModel } from './notification.model.js';
 
 /*
@@ -15,8 +17,42 @@ import { NotificationModel } from './notification.model.js';
 
 /** An email template with its own props, so notify() checks them against the template. */
 export type EmailContent = {
-  [Name in EmailTemplateName]: { template: Name; props: EmailTemplateProps<Name> };
+  [Name in EmailTemplateName]: {
+    template: Name;
+    props: EmailTemplateProps<Name>;
+    /** For non-transactional mail: the one-click unsubscribe link sent as List-Unsubscribe (plan §7). */
+    listUnsubscribe?: string;
+  };
 }[EmailTemplateName];
+
+export interface SmsContent {
+  body: string;
+  /** Sent straight away, even in quiet hours. */
+  urgent?: boolean;
+  /**
+   * A text that waits for the end of quiet hours can be out of date by then. It's dropped if the booking it's
+   * about is no longer in one of these statuses (e.g. a request already answered or cancelled)…
+   */
+  whileBooking?: { id: Types.ObjectId | string; statuses: readonly BookingStatus[] };
+  /** …if it would arrive after this time (e.g. a reminder for a pickup that's already passed)… */
+  expiresAt?: Date;
+  /** …or, for a new-message text, if the person has read the conversation since or blocked the sender… */
+  whileUnread?: { threadId: Types.ObjectId | string };
+  /** …or, for a text they chose to get, if they've turned that choice off since (plan §7). */
+  whileOptedIn?: SmsOptIn;
+}
+
+/** The notification choices that turn on optional texts. */
+export type SmsOptIn = Extract<keyof NotificationPrefs, 'unreadMessageSms' | 'marketingSms'>;
+
+/** What an SMS notification stores, and what `notification.send` checks before sending it. */
+export interface SmsPayload {
+  body: string;
+  whileBooking?: { id: string; statuses: BookingStatus[] };
+  expiresAt?: Date;
+  whileUnread?: { threadId: string };
+  whileOptedIn?: SmsOptIn;
+}
 
 export interface NotifyInput {
   userId: Types.ObjectId | string;
@@ -29,7 +65,7 @@ export interface NotifyInput {
   link?: string;
   email?: EmailContent;
   /** Sent only to a verified mobile. Non-urgent messages wait for the end of quiet hours (plan §7). */
-  sms?: { body: string; urgent?: boolean };
+  sms?: SmsContent;
   /** One event's notifications are sent once, however often the code behind them runs. */
   dedupeKey?: string;
 }
@@ -55,7 +91,13 @@ export function smsSendTime(now: Date, quietStart: string, quietEnd: string): Da
 export async function notify(
   input: NotifyInput,
   { session, now = new Date() }: { session?: ClientSession; now?: Date } = {},
-) {
+): Promise<void> {
+  // One event's notifications are saved together: the dedupe check below skips the event once any channel
+  // exists, so an in-app one saved without its email (or text) would mean the email never went.
+  if (!session) {
+    await withTransaction((own) => notify(input, { session: own, now }));
+    return;
+  }
   if (
     input.dedupeKey &&
     (await NotificationModel.exists({ dedupeKey: input.dedupeKey }).session(session ?? null))
@@ -103,10 +145,19 @@ export async function notify(
     const runAt = input.sms.urgent
       ? now
       : smsSendTime(now, settings.sms.quietHoursStart, settings.sms.quietHoursEnd);
-    const [sms] = await NotificationModel.create(
-      [{ ...base, channel: 'SMS', status: 'QUEUED', payload: { body: input.sms.body } }],
-      { session },
-    );
+    const { whileBooking, expiresAt, whileUnread, whileOptedIn } = input.sms;
+    const payload: SmsPayload = {
+      body: input.sms.body,
+      ...(whileBooking && {
+        whileBooking: { id: whileBooking.id.toString(), statuses: [...whileBooking.statuses] },
+      }),
+      ...(expiresAt && { expiresAt }),
+      ...(whileUnread && { whileUnread: { threadId: whileUnread.threadId.toString() } }),
+      ...(whileOptedIn && { whileOptedIn }),
+    };
+    const [sms] = await NotificationModel.create([{ ...base, channel: 'SMS', status: 'QUEUED', payload }], {
+      session,
+    });
     await enqueue(
       'notification.send',
       { notificationId: sms!.id },
@@ -114,8 +165,8 @@ export async function notify(
     );
   }
 
-  // Outside a transaction the bell updates straight away; otherwise it catches up within a minute.
-  if (!session) {
-    emitToUser(user._id.toString(), 'notification', { id: inApp!.id, type: input.type, title: input.title });
-  }
+  // The bell updates live once the change behind the notification is saved (plan §7, build order).
+  afterCommit(session, () =>
+    emitToUser(user._id.toString(), 'notification', { id: inApp!.id, type: input.type, title: input.title }),
+  );
 }

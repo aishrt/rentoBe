@@ -1,6 +1,8 @@
 import { env } from '../../env.js';
+import { nzDate } from '../../lib/nz-time.js';
 import { pendingAgreements } from './agreements.js';
-import { STAFF_ROLES, type Role, type User, type UserDocument } from './user.model.js';
+import { identityProcessing } from './driver-licence.service.js';
+import { PERMISSIONS, STAFF_ROLES, type Role, type User, type UserDocument } from './user.model.js';
 import type { PublicUser } from './user.schemas.js';
 
 export type { PublicUser };
@@ -14,13 +16,30 @@ export function effectiveRoles(user: Pick<User, 'email' | 'roles'>): Role[] {
   return user.roles.filter((role) => role !== 'ADMIN' || user.email === env.ADMIN_EMAIL);
 }
 
+/**
+ * Whether the name is fixed (plan §11, PATCH /me): once the identity check has passed, or while Stripe or
+ * support staff are checking it, the name must match the ID, so it is corrected through a privacy request.
+ */
+export function nameLocked(user: Pick<User, 'identityVerification'>): boolean {
+  const status = user.identityVerification?.status;
+  return status === 'APPROVED' || status === 'PENDING' || identityProcessing(user);
+}
+
 export function toPublicUser(user: UserDocument): PublicUser {
+  const roles = effectiveRoles(user);
   return {
     id: user.id,
     email: user.email,
     firstName: user.firstName,
     lastName: user.lastName,
-    roles: effectiveRoles(user),
+    ...(user.avatarUrl && { avatarUrl: user.avatarUrl }),
+    ...(user.dob && { dateOfBirth: nzDate(user.dob) }),
+    nameLocked: nameLocked(user),
+    roles,
+    // Staff: so the portal shows money actions only to those who can use them (the API still checks).
+    ...(isStaff(roles) && {
+      permissions: roles.includes('ADMIN') ? [...PERMISSIONS] : [...(user.permissions ?? [])],
+    }),
     emailVerified: Boolean(user.emailVerifiedAt),
     ...(user.phone && { phone: user.phone }),
     phoneVerified: Boolean(user.phoneVerifiedAt),

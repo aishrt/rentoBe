@@ -69,6 +69,14 @@ const envSchema = z
     RESEND_API_KEY: z.string().optional(),
     EMAIL_FROM: z.string().min(3).default('Rento Vroom <hello@mail.example.com>'),
     EMAIL_REPLY_TO: z.email().optional(),
+    // The signing secret of Resend's delivery webhook (plan §7: delivered, bounced and complained emails).
+    // Without it POST /webhooks/resend answers 503 and emails stay "sent".
+    RESEND_WEBHOOK_SECRET: z
+      .string()
+      // A secret pasted into Secrets Manager with a space or line break around it still works.
+      .trim()
+      .regex(/^whsec_[A-Za-z0-9+/]+={0,2}$/, 'RESEND_WEBHOOK_SECRET starts with whsec_')
+      .optional(),
 
     // Phone verification codes (plan §6.1): "console" logs them locally; "twilio" sends them with Twilio Verify.
     // "dummy" stands in for Twilio on a deployed API until the account is upgraded and has a sender: no
@@ -99,6 +107,12 @@ const envSchema = z
     STRIPE_WEBHOOK_SECRET: z
       .string()
       .regex(/^whsec_\w+$/, 'STRIPE_WEBHOOK_SECRET starts with whsec_')
+      .optional(),
+    // The signing secret of the second endpoint, for Connect events about Hosts' payout accounts
+    // (account.updated, plan §8.1 item 20). Stripe sends those to an endpoint of their own.
+    STRIPE_CONNECT_WEBHOOK_SECRET: z
+      .string()
+      .regex(/^whsec_\w+$/, 'STRIPE_CONNECT_WEBHOOK_SECRET starts with whsec_')
       .optional(),
 
     // SMS notifications such as new booking requests (plan §7), sent with Twilio when SMS_DRIVER=twilio.

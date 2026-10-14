@@ -2,6 +2,7 @@ import mongoose, { type HydratedDocument, type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError } from '../../lib/http-error.js';
+import { disconnectUser } from '../../realtime/realtime.js';
 import { recordAudit } from '../audit/audit.service.js';
 import {
   hashPassword,
@@ -12,7 +13,9 @@ import {
 import { createRefreshToken, hashToken } from '../auth/auth.tokens.js';
 import { passwordContainsEmailName } from '../auth/password-policy.js';
 import { SessionModel } from '../auth/session.model.js';
-import { UserModel } from '../users/user.model.js';
+import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.model.js';
+import { SupportTicketModel } from '../support/support-ticket.model.js';
+import { PERMISSIONS, UserModel } from '../users/user.model.js';
 import { effectiveRoles } from '../users/user.service.js';
 import { StaffInviteModel, type StaffInvite } from './staff-invite.model.js';
 import type {
@@ -55,26 +58,34 @@ function findOpenInvite(token: string) {
   });
 }
 
+/** Everyone on the staff: the support team, and the admin set by ADMIN_EMAIL. */
+const staffFilter = () => ({ $or: [{ roles: 'SUPPORT' }, { roles: 'ADMIN', email: env.ADMIN_EMAIL }] });
+
 /** The admin, then the support team by name, and the invitations not yet accepted, newest first. */
 export async function listStaff(): Promise<StaffList> {
   const [users, invites] = await Promise.all([
-    UserModel.find({ $or: [{ roles: 'SUPPORT' }, { roles: 'ADMIN', email: env.ADMIN_EMAIL }] }).select(
-      'email firstName lastName roles status mfa.enabledAt lastLoginAt',
+    UserModel.find(staffFilter()).select(
+      'email firstName lastName roles permissions status mfa.enabledAt lastLoginAt',
     ),
     StaffInviteModel.find({ expiresAt: mongoose.trusted({ $gt: new Date() }) }).sort({ createdAt: -1 }),
   ]);
 
   const staff = users
-    .map((user): StaffMember => ({
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      role: effectiveRoles(user).includes('ADMIN') ? 'ADMIN' : 'SUPPORT',
-      status: user.status,
-      mfaEnabled: Boolean(user.mfa?.enabledAt),
-      ...(user.lastLoginAt && { lastLoginAt: user.lastLoginAt.toISOString() }),
-    }))
+    .map((user): StaffMember => {
+      const admin = effectiveRoles(user).includes('ADMIN');
+      return {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: admin ? 'ADMIN' : 'SUPPORT',
+        status: user.status,
+        mfaEnabled: Boolean(user.mfa?.enabledAt),
+        ...(user.lastLoginAt && { lastLoginAt: user.lastLoginAt.toISOString() }),
+        // The admin passes every permission check (requirePermission), whatever is stored.
+        permissions: admin ? [...PERMISSIONS] : [...(user.permissions ?? [])],
+      };
+    })
     .sort(
       (a, b) =>
         Number(b.role === 'ADMIN') - Number(a.role === 'ADMIN') ||
@@ -82,6 +93,60 @@ export async function listStaff(): Promise<StaffList> {
     );
 
   return { staff, invites: invites.map(toInviteView) };
+}
+
+/**
+ * The staff who can take work, such as an incident case: the admin first, then the active support team
+ * by name. Suspended accounts are left out.
+ */
+export async function listActiveStaff(): Promise<{ id: string; firstName: string; lastName: string }[]> {
+  const users = await UserModel.find({ ...staffFilter(), status: 'ACTIVE' })
+    .select('email firstName lastName roles')
+    .lean();
+  return users
+    .map((user) => ({ user, admin: effectiveRoles(user).includes('ADMIN') }))
+    .sort(
+      (a, b) =>
+        Number(b.admin) - Number(a.admin) ||
+        `${a.user.firstName} ${a.user.lastName}`.localeCompare(`${b.user.firstName} ${b.user.lastName}`),
+    )
+    .map(({ user }) => ({ id: user._id.toString(), firstName: user.firstName, lastName: user.lastName }));
+}
+
+/** An active staff member by id, or null when the id isn't one. */
+export async function findActiveStaff(userId: string) {
+  if (!mongoose.isValidObjectId(userId)) return null;
+  return UserModel.findOne({ _id: userId, ...staffFilter(), status: 'ACTIVE' })
+    .select('firstName lastName')
+    .lean();
+}
+
+/**
+ * Hands back the open support requests and cases a staff member has, when they leave the team or are
+ * suspended: with nobody on them, a reply alerts the whole team and anyone can take them (plan §6.2, §7).
+ * Each case notes it, as when support unassigns one. Returns how many, for the audit log.
+ */
+export async function releaseAssignedWork(staffUserId: Types.ObjectId, actorId: string, now = new Date()) {
+  const tickets = await SupportTicketModel.updateMany(
+    { assignedTo: staffUserId, status: mongoose.trusted({ $in: ['OPEN', 'PENDING'] }) },
+    { $unset: { assignedTo: 1 } },
+  );
+  const incidents = await IncidentModel.updateMany(
+    { assignedTo: staffUserId, status: mongoose.trusted({ $in: OPEN_INCIDENT_STATUSES }) },
+    {
+      $unset: { assignedTo: 1 },
+      $push: {
+        events: {
+          actorId: new mongoose.Types.ObjectId(actorId),
+          action: 'UNASSIGNED',
+          attachments: [],
+          visibility: 'INTERNAL',
+          createdAt: now,
+        },
+      },
+    },
+  );
+  return { tickets: tickets.modifiedCount, incidents: incidents.modifiedCount };
 }
 
 /**
@@ -161,8 +226,8 @@ export async function revokeInvite(adminId: string, inviteId: string, ip?: strin
 
 /**
  * Takes someone off the support team: the role, any extra permissions and their authenticator apps go,
- * and they're signed out everywhere. Their account stays, as a Guest's if they also rent, and the
- * admin can invite them again.
+ * and they're signed out everywhere. The open requests and cases they had go back to the team. Their
+ * account stays, as a Guest's if they also rent, and the admin can invite them again.
  */
 export async function removeSupport(adminId: string, userId: string, ip?: string): Promise<void> {
   const user = mongoose.isValidObjectId(userId)
@@ -175,13 +240,16 @@ export async function removeSupport(adminId: string, userId: string, ip?: string
     { $pull: { roles: 'SUPPORT' }, $set: { permissions: [] }, $unset: { mfa: 1 } },
   );
   await SessionModel.deleteMany({ userId: user._id });
+  // Signed out at once (plan §6.2), open staff portal tabs included.
+  disconnectUser(user._id);
+  const unassigned = await releaseAssignedWork(user._id, adminId);
   await recordAudit({
     actorId: adminId,
     action: 'staff.remove',
     entity: 'user',
     entityId: user.id,
     before: { roles: [...user.roles], permissions: [...user.permissions] },
-    after: { roles: user.roles.filter((role) => role !== 'SUPPORT'), permissions: [] },
+    after: { roles: user.roles.filter((role) => role !== 'SUPPORT'), permissions: [], unassigned },
     ip,
   });
 }
@@ -238,6 +306,7 @@ export async function acceptStaffInvite(
       },
     );
     await SessionModel.deleteMany({ userId: existing._id });
+    disconnectUser(existing._id);
     await sendPasswordChangedEmail(existing);
     userId = existing._id;
   } else {

@@ -20,11 +20,18 @@ import {
   reviewsRouter,
 } from './modules/cms/content.routes.js';
 import { currencyRouter } from './modules/currency/currency.routes.js';
+import { helpRouter } from './modules/help/help.routes.js';
+import { incidentsRouter } from './modules/incidents/incidents.routes.js';
+import { reportsRouter, threadsRouter } from './modules/messages/messages.routes.js';
+import { deliveryWebhooksRouter } from './modules/notifications/delivery-webhooks.js';
 import { notificationsRouter } from './modules/notifications/notifications.routes.js';
 import { stripeWebhookRouter } from './modules/payments/stripe-webhook.js';
+import { hostPayoutsRouter, payLinkRouter } from './modules/payouts/payouts.routes.js';
 import { placesRouter, searchRouter } from './modules/search/search.routes.js';
 import { supportRouter } from './modules/support/support.routes.js';
 import { filesRouter, uploadsRouter } from './modules/uploads/uploads.routes.js';
+import { reviewWritingRouter } from './modules/reviews/reviews.routes.js';
+import { membersRouter } from './modules/users/members.routes.js';
 import { meRouter } from './modules/users/users.routes.js';
 import { hostRouter } from './modules/vehicles/host-vehicles.routes.js';
 import { vehiclesRouter } from './modules/vehicles/vehicles.routes.js';
@@ -49,6 +56,8 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   // Stripe calls this from its servers, not a browser, and signs the raw body (plan §8.1), so it
   // comes before the JSON parser and the website-origin check.
   app.use('/api/v1/payments/webhook', stripeWebhookRouter());
+  // The same for Resend's and Twilio's delivery reports (plan §7).
+  app.use('/api/v1/webhooks', deliveryWebhooksRouter());
   app.use(express.json({ limit: '100kb' }));
   app.use(cookieParser());
 
@@ -77,12 +86,20 @@ export function createApp({ rateLimit = true }: AppOptions = {}) {
   api.use('/faqs', faqsRouter());
   api.use('/policies', policiesRouter());
   api.use('/reviews', reviewsRouter());
+  api.use('/reviews', reviewWritingRouter());
+  api.use('/help', helpRouter());
   api.use('/support', supportRouter({ rateLimit }));
-  api.use('/uploads', uploadsRouter());
+  api.use('/uploads', uploadsRouter({ rateLimit }));
   api.use('/files', filesRouter());
   api.use('/notifications', notificationsRouter());
   api.use('/host', hostRouter());
+  api.use('/host', hostPayoutsRouter());
+  api.use('/payments', payLinkRouter());
   api.use('/bookings', bookingsRouter({ rateLimit }));
+  api.use('/threads', threadsRouter({ rateLimit }));
+  api.use('/incidents', incidentsRouter());
+  api.use('/reports', reportsRouter({ rateLimit }));
+  api.use('/users', membersRouter());
 
   app.use('/api/v1', api);
   app.use(notFound);

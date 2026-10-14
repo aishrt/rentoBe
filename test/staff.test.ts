@@ -11,6 +11,7 @@ import {
   staffListSchema,
 } from '../src/modules/staff/staff.schemas.js';
 import { UserModel } from '../src/modules/users/user.model.js';
+import { createBookingRecord, createHost, createVehicle } from './fixtures.js';
 import { PASSWORD, browserAgent, createStaff, createUser, staffAgent, testApp } from './helpers.js';
 
 // ADMIN_EMAIL is aroha@example.co.nz in tests (vitest.config.ts), the default of createStaff().
@@ -48,7 +49,7 @@ describe('the one admin (ADMIN_EMAIL)', () => {
 
     const { agent, login } = await signedInAs('mallory@example.co.nz');
     expect(login.body.user.roles).toEqual(['GUEST']);
-    expect((await agent.get('/api/v1/admin/overview')).status).toBe(403);
+    expect((await agent.get('/api/v1/admin/dashboard')).status).toBe(403);
   });
 
   it('refuses a signed token that claims ADMIN for another account', async () => {
@@ -66,8 +67,11 @@ describe('the one admin (ADMIN_EMAIL)', () => {
     await createStaff('sam@example.co.nz', 'SUPPORT');
     await createUser({ email: 'mallory@example.co.nz', roles: ['ADMIN'] });
 
-    const overview = await (await staffAgent()).get('/api/v1/admin/overview');
-    expect(overview.body.metrics.staffMembers).toBe(2);
+    const list = await (await staffAgent()).get('/api/v1/admin/staff');
+    expect(list.body.staff.map((member: { email: string }) => member.email).sort()).toEqual([
+      'aroha@example.co.nz',
+      'sam@example.co.nz',
+    ]);
   });
 
   it('is never created by sign-up, whatever the form sends', async () => {
@@ -252,11 +256,31 @@ describe('GET /api/v1/admin/staff and DELETE /api/v1/admin/staff/:id', () => {
     expect(list.invites.map((open) => open.email)).toEqual(['mere@example.co.nz']);
   });
 
+  it('shows each member’s permissions: the admin has them all, support only what the admin gave', async () => {
+    await createStaff();
+    const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
+    const admin = await staffAgent();
+    const permissions = async () =>
+      staffListSchema
+        .parse((await admin.get('/api/v1/admin/staff')).body)
+        .staff.map((member) => [member.email, member.permissions]);
+
+    expect(await permissions()).toEqual([
+      ['aroha@example.co.nz', ['REFUNDS']],
+      ['sam@example.co.nz', []],
+    ]);
+    await admin.post(`/api/v1/admin/staff/${sam.id}/permissions`).send({ refunds: true });
+    expect(await permissions()).toEqual([
+      ['aroha@example.co.nz', ['REFUNDS']],
+      ['sam@example.co.nz', ['REFUNDS']],
+    ]);
+  });
+
   it('takes someone off the support team at once, and they can be invited again', async () => {
     await createStaff();
     const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
     const samAgent = await staffAgent('sam@example.co.nz');
-    expect((await samAgent.get('/api/v1/admin/overview')).status).toBe(200);
+    expect((await samAgent.get('/api/v1/admin/dashboard')).status).toBe(200);
 
     const admin = await staffAgent();
     expect((await admin.delete(`/api/v1/admin/staff/${sam.id}`)).status).toBe(204);
@@ -266,12 +290,38 @@ describe('GET /api/v1/admin/staff and DELETE /api/v1/admin/staff/:id', () => {
     expect(removed?.mfa).toBeUndefined();
     expect(await SessionModel.countDocuments({ userId: sam._id })).toBe(0);
     // The access token is still valid for a few minutes, but the account's roles are read again.
-    expect((await samAgent.get('/api/v1/admin/overview')).status).toBe(403);
+    expect((await samAgent.get('/api/v1/admin/dashboard')).status).toBe(403);
 
     const again = await admin
       .post('/api/v1/admin/staff/invites')
       .send({ email: 'sam@example.co.nz', firstName: 'Sam', lastName: 'Support' });
     expect(again.status).toBe(201);
+  });
+
+  it('takes away staff reads on member routes at once, with the access token they still hold', async () => {
+    await createStaff();
+    const sam = await createStaff('sam@example.co.nz', 'SUPPORT');
+    const host = await createHost();
+    const guest = await createUser({ email: 'kiri@example.co.nz' });
+    const vehicle = await createVehicle(host._id);
+    const booking = await createBookingRecord({
+      guestId: guest._id,
+      hostId: host._id,
+      vehicleId: vehicle._id,
+    });
+    const samAgent = await staffAgent('sam@example.co.nz');
+    const asStaff = await samAgent.get(`/api/v1/bookings/${booking.ref}`);
+    expect(asStaff.status).toBe(200);
+    expect(asStaff.body.booking.role).toBe('STAFF');
+
+    const admin = await staffAgent();
+    expect((await admin.delete(`/api/v1/admin/staff/${sam.id}`)).status).toBe(204);
+    // Same token, no staff view of someone else's booking.
+    expect((await samAgent.get(`/api/v1/bookings/${booking.ref}`)).status).toBe(404);
+
+    // A suspended staff account can't read at all.
+    await UserModel.updateOne({ email: 'aroha@example.co.nz' }, { $set: { status: 'SUSPENDED' } });
+    expect((await admin.get(`/api/v1/bookings/${booking.ref}`)).status).toBe(401);
   });
 
   it("only removes support team members, so the admin can't be removed", async () => {

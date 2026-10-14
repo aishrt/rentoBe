@@ -96,17 +96,17 @@ export interface BookingVerificationReviewProps extends TripBasics {
   hostFirstName?: string;
 }
 
-/** To a Guest who paid while their identity check was with support (plan §8.2). */
+/** To a Guest who paid while their identity check or driver licence was with support (plan §8.2). */
 export function BookingVerificationReviewEmail(props: BookingVerificationReviewProps) {
   return (
     <EmailLayout
-      preview={`We're finishing your identity check. Your ${props.vehicleTitle} is held for you in the meantime.`}
+      preview={`We're finishing the check of your ID and licence. Your ${props.vehicleTitle} is held for you in the meantime.`}
     >
       <EmailHeading>We're checking your details</EmailHeading>
       <EmailText>
-        Kia ora {props.firstName}, your identity check needs a closer look from our team, so your booking of
-        the {props.vehicleTitle} isn't confirmed yet. The dates are held for you, and your card is authorised
-        for {props.total} but won't be charged until the check is approved
+        Kia ora {props.firstName}, your ID or driver licence needs a closer look from our team, so your
+        booking of the {props.vehicleTitle} isn't confirmed yet. The dates are held for you, and your card is
+        authorised for {props.total} but won't be charged until the check is approved
         {props.hostFirstName ? ` and ${props.hostFirstName} accepts` : ''}.
       </EmailText>
       <EmailDetails rows={tripRows(props)} />
@@ -234,8 +234,8 @@ export function BookingDeclinedEmail({
           : outcome === 'EXPIRED'
             ? `the host didn't answer your request for the ${vehicleTitle} from ${start} in time.`
             : outcome === 'VERIFICATION_REJECTED'
-              ? `we weren't able to verify your identity, so your booking of the ${vehicleTitle} from ${start} can't go ahead. Reply to this email if you think we've got it wrong.`
-              : `we couldn't finish your identity check within 24 hours, so your booking of the ${vehicleTitle} from ${start} has expired. You're welcome to book again once the check is done.`}{' '}
+              ? `we weren't able to verify your identity or driver licence, so your booking of the ${vehicleTitle} from ${start} can't go ahead. Reply to this email if you think we've got it wrong.`
+              : `we couldn't finish checking your ID and licence within 24 hours, so your booking of the ${vehicleTitle} from ${start} has expired. You're welcome to book again once the check is done.`}{' '}
         Your card hasn't been charged, and the authorisation has been released (your bank may take a few days
         to show it).
       </EmailText>
@@ -277,6 +277,14 @@ export function RequestExpiredHostEmail({
 export interface BookingCancelledProps extends TripBasics {
   audience: 'GUEST' | 'HOST';
   cancelledBy: 'GUEST' | 'HOST' | 'SUPPORT';
+  /** Why it was cancelled (plan §8.2: each labelled), e.g. a no-show recorded by support. */
+  reason?:
+    | 'GUEST_CANCELLED'
+    | 'HOST_CANCELLED'
+    | 'REQUEST_WITHDRAWN'
+    | 'GUEST_NO_SHOW'
+    | 'HOST_NO_SHOW'
+    | 'PLATFORM';
   /** Guest: what's refunded. */
   refund?: string;
   /** Guest: what's kept under the cancellation policy. */
@@ -285,11 +293,46 @@ export interface BookingCancelledProps extends TripBasics {
   hostShare?: string;
   /** Host: a Host cancellation fee taken from their next payout. */
   hostFee?: string;
+  /** Host: the trip's payout already went (a no-show after their check-in): what it was. */
+  tripPayoutSent?: string;
+  /** Host: what of that payout comes off their next one, beyond their share of the kept fee. */
+  hostOwes?: string;
+  /** Host: what they no longer pay towards a refund they funded earlier, as the guest got it back here anyway. */
+  hostRefundRelief?: string;
   /** A request withdrawn before the Host answered: nothing was booked or charged. */
   withdrawn?: boolean;
+  /** Guest: support cancelled a request, or a booking waiting for verification: the card's hold is released. */
+  released?: boolean;
+}
+
+/** Why a booking was cancelled, after "… cancelled booking RV-… for the car" (plan §8.2). */
+function cancelledWhy({ reason, audience, cancelledBy }: BookingCancelledProps): string {
+  const guest = audience === 'GUEST';
+  switch (reason) {
+    case 'GUEST_NO_SHOW':
+      return guest
+        ? ' as a no-show: the car wasn’t picked up at the pick-up time, so the cancellation policy applies as at that time'
+        : ' as a no-show: the guest didn’t turn up at the pick-up time';
+    case 'HOST_NO_SHOW':
+      return guest
+        ? ' because your host couldn’t provide the car'
+        : ' because the car wasn’t available at the pick-up time. It counts as a Host cancellation';
+    case 'HOST_CANCELLED':
+      if (cancelledBy !== 'SUPPORT') return '';
+      return guest
+        ? ' for your host, who couldn’t provide the car'
+        : ' on your behalf. It counts as a Host cancellation';
+    case 'PLATFORM':
+      return guest || cancelledBy !== 'SUPPORT' ? '' : '. It doesn’t count as a Host cancellation';
+    default:
+      return '';
+  }
 }
 
 export function BookingCancelledEmail(props: BookingCancelledProps) {
+  // A Host cancellation, or a Host no-show, always refunds the Guest in full (plan §7, §8.1 item 10).
+  const hostAtFault =
+    props.cancelledBy === 'HOST' || props.reason === 'HOST_CANCELLED' || props.reason === 'HOST_NO_SHOW';
   const who =
     props.cancelledBy === 'SUPPORT'
       ? 'our support team'
@@ -323,7 +366,8 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
     <EmailLayout preview={`Booking ${props.ref} for the ${props.vehicleTitle} is cancelled.`}>
       <EmailHeading>Booking cancelled</EmailHeading>
       <EmailText>
-        Kia ora {props.firstName}, {who} cancelled booking {props.ref} for the {props.vehicleTitle}.
+        Kia ora {props.firstName}, {who} cancelled booking {props.ref} for the {props.vehicleTitle}
+        {cancelledWhy(props)}.
       </EmailText>
       <EmailDetails
         rows={[
@@ -336,7 +380,27 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
       />
       {props.audience === 'GUEST' && props.refund && (
         <EmailText>
+          {hostAtFault ? `You get a full refund of ${props.refund}. ` : ''}
           Refunds go back to the card you paid with and usually show within 5–10 working days.
+        </EmailText>
+      )}
+      {props.audience === 'GUEST' && props.released && (
+        <EmailText>
+          You haven't been charged. The amount held on your card is released, and your bank usually shows it
+          within a few days.
+        </EmailText>
+      )}
+      {props.audience === 'HOST' && props.tripPayoutSent && (
+        <EmailText>
+          Your payout for this trip, {props.tripPayoutSent}, was already sent. You keep your share of the fee
+          from it
+          {props.hostOwes ? `, and the rest, ${props.hostOwes}, comes off your next payout.` : '.'}
+        </EmailText>
+      )}
+      {props.audience === 'HOST' && props.hostRefundRelief && (
+        <EmailText>
+          You pay {props.hostRefundRelief} less towards the refund you funded earlier: the guest gets that
+          money back under this cancellation anyway.
         </EmailText>
       )}
       {props.audience === 'HOST' && <EmailText>The dates are free again on your calendar.</EmailText>}

@@ -83,11 +83,20 @@ export interface ListingDecisionProps {
   vehicleTitle: string;
   decision: ListingDecision;
   notes?: string;
+  /** Approved before the Host's payout setup is done: it goes live once that's finished (plan §8.2). */
+  waitingForPayouts?: boolean;
+  /** The button's link: the listing, or payout setup while the listing waits for it. */
   url: string;
 }
 
-export const listingDecisionSubjects: Record<ListingDecision, (title: string) => string> = {
-  APPROVED: (title) => `Your ${title} is live on Rento Vroom`,
+export const listingDecisionSubjects: Record<
+  ListingDecision,
+  (title: string, waitingForPayouts?: boolean) => string
+> = {
+  APPROVED: (title, waitingForPayouts) =>
+    waitingForPayouts
+      ? `Your ${title} is approved: set up payouts to go live`
+      : `Your ${title} is live on Rento Vroom`,
   CHANGES_REQUESTED: (title) => `A few changes needed on your ${title}`,
   REJECTED: (title) => `About your ${title} listing`,
 };
@@ -97,27 +106,37 @@ export function ListingDecisionEmail({
   vehicleTitle,
   decision,
   notes,
+  waitingForPayouts,
   url,
 }: ListingDecisionProps) {
+  const waiting = decision === 'APPROVED' && waitingForPayouts;
   return (
-    <EmailLayout preview={listingDecisionSubjects[decision](vehicleTitle)}>
+    <EmailLayout preview={listingDecisionSubjects[decision](vehicleTitle, waitingForPayouts)}>
       <EmailHeading>
-        {decision === 'APPROVED'
-          ? `Your ${vehicleTitle} is live`
-          : decision === 'CHANGES_REQUESTED'
-            ? 'A few changes needed'
-            : 'About your listing'}
+        {waiting
+          ? `Your ${vehicleTitle} is approved`
+          : decision === 'APPROVED'
+            ? `Your ${vehicleTitle} is live`
+            : decision === 'CHANGES_REQUESTED'
+              ? 'A few changes needed'
+              : 'About your listing'}
       </EmailHeading>
       <EmailText>
-        {decision === 'APPROVED'
-          ? `Great news, ${firstName}: guests can now find and book your ${vehicleTitle}. Keep your calendar up to date so you only get bookings you can take.`
-          : decision === 'CHANGES_REQUESTED'
-            ? `Kia ora ${firstName}, our team reviewed your ${vehicleTitle} and needs a few changes before it can go live.`
-            : `Kia ora ${firstName}, we're sorry, but we can't approve your ${vehicleTitle} for Rento Vroom.`}
+        {waiting
+          ? `Great news, ${firstName}: your ${vehicleTitle} passed our checks. It goes live once you've set up payouts, so we can pay you after each trip. It takes a few minutes with Stripe, our payments partner.`
+          : decision === 'APPROVED'
+            ? `Great news, ${firstName}: guests can now find and book your ${vehicleTitle}. Keep your calendar up to date so you only get bookings you can take.`
+            : decision === 'CHANGES_REQUESTED'
+              ? `Kia ora ${firstName}, our team reviewed your ${vehicleTitle} and needs a few changes before it can go live.`
+              : `Kia ora ${firstName}, we're sorry, but we can't approve your ${vehicleTitle} for Rento Vroom.`}
       </EmailText>
       {notes && <EmailText>A note from our team: {notes}</EmailText>}
       <EmailButton href={url}>
-        {decision === 'CHANGES_REQUESTED' ? 'Update your listing' : 'See your listing'}
+        {waiting
+          ? 'Set up payouts'
+          : decision === 'CHANGES_REQUESTED'
+            ? 'Update your listing'
+            : 'See your listing'}
       </EmailButton>
       {decision === 'APPROVED' && (
         <EmailNote>

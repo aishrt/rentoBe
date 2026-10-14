@@ -3,6 +3,7 @@ import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
+import { disconnectSessions, disconnectUser } from '../../realtime/realtime.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { acceptAgreements } from '../users/agreements.js';
 import { UserModel, type UserDocument } from '../users/user.model.js';
@@ -123,7 +124,7 @@ export async function signup(input: SignupInput, context: RequestContext): Promi
   return { user: toPublicUser(user), tokens: await startSession(user, context) };
 }
 
-async function sendVerificationEmail(user: UserDocument): Promise<void> {
+export async function sendVerificationEmail(user: UserDocument): Promise<void> {
   const token = await createAuthLink(user._id, 'VERIFY_EMAIL', VERIFY_EMAIL_VALID_MS);
   await enqueue('email.send', {
     to: user.email,
@@ -293,7 +294,17 @@ export async function resetPassword(
     },
   );
   await SessionModel.deleteMany({ userId: user._id });
+  // Open tabs signed in before the reset stop receiving messages and notifications too.
+  disconnectUser(user._id);
   await sendPasswordChangedEmail(user);
+  // The reset link proved the address too: welcome them, as confirming it from the sign-up email does.
+  if (!user.emailVerifiedAt) {
+    await enqueue('email.send', {
+      to: user.email,
+      template: 'welcome',
+      props: { firstName: user.firstName, browseUrl: env.FRONTEND_URL },
+    });
+  }
   await recordAudit({
     actorId: user._id,
     action: 'password.reset',
@@ -345,6 +356,7 @@ export async function refreshSession(
   const user = await UserModel.findById(session.userId);
   if (!user || user.status !== 'ACTIVE') {
     await session.deleteOne();
+    disconnectSessions([session._id]);
     throw sessionEnded();
   }
 
@@ -398,7 +410,11 @@ export async function resumeSession(
   }
 }
 
+/** Signs this browser out, and closes its live connections (plan §4.4) in every tab. */
 export async function logout(refreshToken: string | undefined): Promise<void> {
   if (!refreshToken) return;
-  await SessionModel.deleteOne({ refreshTokenHash: hashToken(refreshToken) });
+  const ended = await SessionModel.findOneAndDelete({ refreshTokenHash: hashToken(refreshToken) })
+    .select('_id')
+    .lean();
+  if (ended) disconnectSessions([ended._id]);
 }

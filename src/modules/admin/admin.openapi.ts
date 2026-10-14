@@ -2,21 +2,54 @@ import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { testPaymentSchema, testPaymentStatusSchema } from '../payments/payments.schemas.js';
-import { adminOverviewSchema } from './admin.schemas.js';
 import { platformSettingsResponseSchema, platformSettingsUpdateSchema } from './platform-settings.schemas.js';
+import {
+  licenceNumberSchema,
+  licenceReviewResultSchema,
+  licenceReviewSchema,
+  verificationQueueSchema,
+} from './verification-queue.service.js';
 
 /** The contract for admin.routes.ts (plan §2.3). Every admin route needs an active staff account. */
 export function registerAdminPaths(registry: OpenAPIRegistry) {
   registry.registerPath({
     method: 'get',
-    path: '/admin/overview',
+    path: '/admin/verifications',
     tags: ['Admin'],
-    summary: 'KPI figures for the staff portal',
-    description: 'Admin and Support only.',
+    summary: 'Staff: the verification queue',
+    description:
+      'Identity checks Stripe couldn’t decide or that don’t match what the person entered, then driver licences no ID document has confirmed.',
     security: signedIn,
+    responses: { 200: jsonResponse('To review', verificationQueueSchema), ...errorResponses(401, 403) },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/admin/users/{id}/licence-review',
+    tags: ['Admin'],
+    summary: 'Staff: approve or reject a driver licence checked by hand',
+    description:
+      'Approving confirms the bookings that waited for it (requests still go to their Host), unless the identity check still waits too (`stillInReview`) or the licence doesn’t meet the rules for that trip (`licenceNotEligible`). Rejecting releases every request of the person’s with its card authorisation, and alerts support to each confirmed trip, whose check-in is then refused. The person is emailed either way. 409 NOT_IN_REVIEW when the licence isn’t waiting for a check; 403 OWN_RECORD for a support member’s own licence.',
+    security: signedIn,
+    request: { params: z.object({ id: z.string() }), body: jsonBody(licenceReviewSchema) },
     responses: {
-      200: jsonResponse('The overview figures', adminOverviewSchema),
-      ...errorResponses(401, 403),
+      200: jsonResponse('Decided', licenceReviewResultSchema),
+      ...errorResponses(400, 401, 403, 404, 409),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/users/{id}/licence-number',
+    tags: ['Admin'],
+    summary: 'Staff: show the full driver licence number',
+    description:
+      'Decrypted to check the licence by hand. Each time it’s shown is written to the audit log (plan §14). Not cached.',
+    security: signedIn,
+    request: { params: z.object({ id: z.string() }) },
+    responses: {
+      200: jsonResponse('The number', licenceNumberSchema),
+      ...errorResponses(401, 403, 404),
     },
   });
 

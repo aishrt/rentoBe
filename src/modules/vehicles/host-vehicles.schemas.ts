@@ -96,7 +96,8 @@ export const vehiclePatchSchema = z
     petFriendly: z.boolean().optional(),
     childSeat: z.boolean().optional(),
     damageNotes: nullable(z.string().trim().max(1000)),
-    // Step 2: document dates (the files are uploaded separately).
+    // Step 2: document dates (the files are uploaded separately). On a car staff have approved, a later date
+    // waits for staff to verify a document showing it (`pendingExpiries`); an earlier one applies at once.
     regoExpiry: date.optional(),
     wofExpiry: nullable(date),
     cofExpiry: nullable(date),
@@ -173,6 +174,9 @@ export const hostVehicleSchema = z
     slug: z.string(),
     title: z.string(),
     status: z.enum(VEHICLE_STATUSES),
+    waitingForPayouts: z.boolean().meta({
+      description: 'Approved, but out of search until the Host finishes payout setup (plan §8.2)',
+    }),
     reviewNotes: z.string().optional(),
     onboardingStep: z.number().int(),
     regoPlate: z.string().optional(),
@@ -203,6 +207,13 @@ export const hostVehicleSchema = z
     regoExpiry: date.optional(),
     wofExpiry: date.optional(),
     cofExpiry: date.optional(),
+    pendingExpiries: z
+      .object({ regoExpiry: date.optional(), wofExpiry: date.optional(), cofExpiry: date.optional() })
+      .optional()
+      .meta({
+        description:
+          'On an approved car: later expiry dates the Host entered, waiting for staff to verify a document of that type showing them. Search and booking use the dates above until then',
+      }),
     rucValidToKm: z.number().optional(),
     ownerIsHost: z.boolean(),
     pricing: z
@@ -283,6 +294,9 @@ export const hostVehicleSummarySchema = z
     slug: z.string(),
     title: z.string(),
     status: z.enum(VEHICLE_STATUSES),
+    waitingForPayouts: z.boolean().meta({
+      description: 'Approved, but out of search until the Host finishes payout setup (plan §8.2)',
+    }),
     onboardingStep: z.number().int(),
     photo: z.string().nullable(),
     missingCount: z.number().int(),
@@ -352,6 +366,39 @@ export const calendarResponseSchema = z
     rules: z.object({ minNoticeHours: z.number(), bufferHours: z.number() }),
   })
   .meta({ id: 'HostCalendar' });
+
+/** The all-cars calendar answers up to two months at a time: the website asks for a month, or two weeks. */
+export const MAX_ALL_CARS_CALENDAR_DAYS = 62;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const allCarsCalendarQuerySchema = z
+  .object({
+    from: z.iso.date().meta({ description: 'The first NZ day, 2026-10-01' }),
+    to: z.iso.date().meta({ description: 'The NZ day after the last one (exclusive), 2026-11-01' }),
+  })
+  .refine(({ from, to }) => to > from, { error: 'Choose an end after the start', path: ['to'] })
+  .refine(({ from, to }) => Date.parse(to) - Date.parse(from) <= MAX_ALL_CARS_CALENDAR_DAYS * DAY_MS, {
+    error: `Choose up to ${MAX_ALL_CARS_CALENDAR_DAYS} days`,
+    path: ['to'],
+  });
+
+export const allCarsCalendarSchema = z
+  .object({
+    from: z.iso.datetime(),
+    to: z.iso.datetime(),
+    vehicles: z.array(
+      z
+        .object({
+          id: z.string(),
+          title: z.string(),
+          photo: z.string().nullable(),
+          status: z.enum(VEHICLE_STATUSES),
+          blocks: z.array(calendarBlockSchema).meta({ description: 'As on the car’s own calendar' }),
+        })
+        .meta({ id: 'CalendarCar' }),
+    ),
+  })
+  .meta({ id: 'AllCarsCalendar' });
 
 export const recurringResultSchema = z
   .object({

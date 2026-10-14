@@ -1,4 +1,7 @@
 import { ensureExchangeRateRefresh } from '../modules/currency/exchange-rates.service.js';
+import { scheduleDataRetention } from '../modules/admin/data-retention.service.js';
+import { scheduleHostReminders } from '../modules/hosts/host-reminders.service.js';
+import { scheduleReviewRevealSweep } from '../modules/reviews/reviews.service.js';
 import { scheduleRecurringAvailability } from './handlers/recurring-availability.js';
 
 /**
@@ -8,4 +11,7 @@ import { scheduleRecurringAvailability } from './handlers/recurring-availability
 export async function scheduleRecurringJobs(now = new Date()) {
   await ensureExchangeRateRefresh(now);
   await scheduleRecurringAvailability(now);
+  await scheduleHostReminders(now);
+  await scheduleDataRetention(now);
+  await scheduleReviewRevealSweep(now);
 }

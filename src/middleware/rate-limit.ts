@@ -132,6 +132,16 @@ export const areaMapRateLimit = () =>
     message: 'Too many maps in a short time. Please try again in a few minutes.',
   });
 
+/** Replies on a user's own support tickets, per user, against spam. */
+export const ticketReplyRateLimit = () =>
+  limitRequests({
+    name: 'ticket-reply',
+    windowMs: 60 * MINUTE,
+    limit: 30,
+    perUser: true,
+    message: "You've sent a lot of messages in a short time. Please try again in an hour.",
+  });
+
 /** Emails a user can ask us to send again, per user. */
 export const resendEmailRateLimit = () =>
   limitRequests({
@@ -141,4 +151,37 @@ export const resendEmailRateLimit = () =>
     perUser: true,
     message:
       "We've sent a few emails already. Please check your inbox and spam folder, or try again in an hour.",
+  });
+
+/** Chat messages, per user, against spam (plan §14, messaging safety). */
+export const messageRateLimit = () =>
+  limitRequests({
+    name: 'message',
+    windowMs: 10 * MINUTE,
+    limit: 60,
+    perUser: true,
+    message: "You've sent a lot of messages in a short time. Please wait a few minutes.",
+  });
+
+/**
+ * Signed upload targets, per user: plenty for a listing's photos and documents and a trip's inspections, but
+ * not an open tap into private storage (plan §14).
+ */
+export const uploadRateLimit = () =>
+  limitRequests({
+    name: 'upload',
+    windowMs: 60 * MINUTE,
+    limit: 300,
+    perUser: true,
+    message: "You've uploaded a lot of files in a short time. Please try again in an hour.",
+  });
+
+/** Reports of users, messages, reviews and listings, per user. */
+export const reportRateLimit = () =>
+  limitRequests({
+    name: 'report',
+    windowMs: 60 * MINUTE,
+    limit: 20,
+    perUser: true,
+    message: "You've sent a lot of reports in a short time. Please try again later.",
   });

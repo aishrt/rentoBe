@@ -1,28 +1,46 @@
 import { createHmac } from 'node:crypto';
-import mongoose from 'mongoose';
+import mongoose, { type Types } from 'mongoose';
 import { env } from '../../env.js';
+import { countryCode } from '../../lib/countries.js';
 import { encrypt } from '../../lib/encryption.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
-import { fromNzWallClock, nzDate } from '../../lib/nz-time.js';
+import { fromNzWallClock, nzDate, nzDayEnd } from '../../lib/nz-time.js';
 import type { PlatformSettings } from '../admin/platform-settings.schemas.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
+import type { Booking } from '../bookings/booking.model.js';
 import type { CheckoutReadiness, DriverLicenceInput } from './driver-licence.schemas.js';
 import { UserModel, type User } from './user.model.js';
 
 /*
  * Driver licence details and the eligibility rules in settings (plan §3, Validation rules: booking):
  * age, accepted licence classes, years licensed, a licence valid until the trip ends, and English
- * proof for an overseas licence that isn't in English. Support staff check licences by hand until the
- * identity check arrives (plan §16, item 15).
+ * proof for an overseas licence that isn't in English. A driver licence used as the ID in the identity check
+ * confirms the licence; otherwise support staff check it by hand, and a booking made meanwhile becomes a
+ * request (plan §8.2). No NZ licence-check service is connected (plan §16, item 15). Dates are NZ calendar
+ * dates (plan §3: times in Pacific/Auckland).
  */
 
-const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
-
+/** Midnight at the start of an NZ day given as 2026-10-07: how a licence's dates and a birthday are kept. */
 const dayStart = (value: string) => {
   const [year, month, day] = value.split('-').map(Number) as [number, number, number];
   return fromNzWallClock(year, month, day);
 };
+
+/** A licence is valid through the whole of its expiry day in NZ, as a car's documents are. */
+export const licenceValidUntil = (expiry: Date) => nzDayEnd(nzDate(expiry));
+
+/** Whole years from `from` to `on`, counted on NZ calendars: a birthday counts from the start of its day. */
+function yearsOn(from: Date, on: Date): number {
+  const [fromYear, fromMonth, fromDay] = nzDate(from).split('-').map(Number) as [number, number, number];
+  const [year, month, day] = nzDate(on).split('-').map(Number) as [number, number, number];
+  const beforeAnniversary = month < fromMonth || (month === fromMonth && day < fromDay);
+  return year - fromYear - (beforeAnniversary ? 1 : 0);
+}
+
+/** The licence's country as an ISO code ("AU"); a licence saved before codes were kept is read the same way. */
+export const licenceCountryCode = (licence: Pick<NonNullable<User['driverLicence']>, 'country' | 'class'>) =>
+  countryCode(licence.country) ?? (licence.class === 'OVERSEAS' ? undefined : 'NZ');
 
 /** A keyed hash of the licence number, to find the same licence on another account (plan §3). */
 export function licenceNumberHash(number: string): string {
@@ -30,34 +48,114 @@ export function licenceNumberHash(number: string): string {
   return createHmac('sha256', key).update(number.replace(/\s+/g, '').toUpperCase()).digest('hex');
 }
 
+/** A keyed hash of a date of birth (2026-10-09) read from an ID, kept instead of the date itself. */
+export function documentDobHash(date: string): string {
+  const key = createHmac('sha256', env.ENCRYPTION_KEY).update('document-dob').digest();
+  return createHmac('sha256', key).update(date).digest('hex');
+}
+
 export type EligibilityProblem = CheckoutReadiness['problems'][number];
+
+/**
+ * The same licence on more than one account raises a risk flag on each of them (plan §3, same person,
+ * several accounts), rather than an error, so support can merge a genuine re-registration. `numberHash` is the
+ * licence entered, or one an ID check read.
+ */
+export async function flagDuplicateLicence(userId: Types.ObjectId, numberHash: string, now = new Date()) {
+  const others = await UserModel.find({
+    _id: mongoose.trusted({ $ne: userId }),
+    $or: [
+      { 'driverLicence.numberHash': numberHash },
+      { 'identityVerification.documentNumberHash': numberHash },
+    ],
+  })
+    .select('_id')
+    .lean();
+  if (others.length === 0) return;
+  for (const id of [userId, ...others.map((other) => other._id)]) {
+    await UserModel.updateOne(
+      {
+        _id: id,
+        riskFlags: mongoose.trusted({
+          $not: { $elemMatch: { code: 'DUPLICATE_LICENCE', clearedAt: { $exists: false } } },
+        }),
+      },
+      {
+        $push: {
+          riskFlags: {
+            code: 'DUPLICATE_LICENCE',
+            detail: 'The same licence number is on another account',
+            createdAt: now,
+          },
+        },
+      },
+    );
+  }
+}
 
 type EligibilityUser = Pick<User, 'phoneVerifiedAt' | 'dob' | 'driverLicence' | 'identityVerification'>;
 
-/**
- * Whether this person's identity check is waiting for support staff (plan §8.2). They can still book:
- * the card is authorised, and the booking is confirmed once the check is approved.
- */
-export const verificationInReview = (user: Pick<User, 'identityVerification'>) =>
-  user.identityVerification?.status === 'PENDING';
+/** Stripe is still checking the person's ID and selfie (plan §8.2: checkout waits for the result). */
+export const identityProcessing = (user: Pick<User, 'identityVerification'>) =>
+  user.identityVerification?.status === 'NONE' && user.identityVerification.sessionStatus === 'processing';
 
-/** What stops this person driving a trip that ends at `tripEnd` (without one, today). */
+type ReviewUser = Pick<User, 'identityVerification' | 'driverLicence'>;
+
+/**
+ * A licence only support staff can confirm now (plan §8.2): its details are new or changed, and no identity
+ * check is still to come that would read them from a driver licence. With the identity check required and
+ * not done yet, the person can't book anyway, and the check may confirm the licence itself, so a person
+ * isn't asked to look. A rejected identity stops booking whatever the licence says.
+ */
+export function licenceAwaitingReview(user: ReviewUser, settings: Pick<PlatformSettings, 'verification'>) {
+  if (user.driverLicence?.status !== 'PENDING') return false;
+  const identity = user.identityVerification?.status ?? 'NONE';
+  if (identity === 'NONE') return !settings.verification.identityBeforeFirstBooking;
+  return identity !== 'REJECTED';
+}
+
+/**
+ * Whether this person's identity check or licence is waiting for support staff (plan §8.2). They can still
+ * book: the card is authorised, and the booking is confirmed once both are approved.
+ */
+export const verificationInReview = (user: ReviewUser, settings: Pick<PlatformSettings, 'verification'>) =>
+  user.identityVerification?.status === 'PENDING' || licenceAwaitingReview(user, settings);
+
+/**
+ * What stops this person driving a trip that ends at `tripEnd` (without one, today). Age and years licensed
+ * count to the trip's start (without one, today), on NZ calendar dates.
+ */
 export function eligibilityProblems(
   user: EligibilityUser,
   settings: PlatformSettings,
   tripEnd: Date = new Date(),
   now = new Date(),
+  tripStart: Date = now,
 ): EligibilityProblem[] {
   const problems: EligibilityProblem[] = [];
   const rules = settings.eligibility;
   if (settings.verification.phoneAtCheckout && !user.phoneVerifiedAt) {
     problems.push({ code: 'PHONE_REQUIRED', message: 'Verify your mobile number.' });
   }
-  if (user.identityVerification?.status === 'REJECTED') {
+  const identity = user.identityVerification?.status ?? 'NONE';
+  if (identity === 'REJECTED') {
     problems.push({
       code: 'IDENTITY_REJECTED',
       message: "We couldn't verify your identity. Please contact support.",
     });
+  } else if (settings.verification.identityBeforeFirstBooking && identity === 'NONE') {
+    // A check in review (PENDING) can still book: the booking waits for support (plan §8.2).
+    problems.push(
+      identityProcessing(user)
+        ? {
+            code: 'IDENTITY_PROCESSING',
+            message: 'We’re checking your ID. This usually takes a minute or two.',
+          }
+        : {
+            code: 'IDENTITY_REQUIRED',
+            message: 'Verify your identity with a photo of your ID and a selfie.',
+          },
+    );
   }
   const licence = user.driverLicence;
   if (!licence || !user.dob) {
@@ -70,7 +168,7 @@ export function eligibilityProblems(
       message: "We couldn't accept your licence. Please contact support.",
     });
   }
-  if ((now.getTime() - user.dob.getTime()) / YEAR_MS < rules.minAge) {
+  if (yearsOn(user.dob, tripStart) < rules.minAge) {
     problems.push({ code: 'TOO_YOUNG', message: `Drivers need to be at least ${rules.minAge}.` });
   }
   if (!rules.acceptedLicenceClasses.includes(licence.class)) {
@@ -79,13 +177,13 @@ export function eligibilityProblems(
       message: 'Guests need a full NZ licence, or a full overseas licence.',
     });
   }
-  if (licence.issuedAt && (now.getTime() - licence.issuedAt.getTime()) / YEAR_MS < rules.minYearsLicensed) {
+  if (licence.issuedAt && yearsOn(licence.issuedAt, tripStart) < rules.minYearsLicensed) {
     problems.push({
       code: 'NOT_LICENSED_LONG_ENOUGH',
       message: `Drivers need to have held their licence for at least ${rules.minYearsLicensed} ${rules.minYearsLicensed === 1 ? 'year' : 'years'}.`,
     });
   }
-  if (licence.expiry < tripEnd) {
+  if (licenceValidUntil(licence.expiry) < tripEnd) {
     problems.push({
       code: 'LICENCE_EXPIRES',
       message: 'Your licence needs to be valid until the trip ends.',
@@ -105,8 +203,71 @@ export function eligibilityProblems(
   return problems;
 }
 
+/** The licence rules a booked trip is held to (plan §3), checked again when the licence changes. */
+const LICENCE_CODES: readonly EligibilityProblem['code'][] = [
+  'LICENCE_REQUIRED',
+  'LICENCE_REJECTED',
+  'TOO_YOUNG',
+  'CLASS_NOT_ACCEPTED',
+  'NOT_LICENSED_LONG_ENOUGH',
+  'LICENCE_EXPIRES',
+  'ENGLISH_PROOF_REQUIRED',
+];
+
+/** What in the Guest's licence now stops a booked trip, as booking it would have been refused. */
+export const licenceProblemsForTrip = (
+  user: EligibilityUser,
+  settings: PlatformSettings,
+  trip: Pick<Booking, 'startAt' | 'endAt'>,
+  now = new Date(),
+) =>
+  eligibilityProblems(user, settings, trip.endAt, now, trip.startAt).filter((problem) =>
+    LICENCE_CODES.includes(problem.code),
+  );
+
+/** What stops a trip starting, and why, as the Guest and Host read it. */
+const CHECK_IN_REASONS: Partial<Record<EligibilityProblem['code'], string>> = {
+  LICENCE_REJECTED: 'our team couldn’t accept it',
+  LICENCE_EXPIRES: 'it expires before the trip ends',
+  CLASS_NOT_ACCEPTED: 'its licence class isn’t accepted for trips',
+};
+
+/**
+ * Check-in (plan §3: the Guest holds a licence valid until the trip ends): 409 LICENCE_NOT_ELIGIBLE when the
+ * Guest's licence was turned down, runs out before the trip ends, or is of a class the rules don't accept.
+ */
+export async function assertLicenceForTrip(
+  booking: Pick<Booking, 'guestId' | 'startAt' | 'endAt'>,
+  viewer: 'GUEST' | 'HOST',
+  now = new Date(),
+) {
+  const [guest, settings] = await Promise.all([
+    UserModel.findById(booking.guestId)
+      .select('phoneVerifiedAt dob driverLicence identityVerification')
+      .lean(),
+    getPlatformSettings(),
+  ]);
+  if (!guest) return;
+  const problem = licenceProblemsForTrip(guest, settings, booking, now).find(
+    (candidate) => CHECK_IN_REASONS[candidate.code],
+  );
+  if (!problem) return;
+  const reason = CHECK_IN_REASONS[problem.code]!;
+  throw new HttpError(
+    409,
+    'LICENCE_NOT_ELIGIBLE',
+    viewer === 'GUEST'
+      ? `Your driver licence can’t be used for this trip: ${reason}. Update your licence details in your account, or contact support.`
+      : `The guest’s driver licence can’t be used for this trip (${reason}), so the trip can’t start. Contact support and we’ll help.`,
+  );
+}
+
 /** GET /me/checkout: what checkout's verification step still needs from this person. */
-export async function checkoutReadiness(userId: string, tripEnd?: Date): Promise<CheckoutReadiness> {
+export async function checkoutReadiness(
+  userId: string,
+  tripEnd?: Date,
+  tripStart?: Date,
+): Promise<CheckoutReadiness> {
   const user = await UserModel.findById(userId);
   if (!user || user.status !== 'ACTIVE') throw unauthenticated();
   const settings = await getPlatformSettings();
@@ -118,7 +279,7 @@ export async function checkoutReadiness(userId: string, tripEnd?: Date): Promise
     licence: licence
       ? {
           class: licence.class,
-          country: licence.country,
+          country: licenceCountryCode(licence) ?? licence.country,
           numberEnding: licence.numberEnding ?? '',
           expiry: nzDate(licence.expiry),
           status: licence.status,
@@ -126,8 +287,11 @@ export async function checkoutReadiness(userId: string, tripEnd?: Date): Promise
         }
       : null,
     hasDateOfBirth: Boolean(user.dob),
+    licenceInReview: licenceAwaitingReview(user, settings),
     identityStatus: user.identityVerification?.status ?? 'NONE',
-    problems: eligibilityProblems(user, settings, tripEnd),
+    identityProcessing: identityProcessing(user),
+    ...(user.identityVerification?.lastError && { identityError: user.identityVerification.lastError }),
+    problems: eligibilityProblems(user, settings, tripEnd, new Date(), tripStart),
   };
 }
 
@@ -149,7 +313,8 @@ export async function saveDriverLicence(
   if ([expiry, issuedAt, dob].some((value) => Number.isNaN(value.getTime()))) {
     throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', { expiry: 'Enter real dates' });
   }
-  if (expiry <= new Date()) {
+  // Still valid on its expiry day.
+  if (licenceValidUntil(expiry) <= new Date()) {
     throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
       expiry: 'This licence has expired',
     });
@@ -159,37 +324,91 @@ export async function saveDriverLicence(
       issuedAt: 'Check the issue date',
     });
   }
+  // The country is kept as its ISO code ("AU"), to compare with a card's (plan §14); a name is read as one.
+  const country = input.class === 'OVERSEAS' ? countryCode(input.country) : 'NZ';
+  if (!country || (input.class === 'OVERSEAS' && country === 'NZ')) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
+      country: 'Choose the country that issued your licence',
+    });
+  }
 
   const numberHash = licenceNumberHash(input.number);
-  const unchanged = user.driverLicence?.numberHash === numberHash;
+  const identity = user.identityVerification;
+  const dobChanged = user.dob?.getTime() !== dob.getTime();
+  // Once a passed identity check has read a date of birth, a different one is corrected through a privacy
+  // request, as the name is (plan §11): it's checked against the ID there, not changed here.
+  if (
+    dobChanged &&
+    identity?.status === 'APPROVED' &&
+    identity.documentDobHash &&
+    identity.documentDobHash !== documentDobHash(nzDate(dob))
+  ) {
+    throw new HttpError(409, 'DOB_LOCKED', 'Your date of birth has to match your verified ID.', {
+      dob: 'This has to match your verified ID. If it’s wrong, ask us to correct it in Settings, under Your privacy, and we’ll check it against your ID.',
+    });
+  }
+  const previous = user.driverLicence;
+  const next = {
+    numberHash,
+    class: input.class,
+    country,
+    version: input.class !== 'OVERSEAS' ? input.version : undefined,
+    inEnglish: input.class === 'OVERSEAS' ? !input.notInEnglish : undefined,
+    englishProof: input.englishProof || undefined,
+  };
+  // The review stands only for exactly the details it reviewed: any change to the licence or the date of
+  // birth (each can decide whether the person may drive, plan §3) is checked again.
+  const unchanged = Boolean(
+    previous &&
+    !dobChanged &&
+    previous.numberHash === next.numberHash &&
+    previous.class === next.class &&
+    // A licence saved before countries were kept as codes ("New Zealand") is the same as its code.
+    licenceCountryCode(previous) === next.country &&
+    (previous.version || undefined) === next.version &&
+    (previous.inEnglish ?? undefined) === next.inEnglish &&
+    (previous.englishProof || undefined) === next.englishProof &&
+    previous.issuedAt?.getTime() === issuedAt.getTime() &&
+    previous.expiry.getTime() === expiry.getTime(),
+  );
+  // The date of birth is compared with the one the ID showed, when the check read one.
+  if (identity?.documentDobHash) {
+    identity.documentDobMatched = identity.documentDobHash === documentDobHash(nzDate(dob));
+  } else if (identity && dobChanged) {
+    // A new date of birth wasn't the one compared with the ID.
+    identity.documentDobMatched = undefined;
+  }
   user.dob = dob;
+  // A licence entered after a passed ID check that read a driving licence: the same number and date of birth
+  // confirm it, as they would have if it had been entered first (plan §9, Days 19–20); a difference goes to
+  // support.
+  const matchedById =
+    identity?.status === 'APPROVED' &&
+    identity.documentNumberHash === numberHash &&
+    identity.documentDobMatched === true;
   user.driverLicence = {
     number: encrypt(input.number),
     numberHash,
     numberEnding: input.number.slice(-3),
-    ...(input.class !== 'OVERSEAS' && { version: input.version }),
-    ...(input.class === 'OVERSEAS' && { inEnglish: !input.notInEnglish }),
-    country: input.class === 'OVERSEAS' ? input.country : 'New Zealand',
-    class: input.class,
-    ...(input.englishProof && { englishProof: input.englishProof }),
+    ...(next.version !== undefined && { version: next.version }),
+    ...(next.inEnglish !== undefined && { inEnglish: next.inEnglish }),
+    country: next.country,
+    class: next.class,
+    ...(next.englishProof && { englishProof: next.englishProof }),
     issuedAt,
     expiry,
-    // Changed details are checked again; unchanged ones keep their review.
-    status: unchanged && user.driverLicence ? user.driverLicence.status : 'PENDING',
+    // Unchanged details keep their review. Changed ones are checked again by support, unless the ID
+    // confirmed them; a licence support turned down goes back to them once it's corrected.
+    status:
+      unchanged && previous
+        ? previous.status
+        : matchedById && previous?.status !== 'REJECTED'
+          ? 'APPROVED'
+          : 'PENDING',
   };
 
-  const elsewhere = await UserModel.exists({
-    'driverLicence.numberHash': numberHash,
-    _id: mongoose.trusted({ $ne: user._id }),
-  });
-  if (elsewhere && !user.riskFlags.some((flag) => flag.code === 'DUPLICATE_LICENCE' && !flag.clearedAt)) {
-    user.riskFlags.push({
-      code: 'DUPLICATE_LICENCE',
-      detail: 'The same licence number is on another account',
-      createdAt: new Date(),
-    });
-  }
   await user.save();
+  await flagDuplicateLicence(user._id, numberHash);
   await recordAudit({ actorId: user._id, action: 'licence.saved', entity: 'user', entityId: user.id, ip });
   return checkoutReadiness(userId);
 }

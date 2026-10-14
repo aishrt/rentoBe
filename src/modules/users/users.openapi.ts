@@ -8,8 +8,24 @@ import {
   mfaStatusResponseSchema,
   mfaVerifySchema,
 } from '../auth/auth.schemas.js';
-import { acceptAgreementsSchema, changeEmailSchema, changePasswordSchema } from './account.schemas.js';
-import { favouritesResponseSchema, lastSearchSchema } from './saved.schemas.js';
+import {
+  acceptAgreementsSchema,
+  changeEmailSchema,
+  changePasswordSchema,
+  profilePhotoSchema,
+  updateMeSchema,
+} from './account.schemas.js';
+import {
+  cardSetupResponseSchema,
+  paymentHistoryResponseSchema,
+  savedCardsResponseSchema,
+} from '../payments/payments.schemas.js';
+import {
+  accountClosureSchema,
+  privacyRequestResponseSchema,
+  privacyRequestSchema,
+} from './privacy.schemas.js';
+import { favouritesResponseSchema, lastSearchSchema, savedCarsResponseSchema } from './saved.schemas.js';
 import { userResponseSchema } from './user.schemas.js';
 
 /** The contract for users.routes.ts (plan §2.3). */
@@ -21,6 +37,49 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
     summary: 'The signed-in user',
     security: signedIn,
     responses: { 200: jsonResponse('The signed-in user', userResponseSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'patch',
+    path: '/me',
+    tags: ['Account'],
+    summary: 'Change the name',
+    description:
+      'Personal details (plan §11): the first and last name, trimmed, 1 to 50 characters each. Allowed until the identity check has passed or is being checked (`nameLocked`); after that the name must match the ID, so it is refused with 409 NAME_LOCKED and corrected through a privacy request (POST /me/privacy-requests, CORRECTION). Written to the audit log.',
+    security: signedIn,
+    request: { body: jsonBody(updateMeSchema) },
+    responses: {
+      200: jsonResponse('The signed-in user, with the new name', userResponseSchema),
+      ...errorResponses(400, 401, 409, 429),
+    },
+  });
+
+  registry.registerPath({
+    method: 'put',
+    path: '/me/photo',
+    tags: ['Account'],
+    summary: 'Set the profile photo',
+    description:
+      'Spec §8, plan §6.2: the other party on a booking sees your first name and photo, as does your public profile. Upload the photo first with POST /uploads/signature (purpose PROFILE_PHOTO: JPEG, PNG, WebP or HEIC, up to 15 MB), then send its key here. It is stored as an upright WebP without its metadata, and replaces any photo you had, which is deleted. 400 UPLOAD_NOT_FOUND for a key that is not your own upload; 400 UNREADABLE_IMAGE when the file is not a photo we can read.',
+    security: signedIn,
+    request: { body: jsonBody(profilePhotoSchema) },
+    responses: {
+      200: jsonResponse('The signed-in user, with the photo in avatarUrl', userResponseSchema),
+      ...errorResponses(400, 401, 429, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'delete',
+    path: '/me/photo',
+    tags: ['Account'],
+    summary: 'Remove the profile photo',
+    description: 'Deletes the photo; you show as your initials again. Fine when there is no photo.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('The signed-in user, without avatarUrl', userResponseSchema),
+      ...errorResponses(401, 429),
+    },
   });
 
   registry.registerPath({
@@ -179,5 +238,94 @@ export function registerUserPaths(registry: OpenAPIRegistry) {
     security: signedIn,
     request: { body: jsonBody(lastSearchSchema) },
     responses: { 204: { description: 'Saved' }, ...errorResponses(400, 401) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/saved-cars',
+    tags: ['Account'],
+    summary: 'The Saved cars page',
+    description:
+      'Each saved car as a card, with its estimated total for the last searched dates when it can be booked for them (spec §8, §28: comparing cars). A car its Host has taken down shows `listed: false`.',
+    security: signedIn,
+    responses: { 200: jsonResponse('Saved cars', savedCarsResponseSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/payment-methods',
+    tags: ['Account'],
+    summary: 'Saved cards',
+    description:
+      'The cards saved to the Guest’s Stripe customer, from checkout or added here (plan §8.1, item 7). Empty until the first one.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Saved cards', savedCardsResponseSchema),
+      ...errorResponses(401, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/payment-methods/setup',
+    tags: ['Account'],
+    summary: 'Start saving a card',
+    description:
+      'A Stripe SetupIntent for the Payment Element to save one card for checkout and post-trip charges. Card details go straight to Stripe.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Ready for the Payment Element', cardSetupResponseSchema),
+      ...errorResponses(401, 429, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'delete',
+    path: '/me/payment-methods/{id}',
+    tags: ['Account'],
+    summary: 'Remove a saved card',
+    security: signedIn,
+    request: { params: z.object({ id: z.string().meta({ description: 'The card’s id (pm_…)' }) }) },
+    responses: { 204: { description: 'Removed' }, ...errorResponses(401, 404, 503) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/payments',
+    tags: ['Account'],
+    summary: 'Payment history',
+    description:
+      'What the Guest has paid, newest first, with refunds and whether each has a receipt (plan §8.1, item 7). Attempts that never charged anything are left out.',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Payments', paymentHistoryResponseSchema),
+      ...errorResponses(401),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/account-closure',
+    tags: ['Account'],
+    summary: 'Whether the account can be closed now',
+    description:
+      'Closing is refused while a trip or booking is requested, booked or under way, an incident is open, an extra charge is unpaid or a payout is due (plan §8.2).',
+    security: signedIn,
+    responses: { 200: jsonResponse('Whether, and why not', accountClosureSchema), ...errorResponses(401) },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/me/privacy-requests',
+    tags: ['Account'],
+    summary: 'Ask for a copy or correction of personal information, or to close the account',
+    description:
+      'Opens a PRIVACY support ticket for staff to carry out, and emails its reference (NZ Privacy Act 2020, plan §14). The same request while one is open returns that one. Closing the account answers 409 CLOSURE_BLOCKED while GET /me/account-closure lists blockers.',
+    security: signedIn,
+    request: { body: jsonBody(privacyRequestSchema) },
+    responses: {
+      201: jsonResponse('The ticket', privacyRequestResponseSchema),
+      ...errorResponses(400, 401, 409, 429),
+    },
   });
 }

@@ -3,7 +3,7 @@ import { logger } from '../../integrations/logger.js';
 import { areaMapLink, fetchAreaMap, type MapImage } from '../../integrations/maps/area-map.js';
 import { HttpError } from '../../lib/http-error.js';
 import { memo } from '../../lib/memo.js';
-import { addNzDays, parseNzDateTime } from '../../lib/nz-time.js';
+import { addNzDays, parseNzDateTime, toNzWallClock } from '../../lib/nz-time.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { busyRanges } from '../availability/availability.service.js';
 import { evaluateTrip, listingTier } from '../bookings/trip.service.js';
@@ -12,7 +12,7 @@ import { ReviewModel } from '../reviews/review.model.js';
 import { toVehicleCard } from '../search/search.service.js';
 import { UserModel, type User } from '../users/user.model.js';
 import { approximateArea, complianceSummary, publicPhotos, vehicleTitle } from './vehicle-view.js';
-import { VehicleModel, type DeliveryOption, type Vehicle } from './vehicle.model.js';
+import { VehicleModel, liveVehicleFilter, type DeliveryOption, type Vehicle } from './vehicle.model.js';
 import type { Quote, QuoteRequest, VehicleDetail } from './vehicles.schemas.js';
 
 const notFound = () =>
@@ -21,7 +21,7 @@ const notFound = () =>
 /** A live car by id, or 404. */
 export async function findLiveVehicle(id: string) {
   if (!mongoose.isValidObjectId(id)) throw notFound();
-  const vehicle = await VehicleModel.findOne({ _id: id, status: 'ACTIVE' });
+  const vehicle = await VehicleModel.findOne({ _id: id, ...liveVehicleFilter() });
   if (!vehicle) throw notFound();
   return vehicle;
 }
@@ -43,7 +43,8 @@ export function publicHost(host: HostFields) {
     tripCount: host.hostProfile?.tripCount ?? 0,
     ...(host.hostProfile?.responseRate !== undefined && { responseRate: host.hostProfile.responseRate }),
     verified: host.identityVerification?.status === 'APPROVED',
-    joinedYear: host.createdAt.getFullYear(),
+    // The year in New Zealand, as on the member's profile.
+    joinedYear: toNzWallClock(host.createdAt).year,
     ...(host.hostProfile?.bio && { bio: host.hostProfile.bio }),
   };
 }
@@ -71,7 +72,7 @@ export function deliveryOptionSummary(option: DeliveryOption, vehicle: Pick<Vehi
 
 /** GET /vehicles/{slug}: the listing page (plan §9, Days 8–10). */
 export async function getVehicleDetail(slug: string, now = new Date()): Promise<VehicleDetail> {
-  const vehicle = await VehicleModel.findOne({ slug: slug.toLowerCase(), status: 'ACTIVE' }).lean();
+  const vehicle = await VehicleModel.findOne({ slug: slug.toLowerCase(), ...liveVehicleFilter() }).lean();
   if (!vehicle) throw notFound();
   const [host, settings] = await Promise.all([
     UserModel.findById(vehicle.hostId).select(HOST_FIELDS).lean<HostFields>(),
@@ -157,7 +158,7 @@ const FEATURED_COUNT = 8;
 function bookableToday() {
   const now = new Date();
   return {
-    status: 'ACTIVE',
+    ...liveVehicleFilter(),
     regoExpiry: mongoose.trusted({ $gte: now }),
     $or: [{ wofExpiry: mongoose.trusted({ $gte: now }) }, { cofExpiry: mongoose.trusted({ $gte: now }) }],
   };
@@ -263,6 +264,7 @@ export async function vehicleReviews(id: string, page = 1) {
       return {
         id: review._id.toString(),
         author: {
+          id: review.authorId.toString(),
           firstName: author?.firstName ?? 'A guest',
           ...(author?.avatarUrl && { avatarUrl: author.avatarUrl }),
         },

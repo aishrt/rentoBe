@@ -10,6 +10,14 @@ import {
   notificationsQuerySchema,
   notificationsResponseSchema,
 } from './notifications.schemas.js';
+import {
+  notificationPrefsPatchSchema,
+  notificationPrefsSchema,
+  unsubscribeResponseSchema,
+  unsubscribeSchema,
+} from '../users/notification-prefs.js';
+
+const prefsResponse = z.object({ prefs: notificationPrefsSchema }).meta({ id: 'NotificationPrefsResponse' });
 
 /** The contract for the notification centre: the header's bell and the Notifications page. */
 export function registerNotificationPaths(registry: OpenAPIRegistry) {
@@ -77,5 +85,45 @@ export function registerNotificationPaths(registry: OpenAPIRegistry) {
     security: signedIn,
     request: { params: z.object({ id: z.string().meta({ description: 'The notification’s id' }) }) },
     responses: { 204: { description: 'Deleted' }, ...errorResponses(401, 404) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/me/notification-prefs',
+    tags: ['Notifications'],
+    summary: 'Which non-essential emails and texts the user gets',
+    description: 'Booking and account messages are always sent (plan §7).',
+    security: signedIn,
+    responses: {
+      200: jsonResponse('Choices', prefsResponse),
+      ...errorResponses(401),
+    },
+  });
+
+  registry.registerPath({
+    method: 'patch',
+    path: '/me/notification-prefs',
+    tags: ['Notifications'],
+    summary: 'Change notification choices',
+    security: signedIn,
+    request: { body: jsonBody(notificationPrefsPatchSchema) },
+    responses: {
+      200: jsonResponse('Choices', prefsResponse),
+      ...errorResponses(400, 401),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/notifications/unsubscribe',
+    tags: ['Notifications'],
+    summary: 'Unsubscribe from marketing email and texts, or from unread-message emails',
+    description:
+      'The link in every marketing email and unread-message email; works without signing in. An email app’s one-click unsubscribe (RFC 8058) posts here with `?token=` and a form body instead.',
+    request: { body: jsonBody(unsubscribeSchema) },
+    responses: {
+      200: jsonResponse('What was turned off', unsubscribeResponseSchema),
+      ...errorResponses(400),
+    },
   });
 }

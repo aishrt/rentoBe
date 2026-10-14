@@ -9,12 +9,15 @@ import {
 } from '../vehicles/host-vehicles.schemas.js';
 import {
   adminVehicleSchema,
+  adminVehiclesResponseSchema,
   documentDecisionSchema,
+  hostApplicationsQuerySchema,
   hostApplicationsResponseSchema,
   photoDecisionSchema,
   requiredNotesSchema,
   reviewNotesSchema,
   reviewQueueResponseSchema,
+  vehicleListQuerySchema,
 } from './admin-listings.schemas.js';
 
 const userParam = z.object({ userId: z.string() });
@@ -27,14 +30,13 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
     path: '/admin/host-applications',
     tags: ['Admin'],
     summary: 'Host applications',
-    description: 'Oldest first. `status` is APPLIED by default.',
+    description:
+      '25 a page. `status` is APPLIED by default, listed oldest first; the others are listed newest first.',
     security: signedIn,
-    request: {
-      query: z.object({ status: z.enum(['APPLIED', 'APPROVED', 'REJECTED', 'SUSPENDED']).optional() }),
-    },
+    request: { query: hostApplicationsQuerySchema },
     responses: {
       200: jsonResponse('Applications', hostApplicationsResponseSchema),
-      ...errorResponses(401, 403),
+      ...errorResponses(400, 401, 403),
     },
   });
 
@@ -43,7 +45,8 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
     path: '/admin/host-applications/{userId}/approve',
     tags: ['Admin'],
     summary: 'Approve a Host application',
-    description: '409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email. Emails the Host.',
+    description:
+      'An application waiting for a decision, or one rejected before (409 NOT_APPLIED otherwise). 409 EMAIL_NOT_VERIFIED until the applicant has confirmed their email, and 409 IDENTITY_NOT_VERIFIED until their identity check has passed (while the identityForHosts setting is on). 403 OWN_RECORD for a support member’s own application. Emails the Host.',
     security: signedIn,
     request: { params: userParam, body: jsonBody(reviewNotesSchema) },
     responses: {
@@ -57,11 +60,13 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
     path: '/admin/host-applications/{userId}/reject',
     tags: ['Admin'],
     summary: 'Reject a Host application',
+    description:
+      'Only an application waiting for a decision: 409 NOT_APPLIED for a Host already approved, who is suspended instead. 403 OWN_RECORD for a support member’s own application.',
     security: signedIn,
     request: { params: userParam, body: jsonBody(requiredNotesSchema) },
     responses: {
       200: jsonResponse('The new status', z.object({ status: z.string() })),
-      ...errorResponses(400, 401, 403, 404),
+      ...errorResponses(400, 401, 403, 404, 409),
     },
   });
 
@@ -73,6 +78,21 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
     description: 'Listings under review, and live listings with new photos or documents waiting.',
     security: signedIn,
     responses: { 200: jsonResponse('The queue', reviewQueueResponseSchema), ...errorResponses(401, 403) },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/admin/vehicles/search',
+    tags: ['Admin'],
+    summary: 'Every car, to search',
+    description:
+      'Whatever its status (live, switched off, suspended, draft, under review…), 25 a page, most recently changed first. Each word of `q` must match the year, make, model or variant, the plate, or the Host’s name or email.',
+    security: signedIn,
+    request: { query: vehicleListQuerySchema },
+    responses: {
+      200: jsonResponse('The cars', adminVehiclesResponseSchema),
+      ...errorResponses(400, 401, 403),
+    },
   });
 
   registry.registerPath({
@@ -95,8 +115,11 @@ export function registerAdminListingPaths(registry: OpenAPIRegistry) {
       path: `/admin/vehicles/{id}/${action}`,
       tags: ['Admin'],
       summary,
-      description:
-        action === 'approve' ? '409 HOST_NOT_APPROVED until the Host’s application is approved.' : undefined,
+      description: `${
+        action === 'approve'
+          ? '409 HOST_NOT_APPROVED until the Host’s application is approved. A listing back for review over its key details goes back on or off as its Host had it. '
+          : ''
+      }403 OWN_RECORD when it’s the support member’s own car.`,
       security: signedIn,
       request: { params: idParam, body: jsonBody(body) },
       responses: {

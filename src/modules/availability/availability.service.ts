@@ -124,6 +124,55 @@ export async function reserveTripDates(trip: TripDates, session: ClientSession, 
   await AvailabilityBlockModel.insertMany(blocks, { session });
 }
 
+/**
+ * Whether a booking still has its held dates, checked inside the transaction that confirms it. A HOLD stops
+ * counting when its time runs out (plan §8.2), so another Guest may have booked the dates since: a payment
+ * that took a while at the bank, or one that arrived late. A lapsed hold is checked again as if the dates
+ * were being booked now, and taken back when they're still free.
+ */
+export async function tripDatesStillHeld(
+  booking: { _id: Id; vehicleId: Id; startAt: Date; endAt: Date },
+  session: ClientSession,
+  now = new Date(),
+): Promise<boolean> {
+  const blocks = await AvailabilityBlockModel.find({ bookingId: booking._id }).session(session).lean();
+  const trip = blocks.find((block) => TRIP_REASONS.includes(block.reason));
+  if (trip && (!trip.expiresAt || trip.expiresAt > now)) return true;
+
+  const buffer = blocks.find((block) => block.reason === 'BUFFER');
+  const bufferHours = buffer
+    ? (buffer.endAt.getTime() - buffer.startAt.getTime()) / HOUR_MS
+    : ((await VehicleModel.findById(booking.vehicleId).select('rules.bufferHours').session(session).lean())
+        ?.rules.bufferHours ?? 0);
+  if (!trip) {
+    // Its blocks are gone: book them again, which fails when the dates are taken.
+    try {
+      await reserveTripDates(
+        {
+          vehicleId: booking.vehicleId,
+          bookingId: booking._id,
+          startAt: booking.startAt,
+          endAt: booking.endAt,
+          bufferHours,
+          holdUntil: new Date(now.getTime() + HOUR_MS),
+        },
+        session,
+        now,
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof HttpError && error.code === 'DATES_UNAVAILABLE') return false;
+      throw error;
+    }
+  }
+  await bumpBookingSeq(booking.vehicleId, session);
+  const clash = await findTripClash(
+    { vehicleId: booking.vehicleId, startAt: booking.startAt, endAt: booking.endAt, bufferHours },
+    { session, now, ignoreBookingId: booking._id },
+  );
+  return !clash;
+}
+
 /** A request waiting for the Host keeps its dates for up to 24 hours (plan §8.2). */
 export async function extendTripHold(bookingId: Id, until: Date, session: ClientSession) {
   await AvailabilityBlockModel.updateMany({ bookingId }, { $set: { expiresAt: until } }, { session });

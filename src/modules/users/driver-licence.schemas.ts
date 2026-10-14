@@ -16,7 +16,10 @@ export const driverLicenceInputSchema = z
       .trim()
       .regex(/^\d{3}$/, { error: 'The version number has 3 digits' })
       .optional(),
-    country: z.string().trim().min(2).max(60).default('New Zealand'),
+    country: z.string().trim().min(2).max(60).default('NZ').meta({
+      description:
+        'Overseas licences: the ISO 3166-1 alpha-2 code of the country that issued it, e.g. AU (an English name like Australia is read as its code). NZ licences are NZ',
+    }),
     class: z.enum(LICENCE_CLASSES),
     englishProof: z.enum(ENGLISH_PROOFS).optional().meta({
       description: 'For an overseas licence that isn’t in English: an IDP or an approved translation',
@@ -66,6 +69,8 @@ export const ELIGIBILITY_CODES = [
   'ENGLISH_PROOF_REQUIRED',
   'LICENCE_REJECTED',
   'IDENTITY_REJECTED',
+  'IDENTITY_REQUIRED',
+  'IDENTITY_PROCESSING',
 ] as const;
 
 export const checkoutReadinessSchema = z
@@ -76,7 +81,7 @@ export const checkoutReadinessSchema = z
     licence: z
       .object({
         class: z.enum(LICENCE_CLASSES),
-        country: z.string(),
+        country: z.string().meta({ description: 'ISO 3166-1 alpha-2 code of the country that issued it' }),
         numberEnding: z.string().meta({ description: 'The last 3 characters, to recognise it' }),
         expiry: date,
         status: z.enum(VERIFICATION_STATUSES),
@@ -84,7 +89,18 @@ export const checkoutReadinessSchema = z
       })
       .nullable(),
     hasDateOfBirth: z.boolean(),
+    licenceInReview: z.boolean().meta({
+      description:
+        'Support staff are checking the licence by hand: a booking made meanwhile becomes a request, confirmed once they approve it (plan §8.2)',
+    }),
     identityStatus: z.enum(VERIFICATION_STATUSES),
+    identityProcessing: z
+      .boolean()
+      .meta({ description: 'Stripe is checking the ID and selfie; usually a minute or two' }),
+    identityError: z
+      .string()
+      .optional()
+      .meta({ description: 'Why the last identity check didn’t pass, so the person can try again' }),
     problems: z.array(z.object({ code: z.enum(ELIGIBILITY_CODES), message: z.string() })).meta({
       description: 'Anything that stops this person booking; with `end`, checked against that trip end',
     }),

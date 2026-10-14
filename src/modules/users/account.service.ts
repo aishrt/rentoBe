@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { env } from '../../env.js';
 import { enqueue } from '../../jobs/queue.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
+import { disconnectUser } from '../../realtime/realtime.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { consumeAuthLink, createAuthLink } from '../auth/auth-links.js';
 import {
@@ -13,9 +14,10 @@ import {
 } from '../auth/auth.service.js';
 import { passwordContainsEmailName } from '../auth/password-policy.js';
 import { SessionModel } from '../auth/session.model.js';
+import type { UpdateMeInput } from './account.schemas.js';
 import { acceptAgreements } from './agreements.js';
 import { UserModel, type AgreementType } from './user.model.js';
-import { toPublicUser, type PublicUser } from './user.service.js';
+import { nameLocked, toPublicUser, type PublicUser } from './user.service.js';
 
 /*
  * Changes to a signed-in user's own password and email address (plan §6.1). Both need the current
@@ -59,6 +61,8 @@ export async function changePassword(
     { $set: { passwordHash: await hashPassword(input.newPassword) } },
   );
   await SessionModel.deleteMany({ userId: user._id, _id: mongoose.trusted({ $ne: auth.sessionId }) });
+  // Their open tabs stop receiving messages and notifications at once, too.
+  disconnectUser(user._id, { except: auth.sessionId });
   await sendPasswordChangedEmail(user);
   await recordAudit({ actorId: user._id, action: 'password.changed', entity: 'user', entityId: user.id, ip });
 }
@@ -133,7 +137,11 @@ export async function confirmEmailChange(token: string, ip?: string): Promise<{ 
   const taken = () => new HttpError(409, 'EMAIL_TAKEN', 'That email address now belongs to another account.');
   if (await UserModel.exists({ email: newEmail, _id: mongoose.trusted({ $ne: user._id }) })) throw taken();
   try {
-    await UserModel.updateOne({ _id: user._id }, { $set: { email: newEmail, emailVerifiedAt: new Date() } });
+    // A bounce recorded for the old address no longer applies.
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { email: newEmail, emailVerifiedAt: new Date() }, $unset: { emailProblem: 1 } },
+    );
   } catch (error) {
     if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) throw taken();
     throw error;
@@ -154,4 +162,52 @@ export async function confirmEmailChange(token: string, ip?: string): Promise<{ 
     ip,
   });
   return { email: newEmail };
+}
+
+const nameLockedError = () =>
+  new HttpError(
+    409,
+    'NAME_LOCKED',
+    'Your name has to match your verified ID now. Ask us to correct it, and we’ll check it against your ID.',
+  );
+
+/**
+ * PATCH /me: corrects the person's name (plan §11). Once the identity check has passed or is being checked,
+ * the name must match the ID, so it's refused here and corrected through a privacy request instead. Each
+ * change goes in the audit log with the name before and after.
+ */
+export async function updateName(userId: string, input: UpdateMeInput, ip?: string): Promise<PublicUser> {
+  const user = await UserModel.findById(userId);
+  if (!user || user.status !== 'ACTIVE') throw unauthenticated();
+  const before = { firstName: user.firstName, lastName: user.lastName };
+  const after = {
+    firstName: input.firstName ?? before.firstName,
+    lastName: input.lastName ?? before.lastName,
+  };
+  if (after.firstName === before.firstName && after.lastName === before.lastName) return toPublicUser(user);
+  if (nameLocked(user)) throw nameLockedError();
+
+  const updated = await UserModel.findOneAndUpdate(
+    {
+      _id: user._id,
+      status: 'ACTIVE',
+      // Checked again as it's written, in case the identity check moved on meanwhile.
+      'identityVerification.status': mongoose.trusted({ $nin: ['APPROVED', 'PENDING'] }),
+      'identityVerification.sessionStatus': mongoose.trusted({ $ne: 'processing' }),
+    },
+    { $set: after },
+    { new: true },
+  );
+  if (!updated) throw nameLockedError();
+
+  await recordAudit({
+    actorId: user._id,
+    action: 'name.changed',
+    entity: 'user',
+    entityId: user.id,
+    before,
+    after,
+    ip,
+  });
+  return toPublicUser(updated);
 }

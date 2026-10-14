@@ -51,6 +51,17 @@ import {
 } from './templates/host-emails.js';
 import { StaffInviteEmail, type StaffInviteProps } from './templates/staff-emails.js';
 import { SupportTicketReceivedEmail, type SupportTicketReceivedProps } from './templates/support-emails.js';
+import {
+  NewMessageEmail,
+  StaffAlertEmail,
+  TripNoticeEmail,
+  TripReminderEmail,
+  tripReminderSubjects,
+  type NewMessageProps,
+  type StaffAlertProps,
+  type TripNoticeProps,
+  type TripReminderProps,
+} from './templates/trip-emails.js';
 import { VerifyEmail, type VerifyEmailProps } from './templates/verify-email.js';
 import { WelcomeEmail, type WelcomeEmailProps } from './templates/welcome-email.js';
 
@@ -113,7 +124,8 @@ export const emailTemplates = {
     component: ListingSubmittedEmail,
   }),
   listingDecision: defineTemplate<ListingDecisionProps>({
-    subject: ({ decision, vehicleTitle }) => listingDecisionSubjects[decision](vehicleTitle),
+    subject: ({ decision, vehicleTitle, waitingForPayouts }) =>
+      listingDecisionSubjects[decision](vehicleTitle, waitingForPayouts),
     component: ListingDecisionEmail,
   }),
   bookingRequestHost: defineTemplate<BookingRequestHostProps>({
@@ -167,6 +179,23 @@ export const emailTemplates = {
     subject: ({ ref }) => `Refund for booking ${ref}`,
     component: RefundIssuedEmail,
   }),
+  newMessage: defineTemplate<NewMessageProps>({
+    subject: ({ senderFirstName, count }) =>
+      count > 1 ? `${count} new messages from ${senderFirstName}` : `New message from ${senderFirstName}`,
+    component: NewMessageEmail,
+  }),
+  tripReminder: defineTemplate<TripReminderProps>({
+    subject: tripReminderSubjects,
+    component: TripReminderEmail,
+  }),
+  tripNotice: defineTemplate<TripNoticeProps>({
+    subject: ({ heading }) => heading,
+    component: TripNoticeEmail,
+  }),
+  staffAlert: defineTemplate<StaffAlertProps>({
+    subject: ({ title }) => `Staff alert: ${title}`,
+    component: StaffAlertEmail,
+  }),
 };
 
 export type EmailTemplateName = keyof typeof emailTemplates;
@@ -194,6 +223,10 @@ export interface SendEmailInput<Name extends EmailTemplateName> {
   template: Name;
   props: EmailTemplateProps<Name>;
   replyTo?: string;
+  /** A one-click unsubscribe link for non-transactional mail, sent as List-Unsubscribe (RFC 8058). */
+  listUnsubscribe?: string;
+  /** Sends the email once however often it's retried, e.g. `notification:<id>` (see EmailMessage). */
+  idempotencyKey?: string;
 }
 
 /**
@@ -201,9 +234,20 @@ export interface SendEmailInput<Name extends EmailTemplateName> {
  * instead, `enqueue('email.send', …)`, which calls this with retries (plan §4.3).
  */
 export async function sendEmail<Name extends EmailTemplateName>(
-  { to, template, props, replyTo }: SendEmailInput<Name>,
+  { to, template, props, replyTo, listUnsubscribe, idempotencyKey }: SendEmailInput<Name>,
   mailer: Mailer = getMailer(),
 ): Promise<SentEmail> {
   const email = await renderEmail(template, props);
-  return mailer.send({ to, ...email, ...(replyTo && { replyTo }) });
+  return mailer.send({
+    to,
+    ...email,
+    ...(replyTo && { replyTo }),
+    ...(idempotencyKey && { idempotencyKey }),
+    ...(listUnsubscribe && {
+      headers: {
+        'List-Unsubscribe': `<${listUnsubscribe}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      },
+    }),
+  });
 }

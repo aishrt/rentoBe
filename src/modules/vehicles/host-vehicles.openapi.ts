@@ -6,8 +6,15 @@ import {
   hostProfilePatchSchema,
   hostProfileResponseSchema,
 } from '../hosts/hosts.schemas.js';
+import {
+  maintenanceInputSchema,
+  maintenanceResponseSchema,
+  todoResponseSchema,
+} from '../hosts/host-reminders.schemas.js';
 import { uploadRequestSchema, uploadTargetSchema } from '../uploads/uploads.schemas.js';
 import {
+  allCarsCalendarQuerySchema,
+  allCarsCalendarSchema,
   blockInputSchema,
   calendarBlockSchema,
   calendarResponseSchema,
@@ -213,6 +220,21 @@ export function registerHostPaths(registry: OpenAPIRegistry) {
   });
 
   registry.registerPath({
+    method: 'get',
+    path: '/host/calendar',
+    tags: ['Hosting'],
+    summary: 'The calendar across all my cars',
+    description:
+      'The Host’s own cars with a calendar (not drafts, rejected or suspended listings), in the order they were added, each with its blocks between two NZ days: up to 62 days at a time. Blocks are as on each car’s own calendar. 400 VALIDATION_ERROR for a longer or backwards range.',
+    security: signedIn,
+    request: { query: allCarsCalendarQuerySchema },
+    responses: {
+      200: jsonResponse('Each car’s calendar', allCarsCalendarSchema),
+      ...errorResponses(400, 401),
+    },
+  });
+
+  registry.registerPath({
     method: 'post',
     path: '/host/vehicles/{id}/blocks',
     tags: ['Hosting'],
@@ -263,6 +285,46 @@ export function registerHostPaths(registry: OpenAPIRegistry) {
     responses: {
       200: jsonResponse('The upload target', uploadTargetSchema),
       ...errorResponses(400, 401, 403, 404, 503),
+    },
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/host/todo',
+    tags: ['Hosting'],
+    summary: 'The Host’s to-do list',
+    description:
+      'Payout setup, requests to answer, check-ins due, handovers to confirm, documents expiring within 30 days, Road User Charges and maintenance due, and listings with changes requested. Urgent ones first.',
+    security: signedIn,
+    responses: { 200: jsonResponse('To do', todoResponseSchema), ...errorResponses(401) },
+  });
+
+  const vehicleParams = z.object({ id: z.string() });
+  registry.registerPath({
+    method: 'get',
+    path: '/host/vehicles/{id}/maintenance-reminders',
+    tags: ['Hosting'],
+    summary: 'A car’s maintenance reminders',
+    security: signedIn,
+    request: { params: vehicleParams },
+    responses: {
+      200: jsonResponse('Reminders', maintenanceResponseSchema),
+      ...errorResponses(401, 403, 404),
+    },
+  });
+
+  registry.registerPath({
+    method: 'put',
+    path: '/host/vehicles/{id}/maintenance-reminders',
+    tags: ['Hosting'],
+    summary: 'Replace a car’s maintenance reminders',
+    description:
+      'Each is due by a date, an odometer reading, or both. The Host is reminded at 9 am when it’s near.',
+    security: signedIn,
+    request: { params: vehicleParams, body: jsonBody(maintenanceInputSchema) },
+    responses: {
+      200: jsonResponse('Saved', maintenanceResponseSchema),
+      ...errorResponses(400, 401, 403, 404),
     },
   });
 }

@@ -115,6 +115,7 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
     lateReturnGraceMinutes: 30,
     damageReportWindowHours: 48,
     threadReadOnlyDays: 30,
+    extraKmReviewAboveKmPerDay: 1000,
   },
   search: {
     maxTripDays: 90,
