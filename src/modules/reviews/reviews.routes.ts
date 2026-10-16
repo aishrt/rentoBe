@@ -10,7 +10,7 @@ export function reviewWritingRouter() {
 
   router.post('/', requireAuth, async (req, res) => {
     const input = validate(reviewInputSchema, req.body);
-    res.status(201).json({ review: await submitReview(req.auth!.userId, input) });
+    res.status(201).json(await submitReview(req.auth!.userId, input));
   });
 
   return router;

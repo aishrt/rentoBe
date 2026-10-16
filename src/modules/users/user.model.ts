@@ -133,6 +133,12 @@ export interface DriverLicence {
   englishProof?: (typeof ENGLISH_PROOFS)[number];
   issuedAt?: Date;
   expiry: Date;
+  /**
+   * When the details (or the date of birth saved with them) last changed, or were first entered. A trip booked
+   * before then is held to the age, years-licensed and English-proof rules in force at check-in; one booked
+   * after keeps the rules it was booked under. Licences saved before it was kept have none.
+   */
+  detailsChangedAt?: Date;
   status: Exclude<VerificationStatus, 'NONE'>;
   reviewedBy?: Types.ObjectId;
 }
@@ -409,6 +415,7 @@ const userSchema = new Schema<User>(
           englishProof: { type: String, enum: ENGLISH_PROOFS },
           issuedAt: Date,
           expiry: { type: Date, required: true },
+          detailsChangedAt: Date,
           status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'PENDING' },
           reviewedBy: { type: Schema.Types.ObjectId, ref: 'User' },
         },

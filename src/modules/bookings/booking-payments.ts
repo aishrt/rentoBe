@@ -267,8 +267,16 @@ export async function applyPaymentIntent(
             booking.toObject() as BookingRecord,
             await loadBookingContext(booking.toObject() as BookingRecord),
             reason,
-            { session },
+            { session, now },
           );
+          // Its 30 minutes ran out while the bank processed it: the booking ends now, not at the next check.
+          if (booking.holdExpiresAt && booking.holdExpiresAt <= now) {
+            await enqueue(
+              'booking.expirePaymentHold',
+              { bookingId: booking.id },
+              { runAt: now, uniqueKey: `expire-hold:${booking.id}:failed`, refId: booking.id, session },
+            );
+          }
         }
       }
       return;
@@ -553,9 +561,31 @@ export async function refundIntent(
       ...(refund.failure_reason && { failureReason: refund.failure_reason }),
     };
   } catch (error) {
+    // Stripe's own words are kept here, for staff: the answer may reach a Guest or Host (refundRefused).
     reportError(error, { tags: { area: 'refund' }, extra: { paymentId: payment.id } });
+    // Stripe refusing it, e.g. a charge in a card dispute (plan §8.1, item 12): said plainly, not a 500.
+    if (error instanceof Stripe.errors.StripeInvalidRequestError) throw refundRefused(error);
     throw error;
   }
+}
+
+/**
+ * A refund Stripe refused, as a 409 to show: PAYMENT_DISPUTED for a charge in a card dispute. A Guest or Host
+ * cancelling can get it too, so Stripe's own message stays in the error report rather than the answer.
+ */
+function refundRefused(error: Stripe.errors.StripeInvalidRequestError): HttpError {
+  if (error.code === 'charge_disputed') {
+    return new HttpError(
+      409,
+      'PAYMENT_DISPUTED',
+      'This payment is in a card dispute, so Stripe won’t refund it: the dispute decides what goes back to the card.',
+    );
+  }
+  return new HttpError(
+    409,
+    'REFUND_REFUSED',
+    'We couldn’t refund this payment just now. Please contact support and we’ll sort it out.',
+  );
 }
 
 /**

@@ -26,12 +26,13 @@ export const extraKmJobKey = (bookingId: string) => `trip.extraCharges:${booking
 
 /**
  * When the extra kilometres are charged (plan §8.2: the other party reviews and confirms the check-out). A
- * check-out a party did waits for the other party's confirmation (extraKmConfirmed brings it forward) or the
- * end of the damage-report window, so a mistyped reading can be put right first. Readings staff entered are
- * charged straight away.
+ * check-out waits for the other party's confirmation (extraKmConfirmed brings it forward) or the end of the
+ * damage-report window, so a mistyped reading can be put right first. The Host's readings that staff entered
+ * to complete a trip wait the same way, for the Guest's confirmation; staff with the refunds permission can
+ * charge them at once (POST /admin/bookings/{id}/extra-km).
  */
 async function extraKmChargeAt(checkOut: Report | undefined, now: Date): Promise<Date> {
-  if (!checkOut || checkOut.completedBy) return now;
+  if (!checkOut) return now;
   const settings = await getPlatformSettings();
   return new Date(checkOut.createdAt.getTime() + settings.trips.damageReportWindowHours * HOUR_MS);
 }

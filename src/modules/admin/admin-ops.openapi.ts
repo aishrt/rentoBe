@@ -63,6 +63,7 @@ import {
   suspendSchema,
   ticketListQuerySchema,
   ticketUpdateSchema,
+  userExportQuerySchema,
   userListQuerySchema,
   vehicleChoicesResponseSchema,
   waiveFeeSchema,
@@ -162,7 +163,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     path: '/admin/users/{id}/unsuspend',
     summary: 'Staff: lift a suspension',
     description:
-      'Their listings return to search and held payouts are sent. 409 ACCOUNT_CLOSED for an account closed on request, which stays suspended.',
+      'Their listings return to search, and payouts held because of the suspension are sent. 409 ACCOUNT_CLOSED for an account closed on request, which stays suspended.',
     params: id,
     response: adminUserResponseSchema,
     errors: [401, 403, 404, 409],
@@ -231,15 +232,15 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: download a copy of a person’s information (a privacy request)',
     description:
-      'A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Any staff member, audit-logged; 403 OWN_RECORD for their own account.',
+      'A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Downloaded from the privacy request it answers: `ticket` is a PRIVACY ticket they raised, in any status (400 without one; 403 NO_PRIVACY_REQUEST when it isn’t). Any staff member, the admin included, audit-logged with the ticket; 403 OWN_RECORD for their own account.',
     security: signedIn,
-    request: { params: id },
+    request: { params: id, query: userExportQuerySchema },
     responses: {
       200: {
         description: 'The JSON file',
         content: { 'application/json': { schema: z.record(z.string(), z.unknown()) } },
       },
-      ...errorResponses(401, 403, 404),
+      ...errorResponses(400, 401, 403, 404),
     },
   });
 
@@ -277,7 +278,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     path: '/admin/bookings/{id}/refunds',
     summary: 'Staff with the refunds permission: refund the Guest',
     description:
-      'A Host-funded refund comes off the trip’s payout, or once that’s sent, off the Host’s next payout or back from the Stripe transfer as staff choose (recoverFrom). The answer’s hostRefund says which (plan §8.1, item 15).',
+      'A Host-funded refund comes off the trip’s payout, or once that’s sent, off the Host’s next payout or back from the Stripe transfer as staff choose (recoverFrom). The answer’s hostRefund says which (plan §8.1, item 15). A refund Stripe refuses is 409: PAYMENT_DISPUTED for a payment in a card dispute, REFUND_REFUSED otherwise.',
     params: id,
     body: adminRefundSchema,
     response: adminBookingDetailSchema,

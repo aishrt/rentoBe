@@ -229,7 +229,7 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Bookings'],
     summary: 'Cancel a booking, or withdraw a request',
     description:
-      'The Guest: an unpaid checkout is released, a request withdrawn (nothing charged), a confirmed booking refunded under its tier; after the pick-up time it counts as not turning up, so the tier applies as at the start time. The Host: a confirmed booking is refunded in full and any Host cancellation fee applies, until the start time (then 409 TRIP_STARTED: support handles it); a request is declined instead (409 USE_DECLINE). With expectedRefundCents, a refund now lower than the preview showed cancels nothing (409 REFUND_CHANGED).',
+      'The Guest: an unpaid checkout is released, a request withdrawn (nothing charged), a confirmed booking refunded under its tier; after the pick-up time it counts as not turning up, so the tier applies as at the start time. The Host: a confirmed booking is refunded in full and any Host cancellation fee applies, until the start time (then 409 TRIP_STARTED: support handles it); a request is declined instead (409 USE_DECLINE). With expectedRefundCents, a refund now lower than the preview showed cancels nothing (409 REFUND_CHANGED). A booking whose payment is in a card dispute (a chargeback) can be cancelled only by support (409 PAYMENT_DISPUTED; the preview says so).',
     security: signedIn,
     request: { params: idParam, body: jsonBody(cancelBookingSchema) },
     responses: {
@@ -244,7 +244,7 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Bookings'],
     summary: 'Host: accept a request',
     description:
-      'Captures the authorised payment and confirms the booking. 409 when it has expired or was answered.',
+      'Captures the authorised payment and confirms the booking. While the Guest’s identity check or licence waits for support (checked again here), the acceptance is recorded and the booking is confirmed once support approves it. 409 when it has expired or was answered; 409 GUEST_SUSPENDED while the Guest’s account is on hold (nothing is charged, and staff are alerted).',
     security: signedIn,
     request: { params: idParam },
     responses: {
@@ -273,7 +273,7 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: cancel for a no-show, or as a platform cancellation',
     description:
-      'Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. An ACTIVE trip only as a Guest no-show, when the Host did the check-in alone and the Guest hasn’t confirmed it (409 NOT_CANCELLABLE otherwise). Earlier refunds come off the refund. Both parties are told, except the Host of an Instant Book that never reached them.',
+      'Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. An ACTIVE trip only as a Guest no-show, when the Host did the check-in alone and the Guest hasn’t confirmed it (409 NOT_CANCELLABLE otherwise). Earlier refunds come off the refund. A booking whose payment is in a card dispute (a chargeback) is cancelled with nothing refunded or kept, as the dispute decides the money, and no payout or kept-fee share for the Host; staff are alerted to refund it if the dispute is won. Both parties are told, except the Host of an Instant Book that never reached them.',
     security: signedIn,
     request: { params: idParam, body: jsonBody(adminCancelSchema) },
     responses: {

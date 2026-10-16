@@ -164,9 +164,39 @@ describe('PATCH /api/v1/admin/settings', () => {
     });
     expect(renamed.body.error.fields['cancellation.tiers']).toMatch(/code change/);
 
+    // The format is right, but the IRD check digit isn't.
+    const badGst = await send({ business: { ...DEFAULT_SETTINGS.business, gstNumber: '123-456-789' } });
+    expect(badGst.status).toBe(400);
+    expect(badGst.body.error.fields['business.gstNumber']).toMatch(/valid GST number/);
+
     const settings = await agent.get('/api/v1/admin/settings');
     expect(settings.body.settings).toEqual(DEFAULT_SETTINGS);
     expect(await AuditLogModel.countDocuments({ action: 'settings.update' })).toBe(0);
+  });
+
+  it('saves a GST number with a valid IRD check digit, and keeps one saved before the check', async () => {
+    await createStaff();
+    const agent = await staffAgent();
+
+    const saved = await agent
+      .patch('/api/v1/admin/settings')
+      .send({ business: { ...DEFAULT_SETTINGS.business, gstNumber: '136-410-132' } });
+    expect(saved.status).toBe(200);
+    expect(saved.body.settings.business.gstNumber).toBe('136-410-132');
+
+    // Saved before the check: still in force, and other changes to the group still save.
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      { $set: { 'settings.business.gstNumber': '123-456-789' } },
+    );
+    const renamed = await agent.patch('/api/v1/admin/settings').send({
+      business: { ...DEFAULT_SETTINGS.business, legalName: 'Rento Vroom Limited', gstNumber: '123-456-789' },
+    });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.settings.business).toMatchObject({
+      legalName: 'Rento Vroom Limited',
+      gstNumber: '123-456-789',
+    });
   });
 });
 
@@ -226,5 +256,34 @@ describe('retention and risk floors', () => {
     // The other groups keep what was saved.
     expect(settings.fees.guestServiceFeePct).toBe(12);
     expect((await (await staffAgent()).get('/api/v1/admin/settings')).status).toBe(200);
+  });
+
+  it('adds the listings and estimator decisions to settings saved before them, and saves those groups', async () => {
+    await createStaff();
+    const { listingsAndSearch: _listings, hostEstimator: _estimator, ...older } = DEFAULT_SETTINGS.decisions;
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      { $set: { settings: { ...DEFAULT_SETTINGS, decisions: older } } },
+      { upsert: true },
+    );
+    const agent = await staffAgent();
+    expect((await agent.get('/api/v1/admin/settings')).body.settings.decisions).toMatchObject({
+      listingsAndSearch: { status: 'PENDING', note: '' },
+      hostEstimator: { status: 'PENDING', note: '' },
+    });
+
+    const saved = await agent.patch('/api/v1/admin/settings').send({
+      vehicles: { ...DEFAULT_SETTINGS.vehicles, maxDiscountPct: 40, seats: { min: 2, max: 9 } },
+      search: { ...DEFAULT_SETTINGS.search, maxTripDays: 60 },
+      hostEstimator: { ...DEFAULT_SETTINGS.hostEstimator, bookedDaysPerMonth: 12 },
+      decisions: { hostEstimator: { status: 'CONFIRMED', note: 'Client’s figures, 14 October' } },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.settings).toMatchObject({
+      vehicles: { maxDiscountPct: 40, seats: { min: 2, max: 9 }, vinOrChassisRequired: true },
+      search: { maxTripDays: 60, radiusKm: DEFAULT_SETTINGS.search.radiusKm },
+      hostEstimator: { bookedDaysPerMonth: 12 },
+      decisions: { hostEstimator: { status: 'CONFIRMED' }, listingsAndSearch: { status: 'PENDING' } },
+    });
   });
 });

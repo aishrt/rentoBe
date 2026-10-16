@@ -225,19 +225,61 @@ export const licenceProblemsForTrip = (
     LICENCE_CODES.includes(problem.code),
   );
 
-/** What stops a trip starting, and why, as the Guest and Host read it. */
+/**
+ * Rules whose bar is in the settings and that the licence met when booked: raising the minimum age or years
+ * licensed, or asking for English proof, doesn't stop a trip already booked, as bookings keep the terms they
+ * were made with (platform-settings.service.ts).
+ */
+const SETTINGS_RULE_CODES: readonly EligibilityProblem['code'][] = [
+  'TOO_YOUNG',
+  'NOT_LICENSED_LONG_ENOUGH',
+  'ENGLISH_PROOF_REQUIRED',
+];
+
+/**
+ * What in the Guest's licence stops a confirmed trip starting (licenceProblemsForTrip): the rules the settings
+ * set count only when the Guest changed their licence details after booking, so details they changed then are
+ * held to the rules in force. A turned-down licence, one that runs out before the trip ends or a class the
+ * rules don't accept always count.
+ */
+export function licenceProblemsAtCheckIn(
+  user: EligibilityUser,
+  settings: PlatformSettings,
+  trip: Pick<Booking, 'startAt' | 'endAt' | 'createdAt'>,
+  now = new Date(),
+) {
+  const changedAt = user.driverLicence?.detailsChangedAt;
+  const changedSinceBooking = Boolean(changedAt && trip.createdAt && changedAt > trip.createdAt);
+  return licenceProblemsForTrip(user, settings, trip, now).filter(
+    (problem) => changedSinceBooking || !SETTINGS_RULE_CODES.includes(problem.code),
+  );
+}
+
+/**
+ * What stops a trip starting, and why, as the Guest and Host read it: each licence rule a booked trip is held
+ * to (LICENCE_CODES), so check-in refuses what support are told it refuses. No licence at all can't happen on
+ * a booked trip (booking needs one, and it stays while bookings do), so it isn't asked for here.
+ */
 const CHECK_IN_REASONS: Partial<Record<EligibilityProblem['code'], string>> = {
   LICENCE_REJECTED: 'our team couldn’t accept it',
   LICENCE_EXPIRES: 'it expires before the trip ends',
   CLASS_NOT_ACCEPTED: 'its licence class isn’t accepted for trips',
+  TOO_YOUNG: 'the driver is under our minimum age on the day the trip starts',
+  NOT_LICENSED_LONG_ENOUGH: 'it won’t have been held long enough by the day the trip starts',
+  ENGLISH_PROOF_REQUIRED:
+    'it isn’t in English, and no International Driving Permit or approved translation is on the account',
 };
 
 /**
  * Check-in (plan §3: the Guest holds a licence valid until the trip ends): 409 LICENCE_NOT_ELIGIBLE when the
- * Guest's licence was turned down, runs out before the trip ends, or is of a class the rules don't accept.
+ * Guest's licence breaks a licence rule for the trip (turned down, runs out before the trip ends, a class the
+ * rules don't accept; too young, not held long enough, or no English proof when the details changed after
+ * booking: licenceProblemsAtCheckIn), or while the licence waits for support's check (plan §8.2: confirmed
+ * once support approves it). Any licence still PENDING counts, in support's queue or not: one that isn't (its
+ * identity check turned down since, say) hasn't been checked by anyone.
  */
 export async function assertLicenceForTrip(
-  booking: Pick<Booking, 'guestId' | 'startAt' | 'endAt'>,
+  booking: Pick<Booking, 'guestId' | 'startAt' | 'endAt' | 'createdAt'>,
   viewer: 'GUEST' | 'HOST',
   now = new Date(),
 ) {
@@ -248,10 +290,20 @@ export async function assertLicenceForTrip(
     getPlatformSettings(),
   ]);
   if (!guest) return;
-  const problem = licenceProblemsForTrip(guest, settings, booking, now).find(
+  const problem = licenceProblemsAtCheckIn(guest, settings, booking, now).find(
     (candidate) => CHECK_IN_REASONS[candidate.code],
   );
-  if (!problem) return;
+  if (!problem) {
+    // Details changed since booking (or a turned-down licence sent back to support) wait for their decision.
+    if (guest.driverLicence?.status !== 'PENDING') return;
+    throw new HttpError(
+      409,
+      'LICENCE_NOT_ELIGIBLE',
+      viewer === 'GUEST'
+        ? 'Your licence details are still being checked by our team, so the trip can’t start yet. We’ll email you as soon as they’re approved, usually within a few hours. If your trip is about to start, contact support.'
+        : 'The guest’s driver licence details are still being checked by our team, so the trip can’t start yet. Contact support and we’ll help.',
+    );
+  }
   const reason = CHECK_IN_REASONS[problem.code]!;
   throw new HttpError(
     409,
@@ -371,6 +423,9 @@ export async function saveDriverLicence(
     previous.issuedAt?.getTime() === issuedAt.getTime() &&
     previous.expiry.getTime() === expiry.getTime(),
   );
+  // When the details last changed (or were first entered): a trip booked before then is held to the rules in
+  // force now at check-in (licenceProblemsAtCheckIn).
+  const detailsChangedAt = unchanged && previous ? previous.detailsChangedAt : new Date();
   // The date of birth is compared with the one the ID showed, when the check read one.
   if (identity?.documentDobHash) {
     identity.documentDobMatched = identity.documentDobHash === documentDobHash(nzDate(dob));
@@ -382,8 +437,11 @@ export async function saveDriverLicence(
   // A licence entered after a passed ID check that read a driving licence: the same number and date of birth
   // confirm it, as they would have if it had been entered first (plan §9, Days 19–20); a difference goes to
   // support.
+  // A licence number kept from an earlier check support turned down (allowVerificationRetry) has no document
+  // type with it, so it confirms nothing.
   const matchedById =
     identity?.status === 'APPROVED' &&
+    identity.documentType === 'driving_license' &&
     identity.documentNumberHash === numberHash &&
     identity.documentDobMatched === true;
   user.driverLicence = {
@@ -397,6 +455,7 @@ export async function saveDriverLicence(
     ...(next.englishProof && { englishProof: next.englishProof }),
     issuedAt,
     expiry,
+    ...(detailsChangedAt && { detailsChangedAt }),
     // Unchanged details keep their review. Changed ones are checked again by support, unless the ID
     // confirmed them; a licence support turned down goes back to them once it's corrected.
     status:

@@ -591,6 +591,16 @@ describe('an extra charge Stripe took as staff cancelled it (plan §8.1, item 11
     expect(
       await NotificationModel.exists({ userId: guest._id, type: 'REFUND_ISSUED', channel: 'IN_APP' }),
     ).not.toBeNull();
+    // By email too: the Guest's last email about it said there was nothing to pay.
+    const email = await NotificationModel.findOne({
+      userId: guest._id,
+      type: 'REFUND_ISSUED',
+      channel: 'EMAIL',
+    }).lean();
+    expect(email!.payload).toMatchObject({
+      template: 'tripNotice',
+      props: { heading: '$60.00 refunded: the charge was cancelled' },
+    });
     // Run again (a retry): nothing more.
     await refundUnwantedJob(job, context);
     expect(client.refunds.create).toHaveBeenCalledTimes(1);

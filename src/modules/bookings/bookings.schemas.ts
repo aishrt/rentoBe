@@ -404,6 +404,10 @@ export const bookingViewSchema = z
       .datetime()
       .optional()
       .meta({ description: 'PAYMENT_PENDING: when the dates are released' }),
+    paymentProcessing: z.boolean().optional().meta({
+      description:
+        'PAYMENT_PENDING past holdExpiresAt: the payment is still processing at the bank, so the dates stay held until it succeeds or fails',
+    }),
     requestExpiresAt: z.iso.datetime().optional().meta({ description: 'PENDING: when the request expires' }),
     verificationReview: verificationReviewSchema,
     hostAccepted: hostAcceptedSchema,
@@ -424,6 +428,10 @@ export const bookingViewSchema = z
         earlierRefundCents: z.number().int().optional().meta({
           description:
             'Refunds made before the cancellation, which came off what it could give back (all of the payment, when the refund is 0 and nothing was kept)',
+        }),
+        disputed: z.boolean().optional().meta({
+          description:
+            'Cancelled by support while the payment was in a card dispute (a chargeback): the dispute decides what goes back to the card, so the cancellation refunded and kept nothing',
         }),
         hostShareCents: z.number().int().optional(),
         hostFeeCents: z.number().int().optional(),

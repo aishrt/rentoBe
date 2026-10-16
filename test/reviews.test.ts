@@ -100,6 +100,7 @@ describe('two-way reviews', () => {
       moderation: 'CLEAR',
       direction: 'GUEST_TO_HOST',
     });
+    expect(first.body.otherPublished).toBe(false);
     expect((await guestAgent.post('/api/v1/reviews').send(guestReview(booking.ref))).body.error.code).toBe(
       'ALREADY_REVIEWED',
     );
@@ -117,6 +118,7 @@ describe('two-way reviews', () => {
       body: 'Lovely guest.',
     });
     expect(second.body.review.status).toBe('PUBLISHED');
+    expect(second.body.otherPublished).toBe(true);
 
     expect(await ReviewModel.countDocuments({ bookingId: booking._id, status: 'PUBLISHED' })).toBe(2);
     expect((await UserModel.findById(host._id).lean())!.hostProfile!.rating).toEqual({ avg: 4, count: 2 });
@@ -290,10 +292,11 @@ describe('two-way reviews', () => {
       .post('/api/v1/reviews')
       .send(guestReview(booking.ref, 'Call me on 021 555 1234!'));
     expect(held.body.review.moderation).toBe('HELD');
-    await hostAgent
+    const hosts = await hostAgent
       .post('/api/v1/reviews')
       .send({ bookingRef: booking.ref, overall: 5, communication: 5, pickupReturn: 5, care: 5 });
-    // The host's is published; the held one waits for a moderator.
+    // The host's is published; the held one waits for a moderator, so the host isn't told both are out.
+    expect(hosts.body).toMatchObject({ review: { status: 'PUBLISHED' }, otherPublished: false });
     expect((await ReviewModel.findOne({ authorId: host._id }))!.status).toBe('PUBLISHED');
     expect((await ReviewModel.findOne({ authorId: guest._id }))!.status).toBe('AWAITING_REVEAL');
 
@@ -317,6 +320,30 @@ describe('two-way reviews', () => {
       .post(`/api/v1/admin/reviews/${held.body.review.id}/moderate`)
       .send({ action: 'CLEAR', reason: 'The number was the Host’s business line' });
     expect(restored.body.review.status).toBe('PUBLISHED');
+  });
+
+  it('publish each review as it’s written when staff turned off revealing them together, and say so', async () => {
+    await PlatformSettingsModel.updateOne(
+      { _id: PLATFORM_SETTINGS_ID },
+      { $set: { 'settings.reviews.revealTogether': false } },
+      { upsert: true },
+    );
+    const { booking, guestAgent, hostAgent } = await completedTrip();
+    // The pages word it from the public policies.
+    expect((await browserAgent().get('/api/v1/policies')).body.reviews).toMatchObject({
+      revealTogether: false,
+    });
+    await reviewRequestJob({ bookingId: booking.id }, context);
+    const request = await NotificationModel.findOne({ type: 'REVIEW_REQUEST', channel: 'EMAIL' }).lean();
+    expect(JSON.stringify(request!.payload)).toContain('shown as soon as you’ve written it');
+    expect(JSON.stringify(request!.payload)).not.toContain('once you’ve both written one');
+
+    const first = await guestAgent.post('/api/v1/reviews').send(guestReview(booking.ref));
+    expect(first.body).toMatchObject({ review: { status: 'PUBLISHED' }, otherPublished: false });
+    const second = await hostAgent
+      .post('/api/v1/reviews')
+      .send({ bookingRef: booking.ref, overall: 4, communication: 5, pickupReturn: 4, care: 4 });
+    expect(second.body).toMatchObject({ review: { status: 'PUBLISHED' }, otherPublished: true });
   });
 
   it('can be reported by anyone but their author, and staff hide a published one with a reason', async () => {

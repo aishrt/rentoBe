@@ -305,6 +305,10 @@ export interface BookingCancelledProps extends TripBasics {
   withdrawn?: boolean;
   /** Guest: support cancelled a request, or a booking waiting for verification: the card's hold is released. */
   released?: boolean;
+  /** Support cancelled it while its payment is in a card dispute: nothing was refunded or kept, the dispute decides. */
+  disputed?: boolean;
+  /** With `disputed`: the dispute is settled (lost or prevented), so the payment already went back to the card. */
+  disputeSettled?: boolean;
 }
 
 /** Why a booking was cancelled, after "… cancelled booking RV-… for the car" (plan §8.2). */
@@ -394,6 +398,21 @@ export function BookingCancelledEmail(props: BookingCancelledProps) {
           within a few days.
         </EmailText>
       )}
+      {props.audience === 'GUEST' && props.disputed && (
+        <EmailText>
+          {props.disputeSettled
+            ? "Your card payment for this booking was returned to your card through a dispute with your bank, so there's no refund from us as well."
+            : "Your card payment for this booking is in a dispute with your bank, so we haven't refunded it here: the dispute decides what you get back, and your bank will tell you the outcome."}
+        </EmailText>
+      )}
+      {props.audience === 'HOST' && props.disputed && (
+        <EmailText>
+          {props.disputeSettled
+            ? "The guest's card payment for this booking was returned to their card through a dispute with their bank, so there's no payout for it."
+            : "The guest's card payment for this booking is in a dispute with their bank, so there's no payout for it."}{' '}
+          If you have questions, reply to this email.
+        </EmailText>
+      )}
       {props.audience === 'HOST' && props.tripPayoutSent && (
         <EmailText>
           Your payout for this trip, {props.tripPayoutSent}, was already sent. You keep your share of the fee
@@ -458,6 +477,11 @@ export interface PaymentFailedProps {
   retryUrl: string;
   /** When the dates stop being held. */
   holdUntil: string;
+  /**
+   * The payment failed after its 30 minutes, while the bank was still processing it: the dates are no longer
+   * held for the Guest.
+   */
+  released?: boolean;
 }
 
 export function PaymentFailedEmail({
@@ -466,18 +490,25 @@ export function PaymentFailedEmail({
   reason,
   retryUrl,
   holdUntil,
+  released = false,
 }: PaymentFailedProps) {
   return (
     <EmailLayout
-      preview={`Your payment for the ${vehicleTitle} didn't go through. Try again before ${holdUntil}.`}
+      preview={
+        released
+          ? `Your payment for the ${vehicleTitle} didn't go through, so the booking wasn't made.`
+          : `Your payment for the ${vehicleTitle} didn't go through. Try again before ${holdUntil}.`
+      }
     >
       <EmailHeading>Your payment didn't go through</EmailHeading>
       <EmailText>
         Kia ora {firstName}, we couldn't take the payment for the {vehicleTitle}
-        {reason ? `: ${reason}` : '.'} We're holding your dates until {holdUntil}, so you can try again or use
-        another card.
+        {reason ? `: ${reason}` : '.'}{' '}
+        {released
+          ? "The time to pay has run out, so the dates are no longer held for you. You haven't been charged. If the car is still free, you can book it again."
+          : `We're holding your dates until ${holdUntil}, so you can try again or use another card.`}
       </EmailText>
-      <EmailButton href={retryUrl}>Try again</EmailButton>
+      <EmailButton href={retryUrl}>{released ? 'See the booking' : 'Try again'}</EmailButton>
     </EmailLayout>
   );
 }

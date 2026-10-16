@@ -6,8 +6,9 @@ import { enqueue } from '../../jobs/queue.js';
 import { formatNzdExact } from '../../lib/format.js';
 import { AuditLogModel } from '../audit/audit-log.model.js';
 import { applyExtraChargeIntent } from '../payments/extra-charges.service.js';
-import { PaymentModel } from '../payments/payment.model.js';
+import { CLOSED_DISPUTE_STATUSES, PaymentModel } from '../payments/payment.model.js';
 import { holdBookingPayouts, hostRefundFailed, releaseHeldPayouts } from '../payouts/payouts.service.js';
+import { raiseRiskFlag } from '../risk/risk-flags.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import type { StripeEventHandler } from '../payments/stripe-webhook.js';
 import { BookingModel } from './booking.model.js';
@@ -195,10 +196,12 @@ async function disputeChanged(event: Stripe.Event, session: ClientSession) {
       },
       { session },
     );
-  } else if (['won', 'lost', 'warning_closed'].includes(dispute.status)) {
+  } else if ((CLOSED_DISPUTE_STATUSES as readonly string[]).includes(dispute.status)) {
     const booking = await BookingModel.findById(payment.bookingId).select('ref').session(session).lean();
     const ref = booking?.ref ?? payment.bookingId.toString();
-    if (dispute.status === 'lost') {
+    // Prevented: a dispute prevention programme refunded the cardholder, so the money went back as for a lost one.
+    const prevented = dispute.status === 'prevented';
+    if (dispute.status === 'lost' || prevented) {
       // The card issuer took the money back: the booking's unpaid payouts stay held until staff decide what the
       // Host gets (the owner's decision). The dispute's hold becomes a staff (MANUAL) hold, which only they release.
       await holdBookingPayouts(payment.bookingId, 'MANUAL', session);
@@ -208,7 +211,11 @@ async function disputeChanged(event: Stripe.Event, session: ClientSession) {
             action: 'payout.held',
             entity: 'booking',
             entityId: payment.bookingId.toString(),
-            after: { holdReason: 'MANUAL', reason: 'Card dispute lost', disputeId: dispute.id },
+            after: {
+              holdReason: 'MANUAL',
+              reason: prevented ? 'Card dispute prevented: refunded to the cardholder' : 'Card dispute lost',
+              disputeId: dispute.id,
+            },
           },
         ],
         { session },
@@ -219,13 +226,15 @@ async function disputeChanged(event: Stripe.Event, session: ClientSession) {
     const outcome =
       dispute.status === 'lost'
         ? `was lost, so the ${formatNzdExact(dispute.amount)} went back to the guest’s card. The booking’s unpaid payouts stay on hold: decide what the Host gets, then release or cancel them`
-        : dispute.status === 'won'
-          ? 'was won. The booking’s payouts held for it are released'
-          : 'closed with a warning only, so nothing was taken back. The booking’s payouts held for it are released';
+        : prevented
+          ? `was settled by a dispute prevention programme, which refunded the ${formatNzdExact(dispute.amount)} to the guest’s card. The booking’s unpaid payouts stay on hold: decide what the Host gets, then release or cancel them`
+          : dispute.status === 'won'
+            ? 'was won. The booking’s payouts held for it are released'
+            : 'closed with a warning only, so nothing was taken back. The booking’s payouts held for it are released';
     await alertStaff(
       {
         type: 'CARD_DISPUTE_CLOSED',
-        title: `Card dispute ${dispute.status === 'lost' ? 'lost' : dispute.status === 'won' ? 'won' : 'closed'} on ${ref}`,
+        title: `Card dispute ${dispute.status === 'lost' ? 'lost' : prevented ? 'refunded' : dispute.status === 'won' ? 'won' : 'closed'} on ${ref}`,
         body: `the card dispute (${dispute.reason}) on booking ${ref} ${outcome}.`,
         link: `/admin/bookings/${ref}`,
         dedupeKey: `CARD_DISPUTE_CLOSED:${dispute.id}`,
@@ -233,6 +242,48 @@ async function disputeChanged(event: Stripe.Event, session: ClientSession) {
       { session },
     );
   }
+}
+
+/**
+ * A Radar early fraud warning (plan §14, Stripe Radar warnings): the card issuer reported a payment as fraud,
+ * which usually comes before a chargeback. The Guest gets a RADAR_WARNING flag (once while one waits for review)
+ * and staff are alerted with the booking, as refunding the payment or cancelling the booking now heads the
+ * chargeback off. A payment that isn't a booking's or an extra charge's (a staff test payment, say) is ignored.
+ */
+async function earlyFraudWarning(event: Stripe.Event, session: ClientSession) {
+  const warning = event.data.object as Stripe.Radar.EarlyFraudWarning;
+  const charge = typeof warning.charge === 'string' ? undefined : warning.charge;
+  const intent = intentId(warning.payment_intent) ?? intentId(charge?.payment_intent);
+  if (!intent) return;
+  const payment = await PaymentModel.findOne({ stripePaymentIntentId: intent }).session(session);
+  if (!payment) return;
+  const booking = await BookingModel.findById(payment.bookingId)
+    .select('ref guestId')
+    .session(session)
+    .lean();
+  if (!booking) return;
+  const fraud = (warning.fraud_type || 'fraud').replace(/_/g, ' ');
+  const what = payment.type === 'EXTRA_CHARGE' ? 'an extra charge' : 'the booking’s payment';
+  await raiseRiskFlag(
+    booking.guestId,
+    'RADAR_WARNING',
+    `Stripe Radar: the card issuer reported ${what} on ${booking.ref} as fraud (${fraud})`,
+    { now: new Date(event.created * 1000), session },
+  );
+  await alertStaff(
+    {
+      type: 'EARLY_FRAUD_WARNING',
+      title: `Fraud reported on a payment for ${booking.ref}`,
+      body: `the card issuer reported ${what} on booking ${booking.ref} (${formatNzdExact(payment.amountCents)}) as fraud: ${fraud}. ${
+        warning.actionable
+          ? 'A chargeback usually follows: refund the payment, or cancel the booking, before one is opened. The guest is flagged for review.'
+          : 'Stripe says it’s already disputed or refunded, so there’s nothing to head off. The guest is flagged for review.'
+      }`,
+      link: `/admin/bookings/${booking.ref}`,
+      dedupeKey: `EARLY_FRAUD_WARNING:${warning.id}`,
+    },
+    { session },
+  );
 }
 
 export const bookingPaymentHandlers: Partial<Record<Stripe.Event['type'], StripeEventHandler>> = {
@@ -244,4 +295,5 @@ export const bookingPaymentHandlers: Partial<Record<Stripe.Event['type'], Stripe
   'refund.failed': refundFailed,
   'charge.dispute.created': disputeChanged,
   'charge.dispute.closed': disputeChanged,
+  'radar.early_fraud_warning.created': earlyFraudWarning,
 };

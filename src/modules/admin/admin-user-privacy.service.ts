@@ -161,12 +161,25 @@ const iso = (date: Date | undefined) => date?.toISOString();
  * GET /admin/users/{id}/export: a copy of the personal information held about someone, for a privacy request
  * to access it (plan §14): their account, bookings, payments and refunds, payouts, the messages they sent,
  * reviews by and about them, their support requests and the cases they reported. Other people's details,
- * internal notes and staff-only fields are left out. Any staff member can, audit-logged.
+ * internal notes and staff-only fields are left out. It answers their privacy request, so it's downloaded
+ * from that ticket: a PRIVACY ticket they raised themselves, in any status, so a request can still be
+ * answered after it's marked resolved. As with opening a thread (plan §6.2), there's no exception for the
+ * admin. Any staff member can, and each download is audit-logged with the ticket.
  */
-export async function exportUserData(staffId: string, userId: string, ip?: string) {
+export async function exportUserData(staffId: string, userId: string, ticketRef: string, ip?: string) {
   const user = await findPerson(userId);
   await assertNotOwnRecord(staffId, [user._id]);
   const id = user._id;
+  const ticket = await SupportTicketModel.findOne({ ref: ticketRef.toUpperCase() })
+    .select('ref userId category')
+    .lean();
+  if (!ticket?.userId?.equals(id) || ticket.category !== 'PRIVACY') {
+    throw new HttpError(
+      403,
+      'NO_PRIVACY_REQUEST',
+      'That ticket isn’t a privacy request from them. Download their data from the privacy request they sent us.',
+    );
+  }
 
   const bookings = await BookingModel.find({ $or: [{ guestId: id }, { hostId: id }] })
     .sort({ createdAt: 1 })
@@ -357,6 +370,7 @@ export async function exportUserData(staffId: string, userId: string, ip?: strin
     action: 'user.exported',
     entity: 'user',
     entityId: user.id,
+    after: { ticket: ticket.ref },
     ...(ip && { ip }),
   });
   return { filename: `rento-vroom-data-${user.id}-${nzDate(new Date())}.json`, data };

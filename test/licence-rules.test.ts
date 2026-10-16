@@ -1,6 +1,7 @@
 import type Stripe from 'stripe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { stripe } from '../src/integrations/stripe.js';
+import { formatNzDateTime } from '../src/lib/format.js';
 import { nzDate } from '../src/lib/nz-time.js';
 import { getPlatformSettings } from '../src/modules/admin/platform-settings.service.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
@@ -61,6 +62,19 @@ const licenceStatus = async (userId: unknown) =>
   (await UserModel.findById(userId).lean())!.driverLicence!.status;
 
 describe('re-saving licence details', () => {
+  it('records when the details last changed, keeping it when they’re saved unchanged', async () => {
+    const { user, agent } = await guestWithLicence();
+    const changedAt = async () =>
+      (await UserModel.findById(user._id).lean())!.driverLicence!.detailsChangedAt;
+    const first = await changedAt();
+    expect(first).toBeInstanceOf(Date);
+    expect((await save(agent)).status).toBe(200);
+    expect(await changedAt()).toEqual(first);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect((await save(agent, { expiry: '2036-05-01' })).status).toBe(200);
+    expect((await changedAt())!.getTime()).toBeGreaterThan(first!.getTime());
+  });
+
   it('keeps the review for the same details, and checks any change again, even with the same number', async () => {
     const { user, agent } = await guestWithLicence();
     await decided(user._id, 'APPROVED');
@@ -386,9 +400,9 @@ describe('a licence changed after booking', () => {
   });
 
   it('releases every request when support turn the licence down, not only those waiting for them', async () => {
-    const { agent, request, user, staff } = await bookedGuest();
-    // Changed details go back to support; the request was already with its Host, and still is.
-    await save(agent, { expiry: '2035-05-01' });
+    const { request, user, staff } = await bookedGuest();
+    // The licence went back to support without the request being held for it (saved before requests were).
+    await UserModel.updateOne({ _id: user._id }, { $set: { 'driverLicence.status': 'PENDING' } });
     expect((await BookingModel.findById(request._id).lean())!.verificationReview).toBeUndefined();
     const rejected = await staff
       .post(`/api/v1/admin/users/${user.id}/licence-review`)
@@ -413,6 +427,79 @@ describe('a licence changed after booking', () => {
     expect(await BookingModel.findById(request._id).lean()).toMatchObject({
       status: 'PENDING',
       verificationReview: { status: 'APPROVED' },
+    });
+  });
+
+  it('holds both trips while changed details wait for support, and lists them with the licence', async () => {
+    const { agent, request, confirmed, staff, user } = await bookedGuest();
+    const count = (type: string) => NotificationModel.countDocuments({ type, channel: 'IN_APP' });
+    // Renewed details that still cover both trips, but no ID confirmed them: support checks them first.
+    expect((await save(agent, { expiry: '2035-05-01' })).status).toBe(200);
+    expect(await BookingModel.findById(request._id).lean()).toMatchObject({
+      status: 'PENDING',
+      verificationReview: { status: 'PENDING' },
+    });
+    expect((await BookingModel.findById(confirmed._id).lean())!.status).toBe('CONFIRMED');
+    // Support hear of each: the request with when it expires, the trip with when it starts.
+    const held = await NotificationModel.findOne({ type: 'VERIFICATION_BOOKING_WAITING', channel: 'IN_APP' });
+    expect(JSON.stringify(held!.payload)).toContain(request.ref);
+    const trip = await NotificationModel.findOne({ type: 'LICENCE_CHECK_BEFORE_TRIP', channel: 'IN_APP' });
+    expect(JSON.stringify(trip!.payload)).toContain(formatNzDateTime(confirmed.startAt));
+    // The same details saved again don't alert again.
+    await save(agent, { expiry: '2035-05-01' });
+    expect(await count('VERIFICATION_BOOKING_WAITING')).toBe(1);
+    expect(await count('LICENCE_CHECK_BEFORE_TRIP')).toBe(1);
+
+    const queue = await staff.get('/api/v1/admin/verifications');
+    expect(queue.body.items).toEqual([
+      expect.objectContaining({
+        userId: user.id,
+        kind: 'LICENCE',
+        waitingBookings: [
+          {
+            ref: request.ref,
+            vehicleTitle: '2021 Toyota Corolla',
+            expiresAt: request.requestExpiresAt!.toISOString(),
+          },
+          {
+            ref: confirmed.ref,
+            vehicleTitle: '2021 Toyota Corolla',
+            startsAt: confirmed.startAt.toISOString(),
+          },
+        ],
+      }),
+    ]);
+
+    // Approved: the request goes back to its Host, who hasn't answered yet.
+    const approved = await staff
+      .post(`/api/v1/admin/users/${user.id}/licence-review`)
+      .send({ decision: 'APPROVE' });
+    expect(approved.body).toMatchObject({
+      licenceStatus: 'APPROVED',
+      confirmed: [],
+      waitingForHost: [request.ref],
+    });
+  });
+
+  it('makes the Host’s acceptance wait when the Guest’s licence went back to support after they booked', async () => {
+    const { request, user } = await bookedGuest();
+    // Sent back to support without the request being held for it (saved before requests were).
+    await UserModel.updateOne({ _id: user._id }, { $set: { 'driverLicence.status': 'PENDING' } });
+    const hostAgent = browserAgent();
+    await hostAgent.post('/api/v1/auth/login').send({ email: 'hana@example.co.nz', password: PASSWORD });
+
+    // Recorded, not charged (nothing was authorised here, so a capture would have been refused).
+    const accepted = await hostAgent.post(`/api/v1/bookings/${request.ref}/accept`);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.booking).toMatchObject({
+      status: 'PENDING',
+      verificationReview: 'PENDING',
+      hostAccepted: true,
+    });
+    expect(await BookingModel.findById(request._id).lean()).toMatchObject({
+      status: 'PENDING',
+      verificationReview: { status: 'PENDING' },
+      hostAcceptedAt: expect.any(Date),
     });
   });
 });

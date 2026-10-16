@@ -659,6 +659,38 @@ describe('licences and the identity check', () => {
     expect(await riskCodes(second.user._id)).toEqual(['DUPLICATE_LICENCE']);
   });
 
+  it('shows staff which other accounts have the same licence, entered or read from an ID', async () => {
+    const first = await guest('kiri@example.co.nz');
+    const second = await guest('tama@example.co.nz');
+    const third = await guest('mere@example.co.nz');
+    const elsewhere = await guest('hemi@example.co.nz');
+    await first.agent.put('/api/v1/me/driver-licence').send(licence('ZZ999999'));
+    await second.agent.put('/api/v1/me/driver-licence').send(licence('ZZ999999'));
+    await elsewhere.agent.put('/api/v1/me/driver-licence').send(licence('AB123456'));
+    // The third account entered no licence, but its ID check read the same one.
+    await passCheck(third.user, third.agent, 'ZZ999999', 'vs_3');
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    const sameLicence = async (id: string) =>
+      (await staff.get(`/api/v1/admin/users/${id}`)).body.user.sameLicence as { id: string }[] | undefined;
+    const account = (user: { _id: Types.ObjectId; createdAt: Date }) => ({
+      id: user._id.toString(),
+      name: 'Kiri Tester',
+      status: 'ACTIVE',
+      closed: false,
+      createdAt: user.createdAt.toISOString(),
+    });
+
+    const forFirst = await sameLicence(first.user.id);
+    expect(forFirst).toHaveLength(2);
+    expect(forFirst).toEqual(expect.arrayContaining([account(second.user), account(third.user)]));
+    expect((await sameLicence(third.user.id))?.map((other) => other.id).sort()).toEqual(
+      [first.user.id, second.user.id].sort(),
+    );
+    // Nobody else has the other licence.
+    expect(await sameLicence(elsewhere.user.id)).toBeUndefined();
+  });
+
   it('raises no flag for an ID check that read a licence no other account has', async () => {
     const first = await guest('kiri@example.co.nz');
     const second = await guest('tama@example.co.nz');
@@ -1094,6 +1126,20 @@ describe('unread-message emails and unsubscribing', () => {
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ unsubscribedFrom: 'MESSAGE_EMAILS' });
     expect((await UserModel.findById(user._id).lean())!.notificationPrefs.unreadMessageEmail).toBe(false);
+  });
+
+  it('sends an email app that opens the header’s link to the unsubscribe page, unsubscribing nobody', async () => {
+    const user = await createUser();
+    const token = unsubscribeToken(user.id, 'MESSAGE_EMAILS');
+    const link = new URL(oneClickUnsubscribeUrl(user.id, 'MESSAGE_EMAILS'));
+
+    const opened = await request(testApp()).get(`${link.pathname}${link.search}`);
+    expect(opened.status).toBe(302);
+    expect(opened.headers.location).toBe(`http://localhost:5173/unsubscribe?token=${token}`);
+    expect((await UserModel.findById(user._id).lean())!.notificationPrefs.unreadMessageEmail).toBe(true);
+    // Without a token, the page says the link doesn't work.
+    const bare = await request(testApp()).get(link.pathname);
+    expect(bare.headers.location).toBe('http://localhost:5173/unsubscribe');
   });
 
   /** Kiri messages Hana about their booking, 11 minutes ago: the unread-message job for Hana. */

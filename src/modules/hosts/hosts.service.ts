@@ -1,11 +1,17 @@
 import { env } from '../../env.js';
+import { isValidGstNumber } from '../../lib/gst-number.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { notify } from '../notifications/notify.js';
 import { AGREEMENT_VERSIONS } from '../users/agreements.js';
 import { UserModel, type HostProfile } from '../users/user.model.js';
-import type { HostApplicationInput, HostProfilePatch, HostProfileView } from './hosts.schemas.js';
+import {
+  GST_CHECK_DIGIT_ERROR,
+  type HostApplicationInput,
+  type HostProfilePatch,
+  type HostProfileView,
+} from './hosts.schemas.js';
 
 /*
  * Becoming a Host (plan §9, Days 8–11; §12.6 Host onboarding): the application comes first, with a
@@ -115,11 +121,24 @@ export async function getHostProfile(userId: string): Promise<HostProfileView> {
   return profileView(user.hostProfile);
 }
 
-/** PATCH /me/host-profile: bio and GST details (plan §11). */
+/**
+ * PATCH /me/host-profile: bio and GST details (plan §11). A changed GST number has to pass Inland Revenue's
+ * check digit; the one already saved stands, even from before the check came in, so a bio can still be saved.
+ */
 export async function updateHostProfile(userId: string, patch: HostProfilePatch): Promise<HostProfileView> {
   const user = await activeUser(userId);
   if (!user.hostProfile) throw new HttpError(404, 'NOT_A_HOST', "You haven't applied to host yet.");
   const gstRegistered = patch.gstRegistered ?? user.hostProfile.gstRegistered;
+  const digits = (value?: string) => value?.replace(/\D/g, '');
+  if (
+    patch.gstNumber &&
+    digits(patch.gstNumber) !== digits(user.hostProfile.gstNumber) &&
+    !isValidGstNumber(patch.gstNumber)
+  ) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
+      gstNumber: GST_CHECK_DIGIT_ERROR,
+    });
+  }
   const gstNumber = patch.gstNumber ?? user.hostProfile.gstNumber;
   if (gstRegistered && !gstNumber) {
     throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {

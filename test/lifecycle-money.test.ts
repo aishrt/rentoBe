@@ -680,6 +680,71 @@ describe('a payment that arrives after its hold ran out', () => {
     const lapsed = await AvailabilityBlockModel.find({ bookingId: id }).lean();
     for (const block of lapsed) expect(block.expiresAt!.getTime()).toBeLessThan(Date.now());
   });
+
+  it('tells the Guest the bank is still processing it, rather than that the dates were released', async () => {
+    const { id, ref, agent } = await checkout();
+    await lapseHold(id);
+    // The 30 minutes simply ran out: nothing is processing.
+    expect((await agent.get(`/api/v1/bookings/${ref}`)).body.booking).not.toHaveProperty('paymentProcessing');
+
+    intentStatus = 'processing';
+    expect(await expirePaymentHold(id)).toBe('waiting');
+    expect((await agent.get(`/api/v1/bookings/${ref}`)).body.booking).toMatchObject({
+      status: 'PAYMENT_PENDING',
+      paymentProcessing: true,
+      actions: expect.objectContaining({ pay: false }),
+    });
+  });
+
+  it('says the dates aren’t held any more when the bank turns it down after the 30 minutes, and ends it', async () => {
+    const { id, piId, guest } = await checkout();
+    await lapseHold(id);
+    intentStatus = 'processing';
+    expect(await expirePaymentHold(id)).toBe('waiting');
+
+    const declined = {
+      ...succeeded(piId, id),
+      status: 'requires_payment_method',
+      last_payment_error: { message: 'Your bank declined the payment.' },
+    };
+    expect((await webhook('payment_intent.payment_failed', declined)).status).toBe(200);
+    const email = await NotificationModel.findOne({
+      userId: guest._id,
+      type: 'PAYMENT_FAILED',
+      channel: 'EMAIL',
+    }).lean();
+    expect(email!.payload).toMatchObject({ template: 'paymentFailed', props: { released: true } });
+    // The booking ends now rather than at the next 5-minute check.
+    const job = await JobModel.findOne({ uniqueKey: `expire-hold:${id}:failed` }).lean();
+    expect(job).toMatchObject({ type: 'booking.expirePaymentHold', status: 'QUEUED' });
+    expect(job!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('still says the dates aren’t held any more when an earlier try was turned down too', async () => {
+    const { id, piId, guest } = await checkout();
+    const declined = {
+      ...succeeded(piId, id),
+      status: 'requires_payment_method',
+      last_payment_error: { message: 'Your bank declined the payment.' },
+    };
+    // Turned down within the 30 minutes: the Guest hears, and can try again while the dates are held.
+    expect((await webhook('payment_intent.payment_failed', declined)).status).toBe(200);
+
+    await lapseHold(id);
+    intentStatus = 'processing';
+    expect(await expirePaymentHold(id)).toBe('waiting');
+    expect((await webhook('payment_intent.payment_failed', declined)).status).toBe(200);
+    const emails = await NotificationModel.find({
+      userId: guest._id,
+      type: 'PAYMENT_FAILED',
+      channel: 'EMAIL',
+    })
+      .sort({ _id: 1 })
+      .lean();
+    expect(
+      emails.map((email) => (email.payload as { props: { released?: boolean } }).props.released),
+    ).toEqual([undefined, true]);
+  });
 });
 
 describe('a suspended car', () => {

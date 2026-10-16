@@ -849,6 +849,249 @@ describe('a card dispute that closes (plan §8.1, item 12)', () => {
       payload: expect.objectContaining({ title: `Card dispute won on ${booking.ref}` }),
     });
   });
+
+  it('keeps the payouts held when prevented, as the money went back as for a lost one, and tells staff', async () => {
+    const { booking, payout, dispute } = await disputedTrip();
+    expect((await webhook('charge.dispute.closed', dispute('prevented'))).status).toBe(200);
+    expect(await PayoutModel.findById(payout._id).lean()).toMatchObject({
+      status: 'HELD',
+      holdReason: 'MANUAL',
+    });
+    expect(await AuditLogModel.findOne({ action: 'payout.held', entityId: booking.id }).lean()).toMatchObject(
+      { after: expect.objectContaining({ holdReason: 'MANUAL' }) },
+    );
+    expect(await inApp('CARD_DISPUTE_CLOSED')).toMatchObject({
+      payload: expect.objectContaining({
+        title: `Card dispute refunded on ${booking.ref}`,
+        body: expect.stringContaining('stay on hold'),
+      }),
+    });
+  });
+});
+
+describe('a booking whose payment is in a card dispute (plan §8.1, item 12)', () => {
+  /** A confirmed trip under the Flexible policy whose payment has a chargeback, with its payout held for it. */
+  async function chargedBack(status = 'needs_response', startAt = new Date(Date.now() + 10 * DAY_MS)) {
+    const { ids, host, guest } = await parties();
+    await createStaff();
+    const booking = await createBookingRecord(ids, {
+      startAt,
+      endAt: new Date(startAt.getTime() + 3 * DAY_MS),
+      cancellationPolicy: 'FLEXIBLE',
+      cancellationTerms: FLEXIBLE,
+    });
+    const payment = await createPaymentRecord(booking, {
+      dispute: { stripeDisputeId: 'dp_1', reason: 'fraudulent', status },
+    });
+    const payout = await PayoutModel.create({
+      hostId: ids.hostId,
+      bookingId: booking._id,
+      type: 'TRIP',
+      amountCents: 21_360,
+      status: 'HELD',
+      holdReason: 'DISPUTE',
+      scheduledFor: new Date(startAt.getTime() + DAY_MS),
+    });
+    return { booking, payment, payout, host, guest };
+  }
+
+  it('can’t be cancelled by the Guest or the Host, and their dialog says why instead of offering a refund', async () => {
+    const { booking, host, guest } = await chargedBack();
+    for (const agent of [await signIn(guest.email), await signIn(host.email)]) {
+      const preview = await agent.get(`/api/v1/bookings/${booking.ref}/cancellation-preview`);
+      expect(preview.body).toMatchObject({ allowed: false, refundCents: 0 });
+      expect(preview.body.message).toContain('card dispute');
+      const cancelled = await agent.post(`/api/v1/bookings/${booking.ref}/cancel`);
+      expect(cancelled.status).toBe(409);
+      expect(cancelled.body.error.code).toBe('PAYMENT_DISPUTED');
+    }
+    expect(client.refunds.create).not.toHaveBeenCalled();
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('CONFIRMED');
+  });
+
+  it('can still be cancelled and refunded during an inquiry, which isn’t a chargeback yet', async () => {
+    const { booking, guest, payment } = await chargedBack('warning_needs_response');
+    const agent = await signIn(guest.email);
+    const cancelled = await agent.post(`/api/v1/bookings/${booking.ref}/cancel`);
+    expect(cancelled.status).toBe(200);
+    expect(client.refunds.create).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 33_870 }),
+      expect.anything(),
+    );
+
+    // Charged back after it was cancelled: the cancellation still reads as the refund it was.
+    await PaymentModel.updateOne({ _id: payment._id }, { $set: { 'dispute.status': 'needs_response' } });
+    const view = (await agent.get(`/api/v1/bookings/${booking.ref}`)).body.booking;
+    expect(view.cancellation).toMatchObject({ refundCents: 33_870 });
+    expect(view.cancellation).not.toHaveProperty('disputed');
+  });
+
+  it('tells the Guest and Host the payment already went back when the dispute is settled', async () => {
+    const { booking, host, guest } = await chargedBack('lost', new Date(Date.now() - 3 * HOUR_MS));
+    const cancelled = await (
+      await staffAgent()
+    )
+      .post(`/api/v1/admin/bookings/${booking.ref}/cancel`)
+      .send({ reason: 'GUEST_NO_SHOW', note: 'The guest never arrived' });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.booking.cancellation).toMatchObject({ refundCents: 0, disputed: true });
+    const told = (userId: unknown, channel: string) =>
+      NotificationModel.findOne({ userId, type: 'BOOKING_CANCELLED', channel }).lean();
+    expect((await told(guest._id, 'EMAIL'))!.payload).toMatchObject({
+      props: { disputed: true, disputeSettled: true },
+    });
+    expect(((await told(guest._id, 'IN_APP'))!.payload as { body: string }).body).toBe(
+      'Your card payment for it was returned to your card through a dispute with your bank.',
+    );
+    expect((await told(host._id, 'EMAIL'))!.payload).toMatchObject({
+      props: { disputed: true, disputeSettled: true },
+    });
+  });
+
+  it('is cancelled by staff without a refund or a payout to the Host, and staff are told to refund if it’s won', async () => {
+    const { booking, payment, payout } = await chargedBack(
+      'needs_response',
+      new Date(Date.now() - 3 * HOUR_MS),
+    );
+    const admin = await staffAgent();
+    const preview = await admin
+      .get(`/api/v1/admin/bookings/${booking.ref}/cancellation-preview`)
+      .query({ reason: 'GUEST_NO_SHOW' });
+    // A no-show would keep half the rental, and pay the Host a share of it: the dispute decides the money instead.
+    expect(preview.body).toMatchObject({
+      allowed: true,
+      kind: 'GUEST_CANCELLATION',
+      refundCents: 0,
+      feeCents: 0,
+      hostShareCents: 0,
+    });
+    expect(preview.body.message).toContain('card dispute');
+    expect(preview.body.message).toContain('If the dispute is won, refund the Guest');
+
+    const cancelled = await admin
+      .post(`/api/v1/admin/bookings/${booking.ref}/cancel`)
+      .send({ reason: 'GUEST_NO_SHOW', note: 'The guest never arrived' });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body.booking).toMatchObject({
+      status: 'CANCELLED',
+      cancellation: { reason: 'GUEST_NO_SHOW', refundCents: 0, feeCents: 0, disputed: true },
+    });
+    expect(client.refunds.create).not.toHaveBeenCalled();
+    expect((await PaymentModel.findById(payment._id).lean())!).toMatchObject({
+      status: 'SUCCEEDED',
+      refunds: [],
+    });
+    // The Host isn't paid from money going back to the cardholder.
+    expect((await PayoutModel.findById(payout._id).lean())!.status).toBe('CANCELLED');
+    expect(await PayoutModel.exists({ bookingId: booking._id, type: 'CANCELLATION_FEE' })).toBeNull();
+    const stored = (await BookingModel.findById(booking._id).lean())!;
+    expect(stored.hostShareCents).toBe(0);
+    expect(stored.statusHistory.at(-1)!.reason).toContain(
+      'the card dispute on its payment decides the money',
+    );
+    expect(await inApp('CANCELLED_IN_DISPUTE')).toMatchObject({
+      payload: expect.objectContaining({
+        link: `/admin/bookings/${booking.ref}`,
+        body: expect.stringContaining('If the dispute is won, refund the guest'),
+      }),
+    });
+    const email = await NotificationModel.findOne({
+      type: 'BOOKING_CANCELLED',
+      channel: 'EMAIL',
+      dedupeKey: `BOOKING_CANCELLED:${booking.id}:guest`,
+    }).lean();
+    expect(email!.payload).toMatchObject({ props: { disputed: true } });
+    expect(
+      (await AuditLogModel.findOne({ action: 'booking.guest-cancellation', entityId: booking.id }).lean())!
+        .after,
+    ).toMatchObject({ refundCents: 0, disputed: true });
+  });
+
+  it('says plainly when Stripe refuses a staff refund because of a dispute, instead of failing', async () => {
+    const { ids } = await parties();
+    await createStaff();
+    const booking = await createBookingRecord(ids);
+    await createPaymentRecord(booking);
+    vi.mocked(client.refunds.create).mockRejectedValueOnce(
+      new Stripe.errors.StripeInvalidRequestError({
+        type: 'invalid_request_error',
+        code: 'charge_disputed',
+        message: 'Charge ch_1 has been charged back; cannot issue a refund.',
+      }),
+    );
+    const refunded = await (
+      await staffAgent()
+    )
+      .post(`/api/v1/admin/bookings/${booking.ref}/refunds`)
+      .send({ amountCents: 5_000, reason: 'Goodwill', fundedBy: 'PLATFORM' });
+    expect(refunded.status).toBe(409);
+    expect(refunded.body.error.code).toBe('PAYMENT_DISPUTED');
+  });
+
+  it('tells a Guest whose refund Stripe refuses to contact support, without Stripe’s own words', async () => {
+    const { booking, guest } = await chargedBack('warning_closed');
+    vi.mocked(client.refunds.create).mockRejectedValueOnce(
+      new Stripe.errors.StripeInvalidRequestError({
+        type: 'invalid_request_error',
+        code: 'charge_already_refunded',
+        message: 'Charge ch_1 has already been refunded.',
+      }),
+    );
+    const cancelled = await (await signIn(guest.email)).post(`/api/v1/bookings/${booking.ref}/cancel`);
+    expect(cancelled.status).toBe(409);
+    expect(cancelled.body.error).toMatchObject({
+      code: 'REFUND_REFUSED',
+      message: 'We couldn’t refund this payment just now. Please contact support and we’ll sort it out.',
+    });
+    expect(JSON.stringify(cancelled.body)).not.toContain('ch_1');
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('CONFIRMED');
+  });
+});
+
+describe('a Radar early fraud warning (plan §14)', () => {
+  const warning = (paymentIntent: string, id = 'issfr_1') => ({
+    id,
+    object: 'radar.early_fraud_warning',
+    actionable: true,
+    charge: 'ch_1',
+    created: 1_790_000_000,
+    fraud_type: 'made_with_stolen_card',
+    livemode: false,
+    payment_intent: paymentIntent,
+  });
+
+  it('flags the Guest and alerts staff with the booking, suggesting a refund before a chargeback', async () => {
+    const { ids, guest } = await parties();
+    await createStaff();
+    const booking = await createBookingRecord(ids);
+    const payment = await createPaymentRecord(booking);
+
+    expect(
+      (await webhook('radar.early_fraud_warning.created', warning(payment.stripePaymentIntentId))).status,
+    ).toBe(200);
+    const flags = (await UserModel.findById(guest._id).lean())!.riskFlags ?? [];
+    expect(flags).toEqual([
+      expect.objectContaining({ code: 'RADAR_WARNING', detail: expect.stringContaining(booking.ref) }),
+    ]);
+    expect(await inApp('EARLY_FRAUD_WARNING')).toMatchObject({
+      payload: expect.objectContaining({
+        link: `/admin/bookings/${booking.ref}`,
+        body: expect.stringContaining('refund the payment, or cancel the booking, before one is opened'),
+      }),
+    });
+
+    // Another warning while the flag waits for review adds no second flag.
+    await webhook('radar.early_fraud_warning.created', warning(payment.stripePaymentIntentId, 'issfr_2'));
+    expect((await UserModel.findById(guest._id).lean())!.riskFlags).toHaveLength(1);
+  });
+
+  it('ignores a warning about a payment that isn’t a booking’s', async () => {
+    const { guest } = await parties();
+    await createStaff();
+    expect((await webhook('radar.early_fraud_warning.created', warning('pi_unknown'))).status).toBe(200);
+    expect((await UserModel.findById(guest._id).lean())!.riskFlags ?? []).toEqual([]);
+    expect(await inApp('EARLY_FRAUD_WARNING')).toBeNull();
+  });
 });
 
 describe('a Guest cancelling after staff refunded part of the trip (plan §8.1, items 10 and 15)', () => {

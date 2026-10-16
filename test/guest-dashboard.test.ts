@@ -734,7 +734,8 @@ describe('Closing an account while money is owed', () => {
     const hostClosure = await (await signIn(host.email)).get('/api/v1/me/account-closure');
     expect(codes(hostClosure.body)).toEqual(['FEES_OWED', 'OPEN_DISPUTE']);
 
-    // A new refund made since, the dispute won and the damage window over: nothing stops it.
+    // A new refund made since, the dispute settled (prevented counts too) and the damage window over:
+    // nothing stops it.
     await PaymentModel.updateOne(
       { _id: payment._id },
       {
@@ -747,7 +748,7 @@ describe('Closing an account while money is owed', () => {
             createdAt: new Date(),
           },
         },
-        $set: { 'dispute.status': 'won' },
+        $set: { 'dispute.status': 'prevented' },
       },
     );
     await BookingModel.updateOne(

@@ -9,6 +9,7 @@ import { notify } from '../notifications/notify.js';
 import { PayoutModel } from '../payouts/payout.model.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import { UserModel } from '../users/user.model.js';
+import { EXPIRY_DOCUMENTS, wasApproved, type ExpiryField } from '../vehicles/host-vehicles.service.js';
 import { VehicleModel, type MaintenanceReminder, type Vehicle } from '../vehicles/vehicle.model.js';
 import { vehicleTitle } from '../vehicles/vehicle-view.js';
 import type { MaintenanceInput } from './host-reminders.schemas.js';
@@ -52,6 +53,33 @@ export interface TodoItem {
 interface ExpiringDocument {
   label: string;
   expiry: Date;
+  /**
+   * The later date on a new one the Host has uploaded, waiting for our team to check it (plan §3). It applies
+   * once they verify it, so there's nothing more for the Host to upload.
+   */
+  renewal?: Date;
+}
+
+/** The car's checked WOF, CoF and rego dates, as the reminders name them. */
+const CHECKED_DATES: { label: string; key: ExpiryField }[] = [
+  { label: 'WOF', key: 'wofExpiry' },
+  { label: 'CoF', key: 'cofExpiry' },
+  { label: 'Rego', key: 'regoExpiry' },
+];
+
+/**
+ * The later date a new WOF, CoF or rego document waiting for staff would bring once they verify it, as
+ * `applyVerifiedExpiry` applies it on an approved car (plan §3): the date on the document, or else the Host's
+ * new date waiting for it.
+ */
+function renewalWaiting(vehicle: VehicleRecord, key: ExpiryField, current: Date): Date | undefined {
+  if (!wasApproved(vehicle)) return undefined;
+  const pending = vehicle.pendingExpiries?.[key];
+  return vehicle.documents
+    .filter((document) => document.type === EXPIRY_DOCUMENTS[key] && document.status === 'PENDING')
+    .map((document) => document.expiry ?? pending)
+    .filter((date): date is Date => date !== undefined && date > current)
+    .sort((a, b) => b.getTime() - a.getTime())[0];
 }
 
 /** The car's dated documents: WOF or CoF, rego, and the latest verified insurance. */
@@ -60,9 +88,12 @@ function datedDocuments(vehicle: VehicleRecord): ExpiringDocument[] {
     .filter((document) => document.type === 'INSURANCE' && document.status !== 'REJECTED' && document.expiry)
     .sort((a, b) => b.expiry!.getTime() - a.expiry!.getTime())[0];
   return [
-    ...(vehicle.wofExpiry ? [{ label: 'WOF', expiry: vehicle.wofExpiry }] : []),
-    ...(vehicle.cofExpiry ? [{ label: 'CoF', expiry: vehicle.cofExpiry }] : []),
-    ...(vehicle.regoExpiry ? [{ label: 'Rego', expiry: vehicle.regoExpiry }] : []),
+    ...CHECKED_DATES.flatMap(({ label, key }) => {
+      const expiry = vehicle[key];
+      if (!expiry) return [];
+      const renewal = renewalWaiting(vehicle, key, expiry);
+      return [{ label, expiry, ...(renewal && { renewal }) }];
+    }),
     ...(insurance ? [{ label: 'Insurance', expiry: insurance.expiry! }] : []),
   ];
 }
@@ -218,14 +249,28 @@ export async function hostTodo(hostId: string, now = new Date()): Promise<TodoIt
     for (const document of datedDocuments(vehicle)) {
       const days = Math.floor((document.expiry.getTime() - now.getTime()) / DAY_MS);
       if (days > 30) continue;
-      items.push({
-        kind: 'DOCUMENT_EXPIRING',
-        title:
-          days < 0 ? `${title}: ${document.label} has expired` : `${title}: ${document.label} expires soon`,
-        detail: `${days < 0 ? 'Expired' : 'Expires'} ${formatNzDate(document.expiry)}. Upload the renewal to keep the car bookable.`,
-        link: `/host/vehicles/${vehicle._id.toString()}/2`,
-        urgent: days <= 7,
-      });
+      const expires = `${days < 0 ? 'Expired' : 'Expires'} ${formatNzDate(document.expiry)}.`;
+      // A renewal already uploaded waits for our team, not for the Host.
+      items.push(
+        document.renewal
+          ? {
+              kind: 'DOCUMENT_EXPIRING',
+              title: `${title}: new ${document.label} waiting for our check`,
+              detail: `${expires} Nothing more to upload: your new date, ${formatNzDate(document.renewal)}, applies once we’ve checked it.`,
+              link: `/host/vehicles/${vehicle._id.toString()}/2`,
+              urgent: false,
+            }
+          : {
+              kind: 'DOCUMENT_EXPIRING',
+              title:
+                days < 0
+                  ? `${title}: ${document.label} has expired`
+                  : `${title}: ${document.label} expires soon`,
+              detail: `${expires} Upload the renewal to keep the car bookable.`,
+              link: `/host/vehicles/${vehicle._id.toString()}/2`,
+              urgent: days <= 7,
+            },
+      );
     }
     const odometer = await latestOdometer(vehicle._id);
     if (
@@ -289,26 +334,45 @@ export async function runHostReminders(now = new Date()): Promise<number> {
       const days = Math.floor((document.expiry.getTime() - now.getTime()) / DAY_MS);
       const stage = days < 0 ? null : days <= 7 ? 7 : days <= 30 ? 30 : null;
       if (stage === null) continue;
+      const expires = formatNzDate(document.expiry);
+      // A renewal already uploaded waits for our team: the Host is told it's being checked, not to upload.
+      const { renewal } = document;
       await notify({
         userId: vehicle.hostId,
         type: 'DOCUMENT_EXPIRING',
-        title: `${title}: ${document.label} expires ${formatNzDate(document.expiry)}`,
-        body: 'Upload the renewal so the car stays bookable.',
+        title: renewal
+          ? `${title}: new ${document.label} waiting for our check`
+          : `${title}: ${document.label} expires ${expires}`,
+        body: renewal
+          ? `Nothing more to upload: your new date, ${formatNzDate(renewal)}, applies once we’ve checked it.`
+          : 'Upload the renewal so the car stays bookable.',
         link: `/host/vehicles/${vehicle._id.toString()}/2`,
         email: {
           template: 'tripNotice',
-          props: {
-            firstName: host.firstName,
-            heading: `Your ${title}'s ${document.label} expires in ${days} ${days === 1 ? 'day' : 'days'}`,
-            paragraphs: [
-              `The ${document.label} for your ${title} expires on ${formatNzDate(document.expiry)}.`,
-              'Once it’s renewed, upload the new one. Guests can’t book trips that end after it expires, and a booked trip may have to be cancelled.',
-            ],
-            buttonLabel: 'Upload the renewal',
-            url: editUrl,
-          },
+          props: renewal
+            ? {
+                firstName: host.firstName,
+                heading: `We’re checking the new ${document.label} for your ${title}`,
+                paragraphs: [
+                  `The ${document.label} we checked for your ${title} expires on ${expires}. You’ve uploaded a new one, and your new date, ${formatNzDate(renewal)}, applies once our team has checked it.`,
+                  `There’s nothing more you need to do. Until then, guests can’t book trips that end after ${expires}. If we can’t accept the new one, we’ll let you know.`,
+                ],
+                buttonLabel: 'See the documents',
+                url: editUrl,
+              }
+            : {
+                firstName: host.firstName,
+                heading: `Your ${title}'s ${document.label} expires in ${days} ${days === 1 ? 'day' : 'days'}`,
+                paragraphs: [
+                  `The ${document.label} for your ${title} expires on ${expires}.`,
+                  'Once it’s renewed, upload the new one. Guests can’t book trips that end after it expires, and a booked trip may have to be cancelled.',
+                ],
+                buttonLabel: 'Upload the renewal',
+                url: editUrl,
+              },
         },
-        dedupeKey: `DOCUMENT_EXPIRING:${vehicle._id.toString()}:${document.label}:${nzDate(document.expiry)}:${stage}`,
+        // A renewal uploaded after a reminder gets its own message, once a stage, rather than none.
+        dedupeKey: `DOCUMENT_EXPIRING:${vehicle._id.toString()}:${document.label}:${nzDate(document.expiry)}:${stage}${renewal ? ':RENEWAL' : ''}`,
       });
       sent += 1;
     }
@@ -380,46 +444,92 @@ export async function runHostReminders(now = new Date()): Promise<number> {
   for (const booking of booked) {
     const vehicle = vehicles.find((candidate) => candidate._id.equals(booking.vehicleId));
     if (!vehicle) continue;
-    const short = [
-      ...datedDocuments(vehicle)
-        .filter((document) => document.label !== 'Insurance' && document.expiry < booking.endAt)
-        .map((document) => document.label),
+    const short = datedDocuments(vehicle).filter(
+      (document) => document.label !== 'Insurance' && document.expiry < booking.endAt,
+    );
+    // A renewal the Host has uploaded that lasts the trip waits for our team to check it, not for the Host.
+    const waiting = short
+      .filter((document) => document.renewal && document.renewal >= booking.endAt)
+      .map((document) => document.label);
+    const missing = [
+      ...short.filter((document) => !waiting.includes(document.label)).map((document) => document.label),
       ...(rucRunsOutDuring(vehicle, odometers.get(vehicle._id.toString()) ?? null, booking)
         ? ['RUC licence']
         : []),
     ];
-    if (short.length === 0) continue;
-    const labels = short.join(' and ');
-    await notify({
-      userId: booking.hostId,
-      type: 'DOCUMENT_BEFORE_TRIP',
-      title: `${labels} runs out before ${booking.ref} ends`,
-      body: `Upload the renewal before ${formatNzDate(booking.startAt)} so the trip can go ahead.`,
-      link: `/host/vehicles/${vehicle._id.toString()}/2`,
-      email: {
-        template: 'tripNotice',
-        props: {
-          firstName:
-            (await UserModel.findById(booking.hostId).select('firstName').lean())?.firstName ?? 'there',
-          heading: `Your car's ${labels} runs out before a booked trip ends`,
-          paragraphs: [
-            `Booking ${booking.ref} runs until ${formatNzDate(booking.endAt)}, but the ${labels} for your ${booking.vehicleSnapshot.title} runs out before then.`,
-            `Please renew it and upload the new one. If it’s still missing ${DOCUMENT_ALERT_HOURS} hours before the trip, our support team will contact you both.`,
-          ],
-          buttonLabel: 'Upload the renewal',
-          url: `${siteUrl()}/host/vehicles/${vehicle._id.toString()}/2`,
-        },
-      },
-      dedupeKey: `DOCUMENT_BEFORE_TRIP:${booking._id.toString()}:${labels}`,
-    });
-    if (booking.startAt.getTime() - now.getTime() <= DOCUMENT_ALERT_HOURS * 60 * 60 * 1000) {
-      await alertStaff({
+    if (missing.length === 0 && waiting.length === 0) continue;
+    const firstName =
+      (await UserModel.findById(booking.hostId).select('firstName').lean())?.firstName ?? 'there';
+    const documentsUrl = `${siteUrl()}/host/vehicles/${vehicle._id.toString()}/2`;
+    const alertSupport = booking.startAt.getTime() - now.getTime() <= DOCUMENT_ALERT_HOURS * 60 * 60 * 1000;
+    const waitingLabels = waiting.join(' and ');
+    if (missing.length > 0) {
+      const labels = missing.join(' and ');
+      await notify({
+        userId: booking.hostId,
         type: 'DOCUMENT_BEFORE_TRIP',
-        title: `${booking.ref}: the car's ${labels} runs out during the trip`,
-        body: `booking ${booking.ref} starts ${formatNzDate(booking.startAt)} and the car's ${labels} runs out before it ends. Contact both parties; it can be cancelled as a Host cancellation.`,
-        link: `/admin/bookings/${booking.ref}`,
-        dedupeKey: `DOCUMENT_BEFORE_TRIP:${booking._id.toString()}`,
+        title: `${labels} runs out before ${booking.ref} ends`,
+        body: `Upload the renewal before ${formatNzDate(booking.startAt)} so the trip can go ahead.`,
+        link: `/host/vehicles/${vehicle._id.toString()}/2`,
+        email: {
+          template: 'tripNotice',
+          props: {
+            firstName,
+            heading: `Your car's ${labels} runs out before a booked trip ends`,
+            paragraphs: [
+              `Booking ${booking.ref} runs until ${formatNzDate(booking.endAt)}, but the ${labels} for your ${booking.vehicleSnapshot.title} runs out before then.`,
+              `Please renew it and upload the new one. If it’s still missing ${DOCUMENT_ALERT_HOURS} hours before the trip, our support team will contact you both.`,
+              ...(waiting.length > 0
+                ? [`We have the new ${waitingLabels} you uploaded and will check it before the trip.`]
+                : []),
+            ],
+            buttonLabel: 'Upload the renewal',
+            url: documentsUrl,
+          },
+        },
+        dedupeKey: `DOCUMENT_BEFORE_TRIP:${booking._id.toString()}:${labels}`,
       });
+      if (alertSupport) {
+        await alertStaff({
+          type: 'DOCUMENT_BEFORE_TRIP',
+          title: `${booking.ref}: the car's ${labels} runs out during the trip`,
+          body: `booking ${booking.ref} starts ${formatNzDate(booking.startAt)} and the car's ${labels} runs out before it ends. Contact both parties; it can be cancelled as a Host cancellation.${waiting.length > 0 ? ` The Host's new ${waitingLabels} is waiting for our check on the car's review page.` : ''}`,
+          link: `/admin/bookings/${booking.ref}`,
+          dedupeKey: `DOCUMENT_BEFORE_TRIP:${booking._id.toString()}`,
+        });
+      }
+    } else {
+      await notify({
+        userId: booking.hostId,
+        type: 'DOCUMENT_BEFORE_TRIP',
+        title: `New ${waitingLabels} waiting for our check before ${booking.ref}`,
+        body: `Nothing more to upload: our team will check it before ${formatNzDate(booking.startAt)}.`,
+        link: `/host/vehicles/${vehicle._id.toString()}/2`,
+        email: {
+          template: 'tripNotice',
+          props: {
+            firstName,
+            heading: `We’re checking your car’s new ${waitingLabels} before a booked trip`,
+            paragraphs: [
+              `Booking ${booking.ref} runs until ${formatNzDate(booking.endAt)}. The ${waitingLabels} we checked for your ${booking.vehicleSnapshot.title} runs out before then, but you’ve uploaded a new one, and our team will check it before the trip.`,
+              'There’s nothing more you need to do. If we can’t accept it, we’ll let you know so you can upload another.',
+            ],
+            buttonLabel: 'See the documents',
+            url: documentsUrl,
+          },
+        },
+        // Separate from the "runs out" message, so one sent before the upload doesn't hold this back.
+        dedupeKey: `DOCUMENT_BEFORE_TRIP:${booking._id.toString()}:WAITING:${waitingLabels}`,
+      });
+      if (alertSupport) {
+        await alertStaff({
+          type: 'DOCUMENT_BEFORE_TRIP',
+          title: `${booking.ref}: the car's new ${waitingLabels} is waiting for our check`,
+          body: `booking ${booking.ref} starts ${formatNzDate(booking.startAt)} and the car's ${waitingLabels} runs out before it ends, but the Host has uploaded a new one. Check that document first. If it can't be accepted, contact both parties; the trip can be cancelled as a Host cancellation.`,
+          link: `/admin/vehicles/${vehicle._id.toString()}`,
+          dedupeKey: `DOCUMENT_BEFORE_TRIP:${booking._id.toString()}:WAITING`,
+        });
+      }
     }
     sent += 1;
   }

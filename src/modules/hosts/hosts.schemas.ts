@@ -1,15 +1,35 @@
 import { z } from 'zod';
+import { isValidGstNumber } from '../../lib/gst-number.js';
 import { HOST_STATUSES } from '../users/user.model.js';
 
-/** An NZ GST number: 8 or 9 digits, written 123-456-789. */
+/** What a GST number that fails Inland Revenue's check digit is told. */
+export const GST_CHECK_DIGIT_ERROR = 'That isn’t a valid GST number. Check it on your IRD registration.';
+
+const GST_FORMAT = /^\d{2,3}-?\d{3}-?\d{3}$/;
+const GST_FORMAT_ERROR = 'GST numbers look like 123-456-789';
+const writtenAsGst = (value: string) => {
+  const digits = value.replace(/-/g, '');
+  return `${digits.slice(0, -6)}-${digits.slice(-6, -3)}-${digits.slice(-3)}`;
+};
+
+/** An NZ GST number: 8 or 9 digits, written 123-456-789, with Inland Revenue's check digit. */
 const gstNumber = z
   .string()
   .trim()
-  .regex(/^\d{2,3}-?\d{3}-?\d{3}$/, { error: 'GST numbers look like 123-456-789' })
-  .transform((value) => {
-    const digits = value.replace(/-/g, '');
-    return `${digits.slice(0, -6)}-${digits.slice(-6, -3)}-${digits.slice(-3)}`;
-  });
+  .regex(GST_FORMAT, { error: GST_FORMAT_ERROR })
+  .refine(isValidGstNumber, { error: GST_CHECK_DIGIT_ERROR })
+  .transform(writtenAsGst);
+
+/**
+ * The same, without the check digit: the Host profile checks that only for a number that's changed
+ * (updateHostProfile), as its form sends the number with every save and one saved before the check came in
+ * stands until the Host changes it.
+ */
+const profileGstNumber = z
+  .string()
+  .trim()
+  .regex(GST_FORMAT, { error: GST_FORMAT_ERROR })
+  .transform(writtenAsGst);
 
 /** The Host application (plan §9, Days 8–11): a short profile, GST status and the Host Agreement. */
 export const hostApplicationSchema = z
@@ -30,7 +50,7 @@ export const hostProfilePatchSchema = z
   .object({
     bio: z.string().trim().max(1000).optional(),
     gstRegistered: z.boolean().optional(),
-    gstNumber: gstNumber.optional().or(z.literal('').transform(() => undefined)),
+    gstNumber: profileGstNumber.optional().or(z.literal('').transform(() => undefined)),
   })
   .meta({ id: 'HostProfilePatch' });
 export type HostProfilePatch = z.infer<typeof hostProfilePatchSchema>;

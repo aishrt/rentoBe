@@ -161,6 +161,32 @@ export const handoverSchema = z
       })
       .optional()
       .meta({ description: 'After check-out' }),
+    extraKmStatus: z
+      .object({
+        status: z.enum(['WAITING', 'CHECKING', 'CHARGED', 'NOT_CHARGED']).meta({
+          description:
+            'WAITING: charged at chargeAt, or sooner once waitingFor confirms the check-out; CHECKING: above the daily review limit, so staff check the readings before it’s charged; CHARGED: see chargeStatus; NOT_CHARGED: staff cancelled the charge',
+        }),
+        amountCents: z.number().int().meta({
+          description: 'CHARGED: the charges not cancelled; otherwise kilometres.extraChargeCents',
+        }),
+        chargeAt: z.iso
+          .datetime()
+          .optional()
+          .meta({ description: 'WAITING: when it’s charged at the latest' }),
+        waitingFor: z.enum(['GUEST', 'HOST']).optional().meta({
+          description:
+            'WAITING: whose confirmation of the check-out brings the charge forward; missing once confirmed',
+        }),
+        chargeStatus: z.enum(['PENDING', 'PAID', 'NOT_PAID']).optional().meta({
+          description:
+            'CHARGED: being taken from the saved card, paid, or not paid (the card didn’t cover it)',
+        }),
+      })
+      .optional()
+      .meta({
+        description: 'Where a completed trip’s extra kilometres stand (plan §8.2), when there are any',
+      }),
     fuelShortfall: z
       .boolean()
       .meta({ description: 'Returned with less fuel or charge than the policy asks' }),

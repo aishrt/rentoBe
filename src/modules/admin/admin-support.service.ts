@@ -83,6 +83,7 @@ export async function listTickets(staffId: string, query: z.infer<typeof ticketL
     status: query.status ?? mongoose.trusted({ $in: ['OPEN', 'PENDING'] }),
     ...(query.category && { category: query.category }),
     ...(query.mine && { assignedTo: new mongoose.Types.ObjectId(staffId) }),
+    ...(query.user && { userId: new mongoose.Types.ObjectId(query.user) }),
   };
   if (query.q) {
     if (/^ST-[A-Z0-9]{6}$/i.test(query.q)) filter.ref = query.q.toUpperCase();

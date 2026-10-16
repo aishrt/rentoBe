@@ -2,12 +2,14 @@ import type { OpenAPIRegistry } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 import { errorResponses, jsonBody, jsonResponse, signedIn } from '../../openapi/shared.js';
 import { testPaymentSchema, testPaymentStatusSchema } from '../payments/payments.schemas.js';
+import { adminUserResponseSchema } from './admin-ops.schemas.js';
 import { platformSettingsResponseSchema, platformSettingsUpdateSchema } from './platform-settings.schemas.js';
 import {
   licenceNumberSchema,
   licenceReviewResultSchema,
   licenceReviewSchema,
   verificationQueueSchema,
+  verificationResetSchema,
 } from './verification-queue.service.js';
 
 /** The contract for admin.routes.ts (plan §2.3). Every admin route needs an active staff account. */
@@ -34,6 +36,21 @@ export function registerAdminPaths(registry: OpenAPIRegistry) {
     request: { params: z.object({ id: z.string() }), body: jsonBody(licenceReviewSchema) },
     responses: {
       200: jsonResponse('Decided', licenceReviewResultSchema),
+      ...errorResponses(400, 401, 403, 404, 409),
+    },
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: '/admin/users/{id}/verification-reset',
+    tags: ['Admin'],
+    summary: 'Staff: allow another try after a turned-down identity check or licence',
+    description:
+      'IDENTITY: the turned-down check is set aside (its session is still redacted 90 days after it began, plan §14) and the status goes back to NONE, so the member can start a new check. LICENCE: the licence goes back to PENDING, for support to check again in the queue (the member can correct it first); their booked trips wait for the check again (plan §8.2). The reason goes to the audit log, and the member is notified and emailed. 409 NOT_REJECTED when that check wasn’t turned down, 409 ACCOUNT_CLOSED for a closed account, 409 IDENTITY_FIRST for a LICENCE whose identity check was turned down (or is still to do while it comes before booking), as the licence is checked once their ID is; 403 OWN_RECORD for a support member’s own record.',
+    security: signedIn,
+    request: { params: z.object({ id: z.string() }), body: jsonBody(verificationResetSchema) },
+    responses: {
+      200: jsonResponse('Their record', adminUserResponseSchema),
       ...errorResponses(400, 401, 403, 404, 409),
     },
   });

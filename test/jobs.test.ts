@@ -225,14 +225,37 @@ describe('job queue', () => {
 
   it('sends queued email through the real email.send handler', async () => {
     send.mockResolvedValue({ id: 'email_1', provider: 'console' });
-    await enqueue('email.send', welcome);
+    const job = await enqueue('email.send', welcome);
 
     await createJobRunner({ log: silentLog }).drain();
 
+    // Keyed by the job, so the provider sends it once however often a timed-out attempt is retried.
     expect(send).toHaveBeenCalledWith(
-      expect.objectContaining({ to: 'hana@example.co.nz', subject: 'Welcome to Rento Vroom, Hana' }),
+      expect.objectContaining({
+        to: 'hana@example.co.nz',
+        subject: 'Welcome to Rento Vroom, Hana',
+        idempotencyKey: `job:${job.id}`,
+      }),
     );
     expect(await JobModel.countDocuments({ status: 'DONE' })).toBe(1);
+  });
+
+  it('sends a timed-out email again with the same idempotency key', async () => {
+    send.mockClear();
+    send
+      .mockRejectedValueOnce(new Error('Timed out waiting for the provider'))
+      .mockResolvedValue({ id: 'email_1', provider: 'console' });
+    const job = await enqueue('email.send', welcome);
+
+    await createJobRunner({ log: silentLog }).drain();
+    await JobModel.updateOne({ _id: job._id }, { $set: { runAt: new Date() } });
+    await createJobRunner({ log: silentLog }).drain();
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([message]) => message.idempotencyKey)).toEqual([
+      `job:${job.id}`,
+      `job:${job.id}`,
+    ]);
   });
 });
 

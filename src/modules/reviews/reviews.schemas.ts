@@ -73,6 +73,16 @@ export const myReviewsResponseSchema = z
 
 export const reviewResponseSchema = z.object({ review: reviewViewSchema }).meta({ id: 'ReviewResponse' });
 
+export const submittedReviewResponseSchema = z
+  .object({
+    review: reviewViewSchema,
+    otherPublished: z.boolean().meta({
+      description:
+        'Whether the other side’s review of you is published now: not when they haven’t written one, or it’s held for a moderator or hidden',
+    }),
+  })
+  .meta({ id: 'SubmittedReviewResponse' });
+
 export const publicProfileSchema = z
   .object({
     id: z.string(),

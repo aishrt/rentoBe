@@ -77,6 +77,7 @@ import {
   suspendSchema,
   ticketListQuerySchema,
   ticketUpdateSchema,
+  userExportQuerySchema,
   userListQuerySchema,
   waiveFeeSchema,
 } from './admin-ops.schemas.js';
@@ -131,8 +132,10 @@ export function adminOpsRouter() {
     });
   });
 
+  // Only from the privacy request it answers (?ticket=ST-…), like a thread from a report, case or ticket.
   router.get('/users/:id/export', async (req, res) => {
-    const { filename, data } = await exportUserData(req.auth!.userId, param(req, 'id'), req.ip);
+    const { ticket } = validate(userExportQuerySchema, req.query);
+    const { filename, data } = await exportUserData(req.auth!.userId, param(req, 'id'), ticket, req.ip);
     res
       .type('application/json; charset=utf-8')
       .set('Content-Disposition', `attachment; filename="${filename}"`)

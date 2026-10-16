@@ -4,6 +4,7 @@ import type { NzAddress } from '../../lib/model-fields.js';
 import { nzTripDays } from '../../lib/nz-time.js';
 import { payLinkPath } from '../payments/extra-charges.service.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
+import { AvailabilityBlockModel } from '../availability/availability-block.model.js';
 import { bookingEarnings } from '../hosts/earnings.service.js';
 import { bookingPayment } from '../payments/booking-payment.js';
 import { PaymentModel, type Payment, type Refund } from '../payments/payment.model.js';
@@ -76,6 +77,11 @@ export interface BookingContext {
   gstRatePct: number;
   /** The commission in settings, for an extra charge without a payout yet. */
   commissionPct: number;
+  /**
+   * A checkout whose payment was still with the bank when its 30 minutes ran out: its dates are held on until the
+   * bank answers (expirePaymentHold), so it isn't released yet.
+   */
+  paymentProcessing?: boolean;
 }
 
 const PARTY_FIELDS =
@@ -132,6 +138,18 @@ export async function loadBookingContext(booking: BookingRecord): Promise<Bookin
           .select('ref')
           .lean()
       : [];
+  // The hold on its dates was extended past the 30 minutes, which happens only while the bank is still processing
+  // the payment (expirePaymentHold).
+  const paymentProcessing =
+    booking.status === 'PAYMENT_PENDING' && booking.holdExpiresAt
+      ? Boolean(
+          await AvailabilityBlockModel.exists({
+            bookingId: booking._id,
+            reason: 'HOLD',
+            expiresAt: mongoose.trusted({ $gt: booking.holdExpiresAt }),
+          }),
+        )
+      : false;
   return {
     vehicle,
     guest,
@@ -147,6 +165,7 @@ export async function loadBookingContext(booking: BookingRecord): Promise<Bookin
     },
     gstRatePct: settings.fees.gstRatePct,
     commissionPct: settings.fees.hostCommissionPct,
+    ...(paymentProcessing && { paymentProcessing }),
   };
 }
 
@@ -546,6 +565,10 @@ export function toBookingView(
     ...(viewer !== 'GUEST' && { payout: payoutView(booking, context) }),
     ...(booking.status === 'PAYMENT_PENDING' &&
       booking.holdExpiresAt && { holdExpiresAt: booking.holdExpiresAt.toISOString() }),
+    // Past its 30 minutes with the payment still at the bank: the dates stay held until it's settled.
+    ...(booking.status === 'PAYMENT_PENDING' &&
+      !holdLive &&
+      context.paymentProcessing && { paymentProcessing: true }),
     ...(booking.status === 'PENDING' &&
       booking.requestExpiresAt && { requestExpiresAt: booking.requestExpiresAt.toISOString() }),
     ...(booking.verificationReview && { verificationReview: booking.verificationReview.status }),
@@ -582,6 +605,9 @@ export function toBookingView(
             cancellationRefund && { refundStatus: cancellationRefund.status }),
           ...(booking.cancellationFeeCents !== undefined && { feeCents: booking.cancellationFeeCents }),
           ...(earlierRefundCents > 0 && { earlierRefundCents }),
+          // Cancelled while its payment was in a chargeback: the card dispute decides the money, not the
+          // cancellation (plan §8.1, item 12). As recorded then: a dispute opened since doesn't change it.
+          ...(booking.cancelledInDispute && { disputed: true }),
           ...(viewer !== 'GUEST' &&
             booking.hostShareCents !== undefined && { hostShareCents: booking.hostShareCents }),
           // Less any part an admin waived (plan §8.1, item 10), as the earnings page counts it.

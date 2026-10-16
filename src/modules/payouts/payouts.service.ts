@@ -14,7 +14,12 @@ import { keptFeeCommission } from '../bookings/policies.js';
 import { IncidentModel, OPEN_INCIDENT_STATUSES } from '../incidents/incident.model.js';
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { notify } from '../notifications/notify.js';
-import { PaymentModel, type Payment, type Refund } from '../payments/payment.model.js';
+import {
+  CLOSED_DISPUTE_STATUSES,
+  PaymentModel,
+  type Payment,
+  type Refund,
+} from '../payments/payment.model.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import { UserModel, type RefundOwed } from '../users/user.model.js';
 import {
@@ -389,7 +394,7 @@ async function holdFor(payout: PayoutDocument, booking: BookingRecord): Promise<
   }
   const disputed = await PaymentModel.exists({
     bookingId: booking._id,
-    'dispute.status': mongoose.trusted({ $exists: true, $nin: ['won', 'lost', 'warning_closed'] }),
+    'dispute.status': mongoose.trusted({ $exists: true, $nin: [...CLOSED_DISPUTE_STATUSES] }),
   });
   if (disputed) return 'DISPUTE';
   // A trip's payout waits for check-in, or support marking the trip as started: the trip went ahead (a kept
@@ -1000,22 +1005,36 @@ async function notifyPaid(
   const business = gstRegistered ? (await getPlatformSettings()).business : undefined;
   const bank = expectedBankDate(payout.paidAt!, delayDays);
   const amount = formatNzdExact(payout.amountCents);
+  // What the Host owed (fees, refunds they fund) came to the whole payout: no transfer was made, so nothing is on
+  // its way to the bank. The deductions below say where it went.
+  const nothingSent = payout.amountCents === 0;
   await notify(
     {
       userId: payout.hostId,
       type: 'PAYOUT_PAID',
-      title: `${amount} paid out for ${booking.ref}`,
-      body: `Usually in your bank by ${formatNzDate(bank)}.`,
+      title: nothingSent
+        ? `Nothing paid out for ${booking.ref}: it covered what you owed`
+        : `${amount} paid out for ${booking.ref}`,
+      body: nothingSent
+        ? 'The refunds and fees that come off your payouts took all of it.'
+        : `Usually in your bank by ${formatNzDate(bank)}.`,
       link: '/host/earnings',
       email: {
         template: 'tripNotice',
         props: {
           firstName,
-          heading: `${amount} is on its way`,
-          paragraphs: [
-            `Your payout for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}, has been sent to your Stripe balance.`,
-            `Stripe pays it into your bank account on its schedule, usually by ${formatNzDate(bank)}.`,
-          ],
+          heading: nothingSent
+            ? `Your payout for ${booking.ref} covered what you owed`
+            : `${amount} is on its way`,
+          paragraphs: nothingSent
+            ? [
+                `Your payout for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}, went to the refunds and fees that come off your payouts: they came to all of it, so nothing was paid out this time.`,
+                'Each one is listed below.',
+              ]
+            : [
+                `Your payout for booking ${booking.ref}, the ${booking.vehicleSnapshot.title}, has been sent to your Stripe balance.`,
+                `Stripe pays it into your bank account on its schedule, usually by ${formatNzDate(bank)}.`,
+              ],
           rows: [
             ...(payout.grossCents !== undefined
               ? [{ label: 'Earned', value: formatNzdExact(payout.grossCents) }]
@@ -1127,7 +1146,8 @@ export const PAID_PAYOUTS_PAGE = 12;
 /**
  * A Host's payouts for the earnings page (plan §8.1, item 19): those still to be sent, soonest first, then the
  * paid ones, newest first, a page at a time. With `cursor` (the last paid payout shown), only the next page of
- * paid ones. A payout not sent yet shows what it sends: less the deductions already reserved for it.
+ * paid ones. A payout not sent yet shows what it sends: less the deductions already reserved for it or, not
+ * reserved yet, less the Host-funded refunds of its own booking or charge, each on its own line.
  */
 export async function listHostPayouts(hostId: string, cursor?: string) {
   const host = await UserModel.findById(hostId).select('hostProfile').lean();
@@ -1158,6 +1178,37 @@ export async function listHostPayouts(hostId: string, cursor?: string) {
   ]);
   const paid = paidPage.slice(0, PAID_PAYOUTS_PAGE);
   const payouts = [...upcoming, ...paid];
+  // A trip's or extra charge's payout not reserved yet still takes the Host-funded refunds of its own booking or
+  // charge first, each its own line (deductionsFor): shown as they'll come off, so the rows add up to the
+  // upcoming total on the earnings page (with what the Host owes, shown on its own).
+  const unreserved = upcoming.filter(
+    (payout) => !payout.deductionsReservedAt && (payout.type === 'TRIP' || payout.type === 'EXTRA_CHARGE'),
+  );
+  const ownPayments =
+    unreserved.length > 0
+      ? await PaymentModel.find({
+          bookingId: mongoose.trusted({ $in: unreserved.map((payout) => payout.bookingId) }),
+        })
+          .select('bookingId type extraChargeId refunds')
+          .lean()
+      : [];
+  const deductionsOf = (payout: PayoutRecord): Deduction[] => {
+    if (payout.status === 'PAID' || payout.deductionsReservedAt) return payout.deductions;
+    let left = payout.amountCents;
+    return ownHostRefunds(payout, ownPayments).flatMap((refund) => {
+      const amountCents = Math.min(left, refund.amountCents);
+      left -= amountCents;
+      if (amountCents <= 0) return [];
+      return [
+        {
+          type: 'HOST_FUNDED_REFUND' as const,
+          bookingId: payout.bookingId,
+          ...(refund.stripeRefundId && { stripeRefundId: refund.stripeRefundId }),
+          amountCents,
+        },
+      ];
+    });
+  };
   // The payouts' bookings, and those their deductions name.
   const bookings = await BookingModel.find({
     _id: mongoose.trusted({
@@ -1173,17 +1224,21 @@ export async function listHostPayouts(hostId: string, cursor?: string) {
   const rows = payouts.map((payout) => {
     const booking = bookings.find((candidate) => candidate._id.equals(payout.bookingId));
     const reversed = (payout.reversals ?? []).reduce((sum, reversal) => sum + reversal.amountCents, 0);
+    const deductions = deductionsOf(payout);
     return {
       id: payout._id.toString(),
       type: payout.type,
       status: payout.status,
       ...(payout.holdReason && { holdReason: payout.holdReason }),
-      // A paid payout's amount is what was sent, after its deductions.
-      amountCents: payout.status === 'PAID' ? payout.amountCents : payout.amountCents - reservedCents(payout),
+      // A paid payout's amount is what was sent, after its deductions; one still to be sent, what it will send.
+      amountCents:
+        payout.status === 'PAID'
+          ? payout.amountCents
+          : payout.amountCents - deductions.reduce((sum, deduction) => sum + deduction.amountCents, 0),
       ...(payout.grossCents !== undefined && { grossCents: payout.grossCents }),
       ...(payout.commissionCents !== undefined && { commissionCents: payout.commissionCents }),
       ...(payout.commissionGstCents !== undefined && { commissionGstCents: payout.commissionGstCents }),
-      deductions: payout.deductions.map((deduction) => {
+      deductions: deductions.map((deduction) => {
         const ref = refOf(deduction.bookingId);
         return {
           type: deduction.type,
@@ -1196,7 +1251,10 @@ export async function listHostPayouts(hostId: string, cursor?: string) {
       scheduledFor: payout.scheduledFor.toISOString(),
       ...(payout.paidAt && {
         paidAt: payout.paidAt.toISOString(),
-        expectedInBankBy: expectedBankDate(payout.paidAt, host?.hostProfile?.payoutDelayDays).toISOString(),
+        // A payout that what the Host owed took in full sent nothing to the bank.
+        ...(payout.amountCents > 0 && {
+          expectedInBankBy: expectedBankDate(payout.paidAt, host?.hostProfile?.payoutDelayDays).toISOString(),
+        }),
       }),
       // A scheduled payout's two dates (plan §8.1, item 19): the transfer, then the bank on Stripe's schedule.
       ...(payout.status === 'SCHEDULED' && {
@@ -1218,6 +1276,32 @@ export async function listHostPayouts(hostId: string, cursor?: string) {
     paidCount,
     ...(paidPage.length > PAID_PAYOUTS_PAGE && last && { nextCursor: last._id.toString() }),
   };
+}
+
+/**
+ * The Host-funded refunds a trip's or extra charge's payout takes first, as deductionsFor does (plan §8.1, items
+ * 11 and 15): those of the booking's payment for a trip's, of that charge's payment for an extra charge's, each
+ * the Host's share of it. None for a kept fee's. For payouts not reserved yet: what will come off them.
+ */
+export function ownHostRefunds(
+  payout: Pick<Payout, 'type' | 'bookingId' | 'extraChargeId'>,
+  payments: Pick<Payment, 'bookingId' | 'type' | 'extraChargeId' | 'refunds'>[],
+): { stripeRefundId?: string; amountCents: number }[] {
+  if (payout.type !== 'TRIP' && payout.type !== 'EXTRA_CHARGE') return [];
+  return payments
+    .filter(
+      (payment) =>
+        payment.bookingId.equals(payout.bookingId) &&
+        (payout.type === 'TRIP'
+          ? payment.type === 'BOOKING'
+          : payment.type === 'EXTRA_CHARGE' && Boolean(payment.extraChargeId?.equals(payout.extraChargeId!))),
+    )
+    .flatMap((payment) => payment.refunds ?? [])
+    .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED')
+    .map((refund) => ({
+      ...(refund.stripeRefundId && { stripeRefundId: refund.stripeRefundId }),
+      amountCents: hostPartOf(refund),
+    }));
 }
 
 /** The deductions already taken for a payout still to be sent (reserved before its transfer). */

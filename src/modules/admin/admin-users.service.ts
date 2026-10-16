@@ -12,6 +12,7 @@ import { BookingModel, type Booking } from '../bookings/booking.model.js';
 import { confirmAfterSuspension } from '../bookings/booking.service.js';
 import { madeBookingFilter } from '../bookings/made-bookings.js';
 import { notify } from '../notifications/notify.js';
+import { forgetCustomer } from '../payments/stripe-customer.js';
 import { disconnectUser } from '../../realtime/realtime.js';
 import { PayoutModel } from '../payouts/payout.model.js';
 import { releaseHeldPayouts } from '../payouts/payouts.service.js';
@@ -124,11 +125,41 @@ async function findUser(userId: string) {
   return user;
 }
 
+/**
+ * The other accounts with this person's licence number (plan §3: the same person on several accounts), entered
+ * or read from an ID, found by its keyed hash as flagDuplicateLicence() finds them: what a DUPLICATE_LICENCE
+ * flag is about, since staff can't search by a licence number.
+ */
+async function sameLicenceAccounts(user: UserRecord) {
+  const hashes = [user.driverLicence?.numberHash, user.identityVerification?.documentNumberHash].filter(
+    (hash): hash is string => Boolean(hash),
+  );
+  if (hashes.length === 0) return [];
+  const others = await UserModel.find({
+    _id: mongoose.trusted({ $ne: user._id }),
+    $or: [
+      { 'driverLicence.numberHash': mongoose.trusted({ $in: hashes }) },
+      { 'identityVerification.documentNumberHash': mongoose.trusted({ $in: hashes }) },
+    ],
+  })
+    .select('firstName lastName status closedAt createdAt')
+    .sort({ createdAt: 1 })
+    .limit(20)
+    .lean<UserRecord[]>();
+  return others.map((other) => ({
+    id: other._id.toString(),
+    name: `${other.firstName} ${other.lastName}`,
+    status: other.status,
+    closed: Boolean(other.closedAt),
+    createdAt: other.createdAt.toISOString(),
+  }));
+}
+
 /** GET /admin/users/{id}: the person's record for staff. */
 export async function userDetail(userId: string): Promise<z.infer<typeof adminUserDetailSchema>> {
   const user = await findUser(userId);
   const now = new Date();
-  const [bookings, upcoming, vehicles] = await Promise.all([
+  const [bookings, upcoming, vehicles, sameLicence] = await Promise.all([
     BookingModel.find({
       $or: [{ guestId: user._id }, { hostId: user._id }],
       ...madeBookingFilter(),
@@ -144,6 +175,7 @@ export async function userDetail(userId: string): Promise<z.infer<typeof adminUs
       .sort({ startAt: 1 })
       .lean<BookingRecord[]>(),
     VehicleModel.countDocuments({ hostId: user._id }),
+    sameLicenceAccounts(user),
   ]);
   return {
     ...row(user),
@@ -168,6 +200,7 @@ export async function userDetail(userId: string): Promise<z.infer<typeof adminUs
         ...documentComparison(user),
       },
     }),
+    ...(sameLicence.length > 0 && { sameLicence }),
     host: user.hostProfile
       ? {
           status: user.hostProfile.status,
@@ -289,8 +322,10 @@ export async function unsuspendUser(
   );
   await VehicleModel.updateMany({ hostId: user._id }, { $unset: { hostSuspended: 1 } });
   await releaseHeldPayouts({ hostId: user._id }, 'SUSPENDED');
-  // Bookings on their cars approved while they were suspended go ahead now.
+  // Bookings on their cars approved while they were suspended go ahead now, and so do their own bookings as a
+  // Guest that waited only for it (plan §8.2: staff let them go ahead).
   await confirmAfterSuspension({ hostId: user._id });
+  await confirmAfterSuspension({ guestId: user._id });
   forget('vehicles:featured');
   await recordAudit({
     actorId: staffId,
@@ -404,6 +439,8 @@ export async function closeAccount(
   );
   // The profile photo itself goes too, not only the link to it.
   if (user.avatarUrl) await deleteProfilePhotoFile(user.avatarUrl);
+  // So do their saved cards and their name and email at Stripe; a failure is logged, as for the photo.
+  if (user.stripeCustomerId) await forgetCustomer(user.stripeCustomerId);
   await SessionModel.deleteMany({ userId: user._id });
   disconnectUser(user._id.toString());
   await VehicleModel.updateMany({ hostId: user._id }, { $set: { status: 'INACTIVE', hostSuspended: true } });

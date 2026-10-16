@@ -1,5 +1,6 @@
 import mongoose, { type ClientSession, type Types } from 'mongoose';
 import { withTransaction } from '../../db.js';
+import { enqueue } from '../../jobs/queue.js';
 import { HttpError } from '../../lib/http-error.js';
 import { addNzDays, fromNzWallClock, startOfNzDay, toNzWallClock } from '../../lib/nz-time.js';
 import { VehicleModel, type RecurringRule } from '../vehicles/vehicle.model.js';
@@ -192,9 +193,29 @@ export async function confirmTripDates(bookingId: Id, session: ClientSession) {
   );
 }
 
-/** Frees a booking's dates when it's cancelled, declined or expires. */
+/**
+ * Frees a booking's dates when it's cancelled, declined or expires. The car's weekly availability, left
+ * open where the trip was (rules never block over one, plan §3), is applied there again by a rebuild queued
+ * with the release, rather than at the monthly top-up.
+ */
 export async function releaseTripDates(bookingId: Id, session: ClientSession) {
+  const trip = await AvailabilityBlockModel.findOne({ bookingId })
+    .select('vehicleId')
+    .session(session)
+    .lean();
   await AvailabilityBlockModel.deleteMany({ bookingId }, { session });
+  if (!trip) return;
+  const hasRules = await VehicleModel.exists({
+    _id: trip.vehicleId,
+    'recurringRules.0': mongoose.trusted({ $exists: true }),
+  }).session(session);
+  if (!hasRules) return;
+  // One rebuild per booking released, however often the release is retried.
+  await enqueue(
+    'availability.expandRecurring',
+    { vehicleId: trip.vehicleId.toString() },
+    { session, uniqueKey: `availability.expandRecurring:release:${bookingId.toString()}` },
+  );
 }
 
 export interface NewBlock {

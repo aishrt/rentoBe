@@ -9,7 +9,8 @@ import { recordAudit } from '../audit/audit.service.js';
 import { BookingModel, type Booking, type BookingDocument } from '../bookings/booking.model.js';
 import { completeTrip, startTrip } from '../bookings/booking-transitions.js';
 import type { Viewer } from '../bookings/booking-view.js';
-import { afterTripCompleted, extraKmConfirmed } from '../bookings/trip-completion.js';
+import { afterTripCompleted, extraKmConfirmed, extraKmJobKey } from '../bookings/trip-completion.js';
+import { JobModel } from '../../jobs/job.model.js';
 import { postSystemMessage } from '../messages/thread-core.js';
 import { releaseHeldPayouts } from '../payouts/payouts.service.js';
 import { notify } from '../notifications/notify.js';
@@ -141,6 +142,64 @@ async function reportsFor(bookingId: Id) {
 const confirmedBy = (report: ReportRecord | undefined, role: 'GUEST' | 'HOST') =>
   Boolean(role === 'GUEST' ? report?.confirmedByGuestAt : report?.confirmedByHostAt);
 
+/**
+ * Whether the check-out readings are agreed, so the extra kilometres needn't wait for the damage-report window
+ * (plan §8.2): by both parties, or for the Host's readings staff entered to complete the trip, by the Guest.
+ */
+const checkOutAgreed = (
+  report:
+    Pick<ConditionReport, 'confirmedByGuestAt' | 'confirmedByHostAt' | 'completedBy'> | null | undefined,
+) => Boolean(report?.confirmedByGuestAt && (report.confirmedByHostAt || report.completedBy));
+
+/**
+ * Where a completed trip's extra kilometres stand, for both parties and staff: waiting for the check-out to be
+ * confirmed or the damage-report window to close (trip-completion.ts), held for staff to check the readings
+ * (extra-km.service.ts), or charged.
+ */
+async function extraKmStatusFor(
+  booking: BookingRecord,
+  checkOut: ReportRecord,
+  extraChargeCents: number,
+): Promise<HandoverView['extraKmStatus']> {
+  if (booking.status !== 'COMPLETED' || extraChargeCents <= 0) return undefined;
+  const charges = (booking.extraCharges ?? []).filter((charge) => charge.type === 'EXTRA_KM');
+  const live = charges.filter((charge) => charge.status !== 'CANCELLED');
+  if (live.length > 0) {
+    // A charge the saved card didn't cover waits for the Guest to pay it by link, or for staff.
+    const notPaid = live.some(
+      (charge) => charge.status === 'FAILED' || (charge.status === 'PENDING' && charge.paymentId),
+    );
+    return {
+      status: 'CHARGED',
+      amountCents: live.reduce((sum, charge) => sum + charge.amountCents, 0),
+      chargeStatus: notPaid
+        ? 'NOT_PAID'
+        : live.every((charge) => charge.status === 'SUCCEEDED')
+          ? 'PAID'
+          : 'PENDING',
+    };
+  }
+  if (charges.length > 0) return { status: 'NOT_CHARGED', amountCents: extraChargeCents };
+  const job = await JobModel.findOne({ uniqueKey: extraKmJobKey(booking._id.toString()) })
+    .select('status runAt')
+    .lean();
+  if (job?.status === 'QUEUED' || job?.status === 'RUNNING') {
+    const waitingFor = checkOutAgreed(checkOut)
+      ? undefined
+      : !checkOut.confirmedByGuestAt
+        ? ('GUEST' as const)
+        : ('HOST' as const);
+    return {
+      status: 'WAITING',
+      amountCents: extraChargeCents,
+      chargeAt: job.runAt.toISOString(),
+      ...(waitingFor && { waitingFor }),
+    };
+  }
+  // The job found more kilometres a day than are charged without a check: staff check the readings first.
+  return { status: 'CHECKING', amountCents: extraChargeCents };
+}
+
 /** GET /bookings/{id}/inspections: both reports so far, and what this person can do next. */
 export async function getHandover(
   booking: BookingDocument,
@@ -160,6 +219,11 @@ export async function getHandover(
     : undefined;
   const party = viewer === 'STAFF' ? null : viewer;
   const emailNeeded = settings.verification.emailBeforeTripStart && !guest?.emailVerifiedAt;
+  const kilometres = checkIn && checkOut ? kilometresFor(booking, checkIn, checkOut) : undefined;
+  const extraKmStatus =
+    checkOut && kilometres
+      ? await extraKmStatusFor(record, checkOut, kilometres.extraChargeCents)
+      : undefined;
 
   return {
     ref: booking.ref,
@@ -174,7 +238,8 @@ export async function getHandover(
     checkOut: checkOut ? toReportView(record, checkOut, viewer) : null,
     ...(windowEnds && { damageWindowEndsAt: windowEnds.toISOString() }),
     emailVerificationNeeded: emailNeeded,
-    ...(checkIn && checkOut && { kilometres: kilometresFor(booking, checkIn, checkOut) }),
+    ...(kilometres && { kilometres }),
+    ...(extraKmStatus && { extraKmStatus }),
     fuelShortfall: fuelShort(booking, checkIn, checkOut),
     actions: {
       // Until the end time: after it, support sorts the booking out (submitInspection).
@@ -523,13 +588,13 @@ export async function confirmInspection(
   if (updated.matchedCount === 0 && !(await ConditionReportModel.exists({ bookingId: booking._id, stage }))) {
     throw new HttpError(404, 'NOT_FOUND', 'That report hasn’t been done yet.');
   }
-  // Both parties agree the check-out readings: the extra kilometres needn't wait for the damage-report window
-  // to close (plan §8.2).
+  // Both parties agree the check-out readings (or the Guest agrees the Host's readings staff entered): the extra
+  // kilometres needn't wait for the damage-report window to close (plan §8.2).
   if (stage === 'CHECK_OUT' && updated.modifiedCount > 0) {
     const report = await ConditionReportModel.findOne({ bookingId: booking._id, stage })
-      .select('confirmedByGuestAt confirmedByHostAt')
+      .select('confirmedByGuestAt confirmedByHostAt completedBy')
       .lean();
-    if (report?.confirmedByGuestAt && report.confirmedByHostAt) await extraKmConfirmed(booking.id, now);
+    if (checkOutAgreed(report)) await extraKmConfirmed(booking.id, now);
   }
 }
 

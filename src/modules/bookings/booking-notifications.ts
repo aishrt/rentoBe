@@ -323,6 +323,8 @@ export async function notifyCancelled(
     tripPayoutSentCents,
     hostOwesCents,
     hostRefundReliefCents,
+    disputed = false,
+    disputeSettled = false,
   }: Options & {
     released?: boolean;
     /** Stripe refused the refund at once: it isn't on its way, and staff return it another way. */
@@ -335,6 +337,10 @@ export async function notifyCancelled(
     hostOwesCents?: number;
     /** What the Host no longer pays towards earlier refunds they funded: the Guest got it back here anyway. */
     hostRefundReliefCents?: number;
+    /** Support cancelled it while its payment is in a card dispute: nothing was refunded or kept here. */
+    disputed?: boolean;
+    /** With `disputed`: the dispute is settled (lost or prevented), so the payment already went back to the card. */
+    disputeSettled?: boolean;
   } = {},
 ) {
   const id = booking._id.toString();
@@ -353,7 +359,11 @@ export async function notifyCancelled(
             : `${formatNzdExact(outcome.refundCents)} is on its way back to your card.`
           : released && !withdrawn
             ? "Your card hasn't been charged."
-            : undefined,
+            : disputed
+              ? disputeSettled
+                ? 'Your card payment for it was returned to your card through a dispute with your bank.'
+                : 'Your card payment for it is in a dispute with your bank, which decides what you get back.'
+              : undefined,
       link: `/trips/${booking.ref}`,
       email: {
         template: 'bookingCancelled',
@@ -368,6 +378,8 @@ export async function notifyCancelled(
           ...(outcome.refundCents > 0 && { refund: formatNzdExact(outcome.refundCents) }),
           ...(outcome.refundCents > 0 && refundFailed && { refundFailed: true }),
           ...(outcome.feeCents > 0 && { fee: formatNzdExact(outcome.feeCents) }),
+          ...(disputed && { disputed: true }),
+          ...(disputed && disputeSettled && { disputeSettled: true }),
           url: tripUrl(booking),
         },
       },
@@ -403,6 +415,8 @@ export async function notifyCancelled(
             ...(sent && { tripPayoutSent: formatNzdExact(tripPayoutSentCents) }),
             ...(hostOwesCents && { hostOwes: formatNzdExact(hostOwesCents) }),
             ...(hostRefundReliefCents && { hostRefundRelief: formatNzdExact(hostRefundReliefCents) }),
+            ...(disputed && { disputed: true }),
+            ...(disputed && disputeSettled && { disputeSettled: true }),
             url: hostBookingUrl(booking),
           },
         },
@@ -440,9 +454,11 @@ export async function notifyPaymentFailed(
   booking: BookingRecord,
   context: BookingContext,
   reason: string | undefined,
-  { session }: Options = {},
+  { session, now = new Date() }: Options & { now?: Date } = {},
 ) {
   if (!booking.holdExpiresAt) return;
+  // A payment the bank was still processing when the 30 minutes ran out: the dates aren't held any more.
+  const released = booking.holdExpiresAt <= now;
   await notify(
     {
       userId: booking.guestId,
@@ -458,9 +474,11 @@ export async function notifyPaymentFailed(
           ...(reason && { reason: reason.replace(/\.$/, '').replace(/^./, (first) => first.toLowerCase()) }),
           retryUrl: tripUrl(booking),
           holdUntil: formatNzDateTime(booking.holdExpiresAt).replace(/^\w+, /, ''),
+          ...(released && { released }),
         },
       },
-      dedupeKey: `PAYMENT_FAILED:${booking._id.toString()}`,
+      // Its own key once the dates are let go, so it's still sent after an earlier try's failure.
+      dedupeKey: `PAYMENT_FAILED:${booking._id.toString()}${released ? ':released' : ''}`,
     },
     { session },
   );

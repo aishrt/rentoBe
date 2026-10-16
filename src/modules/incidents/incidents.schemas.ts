@@ -206,6 +206,10 @@ export const incidentViewSchema = incidentSummarySchema
           description: z.string(),
           amountCents: z.number().int(),
           status: z.enum(['PENDING', 'SUCCEEDED', 'FAILED', 'CANCELLED']),
+          refundedCents: z.number().int().optional().meta({
+            description:
+              'A paid (SUCCEEDED) charge’s refunds that didn’t fail; the whole amount when it was refunded in full. Left out when none',
+          }),
         }),
       )
       .meta({ description: 'Charges added to the booking from this case' }),

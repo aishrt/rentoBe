@@ -47,6 +47,8 @@ export function registerInspectionPaths(registry: OpenAPIRegistry) {
     path: '/bookings/{id}/inspections/{stage}/confirm',
     tags: ['Handover'],
     summary: 'Confirm the other party’s report',
+    description:
+      'Once both parties have confirmed the check-out (or the Guest has, when support completed the trip), any extra kilometres are charged without waiting for the damage-report window to close.',
     security: signedIn,
     request: { params: bookingParams.extend({ stage: z.enum(INSPECTION_STAGES) }) },
     responses: { 200: jsonResponse('Confirmed', handoverResponseSchema), ...errorResponses(401, 403, 404) },
@@ -73,7 +75,7 @@ export function registerInspectionPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: complete a trip whose check-out is missing',
     description:
-      'With the Host’s odometer and fuel or battery reading, and any photos they sent (plan §8.2), which become the check-out record. The booking becomes COMPLETED, and extra kilometres (worked out against the check-in reading, when there is one), reviews and the payout follow as normal. 409 NOT_CHECK_OUT unless the trip is under way without a check-out; 400 when the odometer is below the check-in reading.',
+      'With the Host’s odometer and fuel or battery reading, and any photos they sent (plan §8.2), which become the check-out record. The booking becomes COMPLETED, and extra kilometres (worked out against the check-in reading, when there is one), reviews and the payout follow as normal: the extra kilometres wait like any check-out’s, charged once the Guest confirms the readings or when the damage-report window closes (`handover.extraKmStatus` says where they stand). Charging them sooner is POST /admin/bookings/{id}/extra-km, with the refunds permission. 409 NOT_CHECK_OUT unless the trip is under way without a check-out; 400 when the odometer is below the check-in reading.',
     security: signedIn,
     request: { params: bookingParams, body: jsonBody(staffCompletionSchema) },
     responses: {

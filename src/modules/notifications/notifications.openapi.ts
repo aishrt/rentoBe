@@ -126,4 +126,17 @@ export function registerNotificationPaths(registry: OpenAPIRegistry) {
       ...errorResponses(400),
     },
   });
+
+  registry.registerPath({
+    method: 'get',
+    path: '/notifications/unsubscribe',
+    tags: ['Notifications'],
+    summary: 'The List-Unsubscribe link opened in a browser',
+    description:
+      'An email app that opens the header’s link instead of posting to it is sent to the site’s unsubscribe page with the same token, which asks before turning anything off. Works without signing in; changes nothing itself.',
+    request: { query: z.object({ token: z.string().optional() }) },
+    responses: {
+      302: { description: 'To {FRONTEND_URL}/unsubscribe?token=…' },
+    },
+  });
 }

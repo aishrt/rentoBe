@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { env } from '../../env.js';
 import { validate } from '../../lib/validate.js';
 import { unsubscribe, unsubscribeSchema } from '../users/notification-prefs.js';
 import { requireAuth } from '../../middleware/auth.js';
@@ -31,6 +32,16 @@ export function notificationsRouter() {
       token: (req.body as { token?: unknown } | undefined)?.token ?? req.query.token,
     });
     res.json({ unsubscribedFrom: await unsubscribe(token) });
+  });
+
+  // An email app that opens the header's link instead (a GET) lands on the unsubscribe page, which asks
+  // before turning anything off: a link scanner following it unsubscribes nobody.
+  router.get('/unsubscribe', (req, res) => {
+    const token = typeof req.query.token === 'string' ? req.query.token : '';
+    const page = `${env.FRONTEND_URL.replace(/\/+$/, '')}/unsubscribe`;
+    res
+      .set('Cache-Control', 'no-store')
+      .redirect(302, token ? `${page}?token=${encodeURIComponent(token)}` : page);
   });
 
   router.use(requireAuth);
