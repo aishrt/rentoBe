@@ -581,6 +581,37 @@ describe('Request to book', () => {
     expect((await UserModel.findById(booking!.hostId).lean())!.hostProfile!.responseRate).toBe(100);
   });
 
+  it('isn’t accepted while the Guest’s account is on hold: nothing is charged, and staff hear of it once', async () => {
+    const spies = mockStripe();
+    const { id, ref, hostAgent, guest } = await requested();
+    await createStaff();
+    await UserModel.updateOne(
+      { _id: guest._id },
+      { $set: { status: 'SUSPENDED', suspendedReason: 'Checking a report' } },
+    );
+
+    const refused = await hostAgent.post(`/api/v1/bookings/${ref}/accept`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({
+      code: 'GUEST_SUSPENDED',
+      message:
+        "This guest's account is on hold, so the request can't be accepted. Our team will be in touch.",
+    });
+    expect(spies.capture).not.toHaveBeenCalled();
+    expect(await BookingModel.findById(id).lean()).toMatchObject({ status: 'PENDING' });
+    expect((await BookingModel.findById(id).lean())!.hostAcceptedAt).toBeUndefined();
+    // Once for the booking, however often the Host tries.
+    await hostAgent.post(`/api/v1/bookings/${ref}/accept`);
+    expect(
+      await NotificationModel.countDocuments({ type: 'GUEST_SUSPENDED_BOOKING', channel: 'IN_APP' }),
+    ).toBe(1);
+    // Lifting the suspension doesn't confirm it: the acceptance wasn't recorded, so staff are told so.
+    const alert = await NotificationModel.findOne({ type: 'GUEST_SUSPENDED_BOOKING', channel: 'IN_APP' });
+    expect((alert!.payload as { body: string }).body).toMatch(
+      /the acceptance wasn't recorded.*the host then has to accept it again before the request expires \(at .+ NZ time\)\. Otherwise it expires and the card hold is released\.$/,
+    );
+  });
+
   it('releases the card when the Host declines, with no fee', async () => {
     const spies = mockStripe();
     const { id, ref, hostAgent, agent } = await requested();
@@ -853,6 +884,38 @@ describe('Verification in review', () => {
 
     // Decided once: a second decision has nothing to review.
     expect((await review('REJECT')).body.error.code).toBe('NOT_IN_REVIEW');
+  });
+
+  it('doesn’t charge a suspended Guest when the check is approved, and confirms once the suspension is lifted', async () => {
+    const spies = mockStripe();
+    const { guest, id, review } = await bookedInReview(true);
+    await UserModel.updateOne(
+      { _id: guest._id },
+      { $set: { status: 'SUSPENDED', suspendedReason: 'Checking a report' } },
+    );
+
+    // Approved, but held for staff (plan §8.2: they cancel it or let it go ahead).
+    const approved = await review('APPROVE');
+    expect(approved.body).toEqual({
+      identityStatus: 'APPROVED',
+      confirmed: [],
+      waitingForHost: [],
+      released: [],
+    });
+    expect(spies.capture).not.toHaveBeenCalled();
+    expect(await BookingModel.findById(id).lean()).toMatchObject({
+      status: 'PENDING',
+      verificationReview: { status: 'APPROVED' },
+    });
+    expect(
+      await NotificationModel.countDocuments({ type: 'GUEST_SUSPENDED_BOOKING', channel: 'IN_APP' }),
+    ).toBe(1);
+
+    // Let go ahead: lifting the suspension confirms it while its time lasts.
+    const support = await staffAgent('mere@example.co.nz');
+    expect((await support.post(`/api/v1/admin/users/${guest.id}/unsuspend`)).status).toBe(200);
+    expect(spies.capture).toHaveBeenCalledTimes(1);
+    expect((await BookingModel.findById(id).lean())!.status).toBe('CONFIRMED');
   });
 
   it('releases the card when support rejects the check, and stops the Guest booking again', async () => {

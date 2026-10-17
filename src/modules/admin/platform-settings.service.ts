@@ -1,4 +1,5 @@
 import { logger } from '../../integrations/logger.js';
+import { isValidGstNumber } from '../../lib/gst-number.js';
 import { HttpError } from '../../lib/http-error.js';
 import { validate } from '../../lib/validate.js';
 import { recordAudit } from '../audit/audit.service.js';
@@ -74,6 +75,14 @@ export async function updatePlatformSettings(
   if (!sameCodes(next.protectionPlans, current.protectionPlans)) {
     throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
       protectionPlans: 'Adding, removing or renaming protection plans needs a code change.',
+    });
+  }
+  // Checked when saved rather than in the schema, so a number saved before the check doesn't send the whole
+  // business group back to its launch default.
+  const gstNumber = update.business?.gstNumber;
+  if (gstNumber && gstNumber !== current.business.gstNumber && !isValidGstNumber(gstNumber)) {
+    throw new HttpError(400, 'VALIDATION_ERROR', 'Some details need fixing.', {
+      'business.gstNumber': 'That isn’t a valid GST number. Check it on the IRD registration.',
     });
   }
 

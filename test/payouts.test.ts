@@ -6,7 +6,7 @@ import { withTransaction } from '../src/db.js';
 import { env } from '../src/env.js';
 import { stripe } from '../src/integrations/stripe.js';
 import type { JobContext } from '../src/jobs/handlers/index.js';
-import { tripExtraChargesJob } from '../src/jobs/handlers/payout-jobs.js';
+import { collectExtraChargeJob, tripExtraChargesJob } from '../src/jobs/handlers/payout-jobs.js';
 import { JobModel } from '../src/jobs/job.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
 import { BookingModel } from '../src/modules/bookings/booking.model.js';
@@ -58,6 +58,18 @@ beforeEach(() => {
       }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
   );
   vi.spyOn(client.customers, 'create').mockResolvedValue({ id: 'cus_1' } as Stripe.Response<Stripe.Customer>);
+  // The card the booking was paid with is still saved to the Guest's customer.
+  vi.spyOn(client.paymentMethods, 'retrieve').mockImplementation(
+    async (id) =>
+      ({
+        id,
+        object: 'payment_method',
+        customer: 'cus_1',
+      }) as unknown as Stripe.Response<Stripe.PaymentMethod>,
+  );
+  vi.spyOn(client.customers, 'listPaymentMethods').mockResolvedValue({
+    data: [],
+  } as unknown as Stripe.Response<Stripe.ApiList<Stripe.PaymentMethod>>);
 });
 
 afterEach(() => {
@@ -417,7 +429,7 @@ describe('extra charges', () => {
     expect(confirm).toHaveBeenCalledWith(
       'pi_extra',
       expect.objectContaining({ payment_method: 'pm_saved', off_session: true }),
-      { idempotencyKey: `extra-charge-${charge._id}-confirm-1` },
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1-pm_saved` },
     );
     expect((await BookingModel.findById(booking._id))!.extraCharges[0]).toMatchObject({
       status: 'SUCCEEDED',
@@ -475,7 +487,7 @@ describe('extra charges', () => {
     expect(vi.mocked(client.paymentIntents.confirm).mock.calls.at(-1)).toEqual([
       'pi_extra',
       expect.anything(),
-      { idempotencyKey: `extra-charge-${charge._id}-confirm-2` },
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-2-pm_saved` },
     ]);
   });
 
@@ -525,10 +537,280 @@ describe('extra charges', () => {
     expect(client.paymentIntents.create).toHaveBeenCalledTimes(1);
     const keys = vi.mocked(client.paymentIntents.confirm).mock.calls.map((call) => call[2]);
     expect(keys).toEqual([
-      { idempotencyKey: `extra-charge-${charge._id}-confirm-1` },
-      { idempotencyKey: `extra-charge-${charge._id}-confirm-1` },
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1-pm_saved` },
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1-pm_saved` },
     ]);
     expect(await PaymentModel.countDocuments({ type: 'EXTRA_CHARGE' })).toBe(1);
+  });
+
+  it('confirm under a new key when the job’s retry picks another card', async () => {
+    const { booking } = await completedTrip();
+    created();
+    vi.spyOn(client.paymentIntents, 'confirm').mockRejectedValueOnce(
+      new Stripe.errors.StripeAPIError({ message: 'Something went wrong', type: 'api_error' }),
+    );
+    vi.mocked(client.paymentIntents.retrieve).mockImplementation(
+      async (id) =>
+        ({
+          id,
+          status: 'requires_payment_method',
+          payment_method: 'pm_saved',
+        }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
+    );
+    const charge = await charged(booking.id);
+    await expect(collectExtraCharge(booking.id, charge._id!.toString(), 1)).rejects.toThrow(
+      'Something went wrong',
+    );
+
+    // The card paid with is removed before the job runs again: their other card is confirmed under its own
+    // key, as Stripe refuses a key reused with other details.
+    removedCard();
+    vi.mocked(client.customers.listPaymentMethods).mockResolvedValue({
+      data: [{ id: 'pm_new', card: { exp_month: 12, exp_year: 2099 } }],
+    } as unknown as Stripe.Response<Stripe.ApiList<Stripe.PaymentMethod>>);
+    vi.mocked(client.paymentIntents.confirm).mockResolvedValue(confirmed());
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('paid');
+    expect(vi.mocked(client.paymentIntents.confirm).mock.calls.map((call) => call[2])).toEqual([
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1-pm_saved` },
+      { idempotencyKey: `extra-charge-${charge._id}-confirm-1-pm_new` },
+    ]);
+  });
+
+  it('send the pay link on the job’s last try when Stripe keeps giving an error', async () => {
+    const { booking, guest } = await completedTrip();
+    const staff = await createStaff();
+    created();
+    vi.spyOn(client.paymentIntents, 'confirm').mockRejectedValue(
+      new Stripe.errors.StripeAPIError({ message: 'Something went wrong', type: 'api_error' }),
+    );
+    vi.mocked(client.paymentIntents.retrieve).mockImplementation(
+      async (id) =>
+        ({
+          id,
+          status: id === 'pi_extra' ? 'requires_payment_method' : 'succeeded',
+          payment_method: 'pm_saved',
+        }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
+    );
+    const charge = await charged(booking.id);
+
+    expect(
+      await collectExtraCharge(booking.id, charge._id!.toString(), 1, new Date(), { lastTry: true }),
+    ).toBe('failed');
+    const payment = await PaymentModel.findOne({ stripePaymentIntentId: 'pi_extra' });
+    expect(payment).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'We couldn’t charge the card saved on your account.',
+    });
+    expect(
+      await NotificationModel.findOne({ userId: guest._id, type: 'EXTRA_CHARGE_FAILED', channel: 'IN_APP' }),
+    ).toMatchObject({
+      payload: expect.objectContaining({
+        link: `/pay/${payment!.id}`,
+        body: `${charge.description}. We couldn’t charge your saved card.`,
+      }),
+    });
+    expect(await JobModel.countDocuments({ type: 'extraCharge.collect', 'payload.attempt': 2 })).toBe(1);
+    const alerts = async () =>
+      (
+        await NotificationModel.find({ userId: staff._id, type: 'EXTRA_CHARGE_FAILED', channel: 'IN_APP' })
+          .sort({ _id: 1 })
+          .lean()
+      ).map((alert) => (alert.payload as { body: string }).body);
+    expect(await alerts()).toEqual([expect.stringMatching(/^Stripe kept giving errors when charging/)]);
+
+    // Declined on the next try: the alert for a charge that keeps failing still goes out.
+    vi.mocked(client.paymentIntents.confirm).mockRejectedValue(
+      new Stripe.errors.StripeCardError({
+        message: 'Your card was declined.',
+        type: 'card_error',
+        payment_intent: { id: 'pi_extra', status: 'requires_payment_method' } as Stripe.PaymentIntent,
+      }),
+    );
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 2)).toBe('failed');
+    expect(await alerts()).toEqual([
+      expect.stringMatching(/^Stripe kept giving errors/),
+      expect.stringMatching(/has failed 2 times: Your card was declined\./),
+    ]);
+  });
+
+  it('send the pay link on the job’s last try when Stripe errors while finding the saved card', async () => {
+    const { booking, guest } = await completedTrip();
+    created();
+    const confirm = vi.spyOn(client.paymentIntents, 'confirm');
+    vi.mocked(client.paymentIntents.retrieve).mockImplementation(
+      async (id) =>
+        ({
+          id,
+          status: id === 'pi_extra' ? 'requires_payment_method' : 'succeeded',
+          payment_method: 'pm_saved',
+        }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
+    );
+    vi.mocked(client.paymentMethods.retrieve).mockRejectedValue(
+      new Stripe.errors.StripeAPIError({ message: 'Something went wrong', type: 'api_error' }),
+    );
+    const charge = await charged(booking.id);
+
+    // Tried again by the job until its last try.
+    await expect(collectExtraCharge(booking.id, charge._id!.toString(), 1)).rejects.toThrow(
+      'Something went wrong',
+    );
+    expect(await NotificationModel.countDocuments({ type: 'EXTRA_CHARGE_FAILED' })).toBe(0);
+
+    expect(
+      await collectExtraCharge(booking.id, charge._id!.toString(), 1, new Date(), { lastTry: true }),
+    ).toBe('failed');
+    expect(confirm).not.toHaveBeenCalled();
+    const payment = await PaymentModel.findOne({ stripePaymentIntentId: 'pi_extra' });
+    expect(payment).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'We couldn’t charge the card saved on your account.',
+    });
+    expect(
+      await NotificationModel.findOne({ userId: guest._id, type: 'EXTRA_CHARGE_FAILED', channel: 'IN_APP' }),
+    ).toMatchObject({ payload: expect.objectContaining({ link: `/pay/${payment!.id}` }) });
+    expect(await JobModel.countDocuments({ type: 'extraCharge.collect', 'payload.attempt': 2 })).toBe(1);
+  });
+
+  it('alert staff on the job’s last try when Stripe won’t even make the charge’s PaymentIntent', async () => {
+    const { booking } = await completedTrip();
+    const staff = await createStaff();
+    vi.spyOn(client.paymentIntents, 'create').mockRejectedValue(
+      new Stripe.errors.StripeAPIError({ message: 'Something went wrong', type: 'api_error' }),
+    );
+    const charge = await charged(booking.id);
+    const run = (attempts: number) =>
+      collectExtraChargeJob({ bookingId: booking.id, chargeId: charge._id!.toString(), attempt: 1 }, {
+        ...context,
+        job: { attempts, maxAttempts: 5 },
+      } as unknown as JobContext);
+    const alerts = () =>
+      NotificationModel.find({ userId: staff._id, type: 'EXTRA_CHARGE_FAILED', channel: 'IN_APP' }).lean();
+
+    await expect(run(4)).rejects.toThrow('Something went wrong');
+    expect(await alerts()).toEqual([]);
+    // The last try still fails the job, and staff hear the charge is waiting with no way to pay it.
+    await expect(run(5)).rejects.toThrow('Something went wrong');
+    expect(await alerts()).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          title: `An extra charge on ${booking.ref} couldn't be collected`,
+          link: `/admin/bookings/${booking.ref}`,
+          body: expect.stringContaining('nothing was charged'),
+        }),
+      }),
+    ]);
+    expect((await BookingModel.findById(booking._id))!.extraCharges[0]).toMatchObject({ status: 'PENDING' });
+    expect(await PaymentModel.countDocuments({ type: 'EXTRA_CHARGE' })).toBe(0);
+  });
+
+  /** The Guest removed the card they paid with from their account (plan §8.1, item 7). */
+  const removedCard = () =>
+    vi.mocked(client.paymentMethods.retrieve).mockImplementation(
+      async (id) =>
+        ({
+          id,
+          object: 'payment_method',
+          customer: null,
+        }) as unknown as Stripe.Response<Stripe.PaymentMethod>,
+    );
+
+  it('charge the Guest’s newest saved card when they removed the one they paid with', async () => {
+    const { booking } = await completedTrip();
+    created();
+    removedCard();
+    vi.mocked(client.customers.listPaymentMethods).mockResolvedValue({
+      data: [
+        { id: 'pm_expired', card: { exp_month: 1, exp_year: 2020 } },
+        { id: 'pm_new', card: { exp_month: 12, exp_year: 2099 } },
+      ],
+    } as unknown as Stripe.Response<Stripe.ApiList<Stripe.PaymentMethod>>);
+    const confirm = vi.spyOn(client.paymentIntents, 'confirm').mockResolvedValue(confirmed());
+    const charge = await charged(booking.id);
+
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('paid');
+    expect(client.customers.listPaymentMethods).toHaveBeenCalledWith('cus_1', { type: 'card', limit: 10 });
+    expect(confirm).toHaveBeenCalledWith(
+      'pi_extra',
+      expect.objectContaining({ payment_method: 'pm_new', off_session: true }),
+      expect.anything(),
+    );
+  });
+
+  it('send the Guest the pay link, saying so, when no saved card is left to charge', async () => {
+    const { booking, guest } = await completedTrip();
+    created();
+    removedCard();
+    const confirm = vi.spyOn(client.paymentIntents, 'confirm');
+    vi.mocked(client.paymentIntents.retrieve).mockImplementation(
+      async (id) =>
+        ({
+          id,
+          status: id === 'pi_extra' ? 'requires_payment_method' : 'succeeded',
+          payment_method: 'pm_saved',
+        }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
+    );
+    const charge = await charged(booking.id);
+
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('failed');
+    expect(confirm).not.toHaveBeenCalled();
+    const payment = await PaymentModel.findOne({ stripePaymentIntentId: 'pi_extra' });
+    expect(payment).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'There’s no saved card on your account to charge it to.',
+    });
+    const told = await NotificationModel.findOne({
+      userId: guest._id,
+      type: 'EXTRA_CHARGE_FAILED',
+      channel: 'IN_APP',
+    });
+    expect(told!.payload).toMatchObject({
+      link: `/pay/${payment!.id}`,
+      body: `${charge.description}. There’s no saved card to charge it to.`,
+    });
+    const email = await NotificationModel.findOne({
+      userId: guest._id,
+      type: 'EXTRA_CHARGE_FAILED',
+      channel: 'EMAIL',
+    });
+    expect(JSON.stringify(email!.payload)).not.toContain('declined');
+    // Tried again tomorrow, with whatever card is saved by then.
+    expect(await JobModel.countDocuments({ type: 'extraCharge.collect', 'payload.attempt': 2 })).toBe(1);
+
+    // The trip shows it as not paid, with its pay link.
+    const agent = browserAgent();
+    await agent.post('/api/v1/auth/login').send({ email: 'kiri@example.co.nz', password: PASSWORD });
+    const view = (await agent.get(`/api/v1/bookings/${booking.ref}`)).body.booking;
+    expect(view.extraCharges[0]).toMatchObject({ status: 'UNPAID', payPath: `/pay/${payment!.id}` });
+  });
+
+  it('send the pay link instead of retrying when Stripe refuses the saved card itself', async () => {
+    const { booking } = await completedTrip();
+    created();
+    vi.spyOn(client.paymentIntents, 'confirm').mockRejectedValue(
+      new Stripe.errors.StripeInvalidRequestError({
+        type: 'invalid_request_error',
+        code: 'payment_method_unexpected_state',
+        param: 'payment_method',
+        message: 'The PaymentMethod was detached from a Customer and may not be used again.',
+      }),
+    );
+    vi.mocked(client.paymentIntents.retrieve).mockImplementation(
+      async (id) =>
+        ({
+          id,
+          status: id === 'pi_extra' ? 'requires_payment_method' : 'succeeded',
+          payment_method: 'pm_saved',
+        }) as unknown as Stripe.Response<Stripe.PaymentIntent>,
+    );
+    const charge = await charged(booking.id);
+
+    expect(await collectExtraCharge(booking.id, charge._id!.toString(), 1)).toBe('failed');
+    const payment = await PaymentModel.findOne({ stripePaymentIntentId: 'pi_extra' });
+    expect(payment).toMatchObject({ status: 'FAILED' });
+    expect((await BookingModel.findById(booking._id))!.extraCharges[0]!.paymentId).toEqual(payment!._id);
+    expect(await NotificationModel.findOne({ type: 'EXTRA_CHARGE_FAILED', channel: 'IN_APP' })).toMatchObject(
+      { payload: expect.objectContaining({ link: `/pay/${payment!.id}` }) },
+    );
   });
 
   it('hold extra kilometres above the daily review limit for staff, who are alerted', async () => {
@@ -623,6 +905,51 @@ describe('payout deductions', () => {
     expect(fees).toEqual([expect.objectContaining({ amountCents: 2500, owed: true })]);
     expect(transfers.reduce((sum, transfer) => sum + transfer.amount!, 0)).toBe(2 * 21360 - 2500);
     expect(await feesOwed(first.host._id)).toBe(0);
+  });
+
+  it('that take all of a payout send nothing, and the Host is told so without a bank date', async () => {
+    const { booking, payout, host } = await trip();
+    await checkIn(booking._id, host._id);
+    await UserModel.updateOne({ _id: host._id }, { $set: { 'hostProfile.feesOwedCents': 30_000 } });
+
+    expect(await runPayout(payout.id)).toBe('paid');
+    expect(transfers).toHaveLength(0);
+    expect(await PayoutModel.findById(payout._id)).toMatchObject({ status: 'PAID', amountCents: 0 });
+    expect(await feesOwed(host._id)).toBe(30_000 - 21_360);
+    const told = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'PAYOUT_PAID',
+      channel: 'IN_APP',
+    }).lean();
+    expect(told!.payload).toMatchObject({
+      title: `Nothing paid out for ${booking.ref}: it covered what you owed`,
+    });
+    const email = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'PAYOUT_PAID',
+      channel: 'EMAIL',
+    }).lean();
+    const props = (
+      email!.payload as {
+        props: { heading: string; paragraphs: string[]; rows: { label: string; value: string }[] };
+      }
+    ).props;
+    expect(props.heading).toBe(`Your payout for ${booking.ref} covered what you owed`);
+    expect(props.paragraphs.join(' ')).not.toMatch(/bank|on its way/);
+    expect(props.rows).toEqual(
+      expect.arrayContaining([
+        { label: 'Host cancellation fee', value: '−$213.60' },
+        { label: 'Paid out', value: '$0.00' },
+      ]),
+    );
+    // Nor does the earnings page give it a day in the bank.
+    const agent = browserAgent();
+    await agent.post('/api/v1/auth/login').send({ email: host.email, password: PASSWORD });
+    const listed = (await agent.get('/api/v1/host/payouts')).body.payouts.find(
+      (row: { id: string }) => row.id === payout.id,
+    );
+    expect(listed).toMatchObject({ status: 'PAID', amountCents: 0 });
+    expect(listed).not.toHaveProperty('expectedInBankBy');
   });
 
   /** A trip whose transfer failed without a clear answer from Stripe, after its deductions were reserved. */

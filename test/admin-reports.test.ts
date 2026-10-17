@@ -125,6 +125,7 @@ describe('the GST summary and platform fees', () => {
       serviceFeesCents: 2670,
       hostCommissionCents: 5340,
       cancellationFeesShareCents: 5500,
+      hostCancellationFeesCents: 0,
       extraChargeCommissionCents: 920,
       totalCents: 14430,
     });
@@ -153,6 +154,7 @@ describe('the GST summary and platform fees', () => {
       'Refunds of these (GST incl.)',
       'GST given back',
       'GST collected',
+      'Host cancellation fees (GST incl.)',
       'Platform fees (GST incl.)',
       'GST in platform fees',
     ]);
@@ -167,6 +169,7 @@ describe('the GST summary and platform fees', () => {
       '23.00',
       '3.00',
       '62.18',
+      '0.00',
       '144.30',
       '18.82',
     ]);
@@ -179,11 +182,13 @@ describe('the GST summary and platform fees', () => {
     expect(revenueRows[0]).toEqual([
       'Date',
       'Trips starting',
+      'Trips paid (GST incl.)',
       'Booking revenue (GST incl.)',
       'Service fees',
       'Host commission',
       'Cancellation fees kept',
       'Platform share of cancellation fees',
+      'Host cancellation fees',
       'Extra charges',
       'Extra-charge commission',
       'Platform fees',
@@ -195,14 +200,17 @@ describe('the GST summary and platform fees', () => {
     expect(revenueRows.slice(1, -1).map((row) => row[0])).toEqual(
       [nzToday(), nzToday(1)].filter((day, index, days) => days.indexOf(day) === index),
     );
+    // Booking revenue as in the summary: the trip, the charge and the fee kept, less the goodwill refund.
     expect(revenueRows.at(-1)).toEqual([
       'Total',
       '1',
       '338.70',
+      '476.70',
       '26.70',
       '53.40',
       '115.00',
       '55.00',
+      '0.00',
       '46.00',
       '9.20',
       '144.30',
@@ -257,6 +265,70 @@ describe('the GST summary and platform fees', () => {
       .query({ from: nzToday(), to: nzToday(5) });
     // Only the staff refund gives back part of the $115 kept: $23 → $3 of GST.
     expect(summary.body.report.gst).toMatchObject({ inCancellationFeesCents: 1500, givenBackCents: 300 });
+  });
+
+  it('count a Host cancellation fee, less what was waived, in the platform fees and their GST', async () => {
+    const host = await createHost();
+    const guest = await createUser();
+    const vehicle = await createVehicle(host._id);
+    const now = new Date();
+    // The Host cancelled: the Guest got everything back, and the Host owes $57.50, $11.50 of it waived.
+    const cancelled = await createBookingRecord(
+      { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
+      {
+        status: 'CANCELLED',
+        cancelledAt: now,
+        cancellationReason: 'HOST_CANCELLED',
+        cancellationFeeCents: 0,
+        refundCents: 33870,
+        hostShareCents: 0,
+        hostCancellationFeeCents: 5750,
+        hostCancellationFeeWaivedCents: 1150,
+      },
+    );
+    await createPaymentRecord(cancelled, {
+      status: 'REFUNDED',
+      refunds: [
+        {
+          amountCents: 33870,
+          reason: 'Cancelled by the Host',
+          kind: 'CANCELLATION',
+          fundedBy: 'HOST',
+          status: 'SUCCEEDED',
+          createdAt: now,
+        },
+      ],
+    });
+    await createStaff();
+    const admin = await staffAgent();
+    const range = { from: nzToday(), to: nzToday(5) };
+
+    const { report } = (await admin.get('/api/v1/admin/reports/summary').query(range)).body;
+    // $46 counted, $6 of it GST (3/23); nothing of the booking itself was kept.
+    expect(report.fees).toEqual({
+      serviceFeesCents: 0,
+      hostCommissionCents: 0,
+      cancellationFeesShareCents: 0,
+      hostCancellationFeesCents: 4600,
+      extraChargeCommissionCents: 0,
+      totalCents: 4600,
+    });
+    expect(report.money).toMatchObject({ platformFeesCents: 4600, bookingRevenueCents: 0 });
+    expect(report.gst).toMatchObject({ collectedCents: 0, onPlatformFeesCents: 600 });
+
+    const revenue = rows(
+      (await admin.get('/api/v1/admin/reports/export').query({ ...range, type: 'revenue' })).text,
+    );
+    const column = (name: string) => revenue[0]!.indexOf(name);
+    expect(revenue.at(-1)![column('Host cancellation fees')]).toBe('46.00');
+    expect(revenue.at(-1)![column('Platform fees')]).toBe('46.00');
+    expect(revenue.at(-1)![column('GST in platform fees')]).toBe('6.00');
+    const gst = rows((await admin.get('/api/v1/admin/reports/export').query({ ...range, type: 'gst' })).text);
+    expect(gst.at(-1)!.slice(-3)).toEqual(['46.00', '46.00', '6.00']);
+
+    // The overview's platform fees are the report's.
+    const overview = await admin.get('/api/v1/admin/dashboard').query(range);
+    expect(overview.body.figures.platformFeesCents).toBe(4600);
   });
 
   it('keep a second payment’s refund and the refunds before a cancellation out of revenue, as the overview does', async () => {

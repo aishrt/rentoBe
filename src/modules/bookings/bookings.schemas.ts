@@ -114,7 +114,14 @@ export type VerificationOutcome = {
 };
 
 export const identityReviewResponseSchema = z
-  .object({ identityStatus: z.enum(['APPROVED', 'REJECTED']), ...verificationOutcomeShape })
+  .object({
+    identityStatus: z.enum(['APPROVED', 'REJECTED']),
+    ...verificationOutcomeShape,
+    stillBooked: z.array(z.string()).optional().meta({
+      description:
+        'Set when a turned-down check leaves the Guest with confirmed trips: they stay booked, and support are alerted to each to decide (check-in refuses them unless the licence is approved)',
+    }),
+  })
   .meta({ id: 'IdentityReviewResponse' });
 export type IdentityReviewResult = z.infer<typeof identityReviewResponseSchema>;
 
@@ -404,6 +411,10 @@ export const bookingViewSchema = z
       .datetime()
       .optional()
       .meta({ description: 'PAYMENT_PENDING: when the dates are released' }),
+    paymentProcessing: z.boolean().optional().meta({
+      description:
+        'PAYMENT_PENDING past holdExpiresAt: the payment is still processing at the bank, so the dates stay held until it succeeds or fails',
+    }),
     requestExpiresAt: z.iso.datetime().optional().meta({ description: 'PENDING: when the request expires' }),
     verificationReview: verificationReviewSchema,
     hostAccepted: hostAcceptedSchema,
@@ -424,6 +435,10 @@ export const bookingViewSchema = z
         earlierRefundCents: z.number().int().optional().meta({
           description:
             'Refunds made before the cancellation, which came off what it could give back (all of the payment, when the refund is 0 and nothing was kept)',
+        }),
+        disputed: z.boolean().optional().meta({
+          description:
+            'Cancelled by support while the payment was in a card dispute (a chargeback): the dispute decides what goes back to the card, so the cancellation refunded and kept nothing',
         }),
         hostShareCents: z.number().int().optional(),
         hostFeeCents: z.number().int().optional(),

@@ -10,9 +10,13 @@
  */
 import { env } from '../src/env.js';
 import { isStripeTestMode, stripe } from '../src/integrations/stripe.js';
-import { STRIPE_WEBHOOK_EVENTS } from '../src/modules/payments/stripe-webhook.js';
+import {
+  STRIPE_CONNECT_WEBHOOK_EVENTS,
+  STRIPE_WEBHOOK_EVENTS,
+} from '../src/modules/payments/stripe-webhook.js';
 import {
   DEFAULT_DOMAINS,
+  isConnectEndpoint,
   METHOD_NAMES,
   REQUIRED_METHODS,
   WEBHOOK_PATH,
@@ -93,16 +97,26 @@ async function main() {
   console.log('\nWebhook (Developers → Webhooks)');
   const { data: endpoints } = await client.webhookEndpoints.list({ limit: 100 });
   const ours = endpoints.filter((endpoint) => new URL(endpoint.url).pathname === WEBHOOK_PATH);
-  if (ours.length === 0) fail(`No endpoint for ${WEBHOOK_PATH}`);
+  if (!ours.some((endpoint) => !isConnectEndpoint(endpoint))) fail(`No endpoint for ${WEBHOOK_PATH}`);
+  if (!ours.some(isConnectEndpoint)) {
+    fail(`No Connect endpoint for ${WEBHOOK_PATH}, so payouts don't hear when Stripe pauses a Host's`);
+  }
+  // Each against its own events: the Connect one takes only those about Hosts' payout accounts.
   for (const endpoint of ours) {
+    const connect = isConnectEndpoint(endpoint);
+    const wanted: readonly string[] = connect ? STRIPE_CONNECT_WEBHOOK_EVENTS : STRIPE_WEBHOOK_EVENTS;
+    const label = `${endpoint.url}${connect ? ' (Connect)' : ''}`;
     const missing = endpoint.enabled_events.includes('*')
       ? []
-      : STRIPE_WEBHOOK_EVENTS.filter((event) => !endpoint.enabled_events.includes(event));
-    if (endpoint.status !== 'enabled') fail(`${endpoint.url} is ${endpoint.status}`);
-    else if (missing.length > 0) fail(`${endpoint.url} is missing ${missing.join(', ')}`);
-    else tick(`${endpoint.url} (API version ${endpoint.api_version ?? 'account default'})`);
+      : wanted.filter((event) => !endpoint.enabled_events.includes(event));
+    if (endpoint.status !== 'enabled') fail(`${label} is ${endpoint.status}`);
+    else if (missing.length > 0) fail(`${label} is missing ${missing.join(', ')}`);
+    else tick(`${label} (API version ${endpoint.api_version ?? 'account default'})`);
   }
   if (!env.STRIPE_WEBHOOK_SECRET) note('STRIPE_WEBHOOK_SECRET is not set here, so this API rejects webhooks');
+  if (!env.STRIPE_CONNECT_WEBHOOK_SECRET) {
+    note('STRIPE_CONNECT_WEBHOOK_SECRET is not set here, so this API rejects Connect webhooks');
+  }
 
   console.log(
     problems === 0

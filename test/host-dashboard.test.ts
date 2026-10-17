@@ -172,6 +172,77 @@ describe('daily Host reminders', () => {
     ).toBe(2);
   });
 
+  it('tell the Host a renewal they uploaded is waiting for our check, and ask support to check it', async () => {
+    const host = await createHost();
+    const guest = await createUser({ email: 'kiri@example.co.nz' });
+    const admin = await createStaff('aroha@example.co.nz', 'ADMIN');
+    // An approved car's new WOF date waits for our team to check the document showing it (plan §3).
+    const vehicle = await createVehicle(host._id, {
+      wofExpiry: new Date(Date.now() + 2 * DAY_MS),
+      pendingExpiries: { wofExpiry: new Date(Date.now() + 365 * DAY_MS) },
+      documents: [{ type: 'WOF', url: 'vehicle-documents/new-wof.pdf', status: 'PENDING' }],
+    });
+    const booking = await createBookingRecord(
+      { guestId: guest._id, hostId: host._id, vehicleId: vehicle._id },
+      { startAt: new Date(Date.now() + 1.5 * DAY_MS), endAt: new Date(Date.now() + 4 * DAY_MS) },
+    );
+
+    const { items } = (await (await signIn(host.email)).get('/api/v1/host/todo')).body;
+    expect(items.find((item: { kind: string }) => item.kind === 'DOCUMENT_EXPIRING')).toMatchObject({
+      title: '2021 Toyota Corolla: new WOF waiting for our check',
+      detail: expect.stringContaining('Nothing more to upload'),
+      urgent: false,
+    });
+
+    await runHostReminders();
+    const titles = async (userId: typeof host._id, type: string) =>
+      (await NotificationModel.find({ userId, type, channel: 'IN_APP' }))
+        .map((notification) => (notification.payload as { title: string }).title)
+        .sort();
+    expect(await titles(host._id, 'DOCUMENT_EXPIRING')).toEqual([
+      '2021 Toyota Corolla: new WOF waiting for our check',
+    ]);
+    expect(await titles(host._id, 'DOCUMENT_BEFORE_TRIP')).toEqual([
+      `New WOF waiting for our check before ${booking.ref}`,
+    ]);
+    const email = await NotificationModel.findOne({
+      userId: host._id,
+      type: 'DOCUMENT_BEFORE_TRIP',
+      channel: 'EMAIL',
+    });
+    expect(email!.payload).toMatchObject({ props: { buttonLabel: 'See the documents' } });
+    // Support checks the document first, on the car's review page.
+    const alert = await NotificationModel.findOne({
+      userId: admin._id,
+      type: 'DOCUMENT_BEFORE_TRIP',
+      channel: 'IN_APP',
+    });
+    expect(alert!.payload).toMatchObject({
+      title: `${booking.ref}: the car's new WOF is waiting for our check`,
+      link: `/admin/vehicles/${vehicle.id}`,
+    });
+
+    // Our team couldn't accept it: the Host is asked for a renewal again, and support to contact both.
+    await VehicleModel.updateOne({ _id: vehicle._id }, { $set: { 'documents.0.status': 'REJECTED' } });
+    await runHostReminders();
+    expect(await titles(host._id, 'DOCUMENT_BEFORE_TRIP')).toEqual(
+      [
+        `New WOF waiting for our check before ${booking.ref}`,
+        `WOF runs out before ${booking.ref} ends`,
+      ].sort(),
+    );
+    expect(await titles(host._id, 'DOCUMENT_EXPIRING')).toEqual([
+      expect.stringMatching(/^2021 Toyota Corolla: WOF expires/),
+      '2021 Toyota Corolla: new WOF waiting for our check',
+    ]);
+    expect(await titles(admin._id, 'DOCUMENT_BEFORE_TRIP')).toEqual(
+      [
+        `${booking.ref}: the car's new WOF is waiting for our check`,
+        `${booking.ref}: the car's WOF runs out during the trip`,
+      ].sort(),
+    );
+  });
+
   it('count a Road User Charges licence that would run out on a booked trip’s kilometres', async () => {
     const host = await createHost();
     const guest = await createUser({ email: 'kiri@example.co.nz' });

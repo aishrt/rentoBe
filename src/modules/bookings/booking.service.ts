@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { withTransaction } from '../../db.js';
 import { stripe } from '../../integrations/stripe.js';
 import { enqueue } from '../../jobs/queue.js';
+import { formatNzDateTime } from '../../lib/format.js';
 import { HttpError, unauthenticated } from '../../lib/http-error.js';
 import { forget } from '../../lib/memo.js';
 import { randomRef } from '../../lib/refs.js';
@@ -15,7 +16,7 @@ import {
 } from '../availability/availability.service.js';
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { bookingPayment } from '../payments/booking-payment.js';
-import { PaymentModel, type PaymentDocument } from '../payments/payment.model.js';
+import { PaymentModel, isChargedBack, type PaymentDocument } from '../payments/payment.model.js';
 import { hostPartOf, tripPayoutOnCancel } from '../payouts/payouts.service.js';
 import { ReviewModel } from '../reviews/review.model.js';
 import { checkBookingVelocity } from '../risk/risk-signals.js';
@@ -466,10 +467,46 @@ const notARequest = () =>
     "This booking is waiting for the guest's identity check, not for your answer.",
   );
 
+/** A Guest whose account is suspended or closed isn't charged (plan §8.2, user suspended). */
+const guestOnHold = (guest: { status: string; closedAt?: Date } | null) =>
+  !guest || guest.status !== 'ACTIVE' || Boolean(guest.closedAt);
+
+const guestSuspended = () =>
+  new HttpError(
+    409,
+    'GUEST_SUSPENDED',
+    "This guest's account is on hold, so the request can't be accepted. Our team will be in touch.",
+  );
+
+/**
+ * Staff hear of a booking that can't be confirmed because its Guest's account is on hold (plan §8.2: their
+ * upcoming bookings are the admin's to cancel or let go ahead), once for each booking. A request the Host
+ * tried to accept meanwhile isn't recorded as accepted (acceptBooking refuses it first), so lifting the
+ * suspension doesn't confirm it: the Host has to accept it again before it expires.
+ */
+async function alertGuestOnHold(
+  booking: Pick<BookingDocument, 'id' | 'ref' | 'instantBook' | 'hostAcceptedAt' | 'requestExpiresAt'>,
+) {
+  const accepted = booking.instantBook || Boolean(booking.hostAcceptedAt);
+  const expires = booking.requestExpiresAt
+    ? ` before the request expires (at ${formatNzDateTime(booking.requestExpiresAt)} NZ time)`
+    : ' before the request expires';
+  await alertStaff({
+    type: 'GUEST_SUSPENDED_BOOKING',
+    title: `${booking.ref} not confirmed: the guest's account is on hold`,
+    body: accepted
+      ? `booking ${booking.ref} was ready to confirm, but the guest's account is suspended or closed, so their card wasn't charged. Cancel it from the booking, or lift the suspension if it can go ahead: it's then confirmed.`
+      : `the host tried to accept booking ${booking.ref}, but the guest's account is suspended or closed, so their card wasn't charged and the acceptance wasn't recorded. Cancel it from the booking, or lift the suspension if it can go ahead: the host then has to accept it again${expires}. Otherwise it expires and the card hold is released.`,
+    link: `/admin/bookings/${booking.ref}`,
+    dedupeKey: `GUEST_SUSPENDED_BOOKING:${booking.id}`,
+  });
+}
+
 /**
  * POST /bookings/{id}/accept: the Host accepts a request; the authorisation is captured (plan §8.1).
  * While the Guest's verification is still in review, the acceptance is recorded and the booking is
- * confirmed when support approves the check (plan §8.2).
+ * confirmed when support approves the check (plan §8.2): that's checked again here, as the Guest's licence
+ * may have gone back to support since they booked. 409 GUEST_SUSPENDED while the Guest's account is on hold.
  */
 export async function acceptBooking(
   booking: BookingDocument,
@@ -495,6 +532,29 @@ export async function acceptBooking(
   }
   // A suspended car takes no new bookings (plan §8.2): the request waits for staff, or expires.
   if (!(await vehicleTakesBookings(booking.vehicleId))) throw vehicleSuspended();
+  // Nor is a suspended Guest charged: staff cancel each of their bookings or let it go ahead (plan §8.2).
+  const guest = await UserModel.findById(booking.guestId)
+    .select('status closedAt identityVerification driverLicence')
+    .lean();
+  if (!guest || guestOnHold(guest)) {
+    await alertGuestOnHold(booking);
+    throw guestSuspended();
+  }
+  // The Guest's verification went back to support since they booked (changed licence details, say): the
+  // request waits for it, as one made meanwhile does.
+  if (
+    booking.verificationReview?.status !== 'PENDING' &&
+    verificationInReview(guest, await getPlatformSettings())
+  ) {
+    const held = await BookingModel.findOneAndUpdate(
+      { _id: booking._id, status: 'PENDING' },
+      { $set: { verificationReview: { status: 'PENDING' } } },
+      { new: true },
+    );
+    if (!held) throw new HttpError(409, 'NOT_PENDING', 'This request has already been answered.');
+    booking = held;
+    if (booking.hostAcceptedAt) return booking;
+  }
 
   if (booking.verificationReview?.status === 'PENDING' && !booking.hostAcceptedAt) {
     const accepted = await withTransaction(async (session) => {
@@ -608,11 +668,12 @@ async function captureUnsettled(booking: BookingDocument, error: HttpError) {
 }
 
 /**
- * A suspension lifted (a car's, or its Host's): bookings that waited only for it, with the Guest's check
- * approved and the Host's answer given (or Instant Book), are captured and confirmed while their time lasts.
+ * A suspension lifted (a car's, its Host's, or its Guest's): bookings that waited only for it, with the Guest's
+ * check approved and the Host's answer given (or Instant Book), are captured and confirmed while their time
+ * lasts. One whose Guest's account is on hold stays for staff to decide (plan §8.2), and they hear of it.
  */
 export async function confirmAfterSuspension(
-  filter: { vehicleId: Types.ObjectId } | { hostId: Types.ObjectId },
+  filter: { vehicleId: Types.ObjectId } | { hostId: Types.ObjectId } | { guestId: Types.ObjectId },
   now = new Date(),
 ): Promise<string[]> {
   const ready = await BookingModel.find({
@@ -626,6 +687,10 @@ export async function confirmAfterSuspension(
   const confirmed: string[] = [];
   for (const booking of ready) {
     if (!(await vehicleTakesBookings(booking.vehicleId))) continue;
+    if (guestOnHold(await UserModel.findById(booking.guestId).select('status closedAt').lean())) {
+      await alertGuestOnHold(booking);
+      continue;
+    }
     try {
       await capturePending(booking, now);
       confirmed.push(booking.ref);
@@ -711,6 +776,11 @@ interface PaidOutcome extends CancellationOutcome {
   /** Earlier Host-funded refunds whose Host share the cancellation lowers, and what that comes to in all. */
   reliefs: RefundRelief[];
   reliefCents: number;
+  /**
+   * Staff cancelling a booking whose payment is in a chargeback (plan §8.1, item 12): nothing is refunded or kept,
+   * as the dispute decides the money, and the Host is settled as for a full refund.
+   */
+  disputed?: boolean;
 }
 
 /**
@@ -788,6 +858,23 @@ const hostTripStarted = () =>
     "The trip's start time has passed, so it can't be cancelled here. If the guest hasn't turned up, or you can't provide the car, contact support.",
   );
 
+/**
+ * The booking's payment is in a chargeback (plan §8.1, item 12): Stripe refuses a refund of it and the dispute
+ * decides the money, so only support can cancel the booking (adminOutcome).
+ */
+const paymentDisputed = () =>
+  new HttpError(
+    409,
+    'PAYMENT_DISPUTED',
+    "This booking's payment is in a card dispute, so it can't be cancelled here. Please contact support.",
+  );
+
+/** Whether a paid booking's payment is in a chargeback (isChargedBack). */
+async function inChargeback(booking: BookingDocument): Promise<boolean> {
+  if (booking.status !== 'CONFIRMED' && booking.status !== 'ACTIVE') return false;
+  return isChargedBack(await bookingPayment(booking));
+}
+
 /** What a cancellation would do, for the actor's role (plan §11: cancellation-preview). */
 async function outcomeFor(booking: BookingDocument, viewer: Viewer, now: Date): Promise<PaidOutcome | null> {
   const settings = await getPlatformSettings();
@@ -816,24 +903,28 @@ export async function cancellationPreview(
   now = new Date(),
 ): Promise<CancellationPreview> {
   const outcome = await outcomeFor(booking, viewer, now);
+  const refused = (message: string): CancellationPreview => ({
+    allowed: false,
+    kind: null,
+    refundCents: 0,
+    feeCents: 0,
+    hostShareCents: 0,
+    hostFeeCents: 0,
+    refundPct: 0,
+    hoursBeforeStart: 0,
+    message,
+  });
   if (!outcome || outcome.kind === 'PLATFORM_CANCELLATION') {
-    return {
-      allowed: false,
-      kind: null,
-      refundCents: 0,
-      feeCents: 0,
-      hostShareCents: 0,
-      hostFeeCents: 0,
-      refundPct: 0,
-      hoursBeforeStart: 0,
-      message:
-        viewer === 'HOST' && booking.status === 'PENDING'
-          ? 'Decline the request instead: declining carries no fee.'
-          : viewer === 'HOST' && afterStart(booking, now)
-            ? hostTripStarted().message
-            : "This booking can't be cancelled here. Please contact support.",
-    };
+    return refused(
+      viewer === 'HOST' && booking.status === 'PENDING'
+        ? 'Decline the request instead: declining carries no fee.'
+        : viewer === 'HOST' && afterStart(booking, now)
+          ? hostTripStarted().message
+          : "This booking can't be cancelled here. Please contact support.",
+    );
   }
+  // The dialog says so, instead of offering a refund Stripe would refuse.
+  if (await inChargeback(booking)) return refused(paymentDisputed().message);
   const policy = booking.cancellationTerms
     ? `the ${booking.cancellationTerms.name} policy`
     : 'the cancellation policy';
@@ -960,7 +1051,11 @@ async function carryOut(
             from:
               booking.status === 'PENDING' || booking.status === 'ACTIVE' ? [booking.status] : ['CONFIRMED'],
             by: input.by,
-            reason: input.note,
+            reason: outcome.disputed
+              ? [input.note, 'Nothing was refunded: the card dispute on its payment decides the money.']
+                  .filter(Boolean)
+                  .join(' ')
+              : input.note,
             now,
             cancellation: {
               reason: input.reason,
@@ -968,6 +1063,7 @@ async function carryOut(
               feeCents: outcome.feeCents,
               hostShareCents: outcome.hostShareCents,
               hostFeeCents: outcome.hostFeeCents,
+              ...(outcome.disputed && { disputed: true }),
             },
           },
       session,
@@ -1010,6 +1106,9 @@ async function carryOut(
         { session },
       );
     }
+    // A dispute already lost (or prevented): the payment went back to the cardholder through it.
+    const disputeSettled =
+      Boolean(outcome.disputed) && ['lost', 'prevented'].includes(payment?.dispute?.status ?? '');
     if (outcome.kind !== 'ABANDON_CHECKOUT') {
       await notifyCancelled(
         record(ended),
@@ -1027,7 +1126,26 @@ async function carryOut(
             hostOwesCents: tripPayout.owedCents,
           }),
           ...(outcome.reliefCents > 0 && { hostRefundReliefCents: outcome.reliefCents }),
+          ...(outcome.disputed && { disputed: true }),
+          ...(disputeSettled && { disputeSettled: true }),
         },
+      );
+    }
+    if (outcome.disputed) {
+      // The dispute decides the money (plan §8.1, item 12): staff refund the Guest once it's won, if they should.
+      await alertStaff(
+        {
+          type: 'CANCELLED_IN_DISPUTE',
+          title: `${booking.ref} was cancelled during a card dispute`,
+          body: `booking ${booking.ref} was cancelled while its payment is in a card dispute (${payment?.dispute?.status ?? 'open'}), so nothing was refunded and the Host gets no payout for it. ${
+            disputeSettled
+              ? 'The payment already went back to the guest’s card through the dispute.'
+              : 'If the dispute is won, refund the guest what this cancellation would have given back, through Refunds on the booking.'
+          }`,
+          link: `/admin/bookings/${booking.ref}`,
+          dedupeKey: `CANCELLED_IN_DISPUTE:${booking.id}`,
+        },
+        { session },
       );
     }
     return ended;
@@ -1053,6 +1171,8 @@ async function carryOut(
       }),
       // Staff give a reason and a note (plan §8.2).
       ...(input.cancelledBy === 'SUPPORT' && { reason: input.reason, note: input.note }),
+      // Nothing refunded or kept: the card dispute decides the money (plan §8.1, item 12).
+      ...(outcome.disputed && { disputed: true }),
     },
   });
   if (outcome.kind === 'HOST_CANCELLATION') await flagRepeatedHostCancellations(booking.hostId, now);
@@ -1078,6 +1198,7 @@ export async function cancelBooking(
     throw new HttpError(409, 'USE_DECLINE', 'Decline the request instead: declining carries no fee.');
   }
   if (viewer === 'HOST' && afterStart(booking, now)) throw hostTripStarted();
+  if (await inChargeback(booking)) throw paymentDisputed();
   const outcome = await outcomeFor(booking, viewer, now);
   if (!outcome)
     throw new HttpError(
@@ -1154,7 +1275,21 @@ async function adminOutcome(
       : reason === 'HOST_NO_SHOW' || reason === 'HOST_CANCELLED'
         ? hostCancellation(booking, settings, now)
         : platformCancellation(booking, now);
-  const paid = afterEarlierRefunds(outcome, await bookingPayment(booking));
+  const payment = await bookingPayment(booking);
+  // A chargeback (plan §8.1, item 12): Stripe refuses a refund, and the dispute decides the money, so nothing is
+  // refunded or kept here. The Host is settled as for a full refund (no share of a kept fee, nothing towards
+  // earlier refunds they funded): they aren't paid from money going back to the cardholder.
+  const paid = isChargedBack(payment)
+    ? {
+        ...afterEarlierRefunds(
+          { ...outcome, refundCents: payment!.amountCents, feeCents: 0, hostShareCents: 0 },
+          payment,
+        ),
+        refundCents: 0,
+        feeCents: 0,
+        disputed: true,
+      }
+    : afterEarlierRefunds(outcome, payment);
   // The trip's payout is being sent this moment (a trip under way): the cancellation waits for it.
   const trip = await tripPayoutOnCancel(booking._id, paid.hostShareCents, {
     reliefCents: paid.reliefCents,
@@ -1279,6 +1414,17 @@ export async function adminCancellationPreview(
         : trip.topUpCents > 0
           ? ` The Host’s trip payout of ${formatDollars(trip.paidCents)} was already sent, so they’re paid the ${formatDollars(trip.topUpCents)} difference.`
           : ` The Host’s trip payout of ${formatDollars(trip.paidCents)} was already sent, which is their share.`;
+  if (outcome.disputed) {
+    // The dispute decides the money (plan §8.1, item 12): nothing goes back through Stripe here.
+    const settled = ['lost', 'prevented'].includes(payment?.dispute?.status ?? '');
+    return {
+      ...base,
+      allowed: true,
+      ...none,
+      hostFeeCents: outcome.hostFeeCents,
+      message: `The Guest’s payment is in a card dispute, so nothing is refunded here: the dispute decides the money${settled ? ', and it has already gone back to their card' : ''}. The Host gets no payout or share of a fee for this booking.${outcome.hostFeeCents > 0 ? ` A Host cancellation fee of ${formatDollars(outcome.hostFeeCents)} comes off the Host’s next payout.` : ''}${sent}${settled ? '' : ' If the dispute is won, refund the Guest through Refunds on the booking.'}`,
+    };
+  }
   const message =
     outcome.kind === 'GUEST_CANCELLATION'
       ? `A Guest cancellation at the start time, under ${policy}: the Guest gets ${formatDollars(refundCents)} back${outcome.feeCents > 0 || outcome.hostShareCents > 0 ? ` and ${formatDollars(outcome.feeCents)} is kept${outcome.hostShareCents > 0 ? hostShare : ''}` : ''}.${capped}${relief}${sent}`
@@ -1458,7 +1604,7 @@ export async function resolveVerificationReview(
   const guest =
     decision === 'APPROVE' && waiting.length > 0
       ? await UserModel.findById(guestId)
-          .select('phoneVerifiedAt dob identityVerification driverLicence')
+          .select('status closedAt phoneVerifiedAt dob identityVerification driverLicence')
           .lean()
       : null;
   const settings = guest ? await getPlatformSettings() : null;
@@ -1507,6 +1653,11 @@ export async function resolveVerificationReview(
     // A suspended car takes no new bookings (plan §8.2): this one waits for the suspension to be lifted.
     if (!(await vehicleTakesBookings(decided.vehicleId))) {
       carSuspended.push(decided.ref);
+      continue;
+    }
+    // Nor is a suspended Guest charged: it waits for staff, and goes ahead if the suspension is lifted in time.
+    if (guestOnHold(guest)) {
+      await alertGuestOnHold(decided);
       continue;
     }
     try {

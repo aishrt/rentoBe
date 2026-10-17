@@ -273,6 +273,17 @@ describe('the earnings page', () => {
     const agent = await signIn(parts.host.email);
     // $213.60, less the Host's $40 share of the refund and the $50 fee.
     expect((await agent.get('/api/v1/host/earnings')).body.summary.upcomingPayoutsCents).toBe(12_360);
+    // The payout's row shows the refund still to come off it, as its own line, and what it then brings; the fee
+    // owed is shown on its own, so the two add up to the total.
+    const listed = await agent.get('/api/v1/host/payouts');
+    expect(listed.body.payouts.find((payout: { id: string }) => payout.id === parts.payout.id)).toMatchObject(
+      {
+        status: 'SCHEDULED',
+        amountCents: 17_360,
+        deductions: [{ type: 'HOST_FUNDED_REFUND', amountCents: 4_000, bookingRef: parts.booking.ref }],
+      },
+    );
+    expect(listed.body.account).toMatchObject({ feesOwedCents: 5_000 });
     expect(await runPayout(parts.payout.id)).toBe('paid');
     expect((await PayoutModel.findById(parts.payout._id).lean())!.amountCents).toBe(12_360);
   });

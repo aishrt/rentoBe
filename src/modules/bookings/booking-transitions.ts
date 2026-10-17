@@ -140,6 +140,8 @@ export interface EndInput {
     feeCents: number;
     hostShareCents: number;
     hostFeeCents: number;
+    /** Its payment is in a chargeback, so nothing was refunded or kept (plan §8.1, item 12). */
+    disputed?: boolean;
   };
   now?: Date;
 }
@@ -160,6 +162,7 @@ export async function endBooking(booking: BookingDocument, input: EndInput, sess
           cancellationFeeCents: input.cancellation.feeCents,
           hostShareCents: input.cancellation.hostShareCents,
           hostCancellationFeeCents: input.cancellation.hostFeeCents,
+          ...(input.cancellation.disputed && { cancelledInDispute: true }),
         }
       : {},
   });

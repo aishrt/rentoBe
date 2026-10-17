@@ -91,9 +91,17 @@ interface DayFigures {
   keptFeesCents: number;
   /** The platform's part of those: the fee less the Host's share. */
   cancellationShareCents: number;
+  /**
+   * Charged to Hosts who cancelled a confirmed booking that day, less any part waived, GST included (plan §8.1,
+   * item 10), as the Host's earnings statement counts it.
+   */
+  hostCancellationFeesCents: number;
   extraChargesCents: number;
   extraCommissionCents: number;
-  /** Service fees, commission, the share of fees kept and the commission on extra charges. */
+  /**
+   * Service fees, commission, the share of fees kept, Host cancellation fees and the commission on extra
+   * charges.
+   */
   platformFeesCents: number;
   refundsCents: number;
   platformRefundsCents: number;
@@ -115,6 +123,7 @@ const emptyDay = (): DayFigures => ({
   hostCommissionCents: 0,
   keptFeesCents: 0,
   cancellationShareCents: 0,
+  hostCancellationFeesCents: 0,
   extraChargesCents: 0,
   extraCommissionCents: 0,
   platformFeesCents: 0,
@@ -252,13 +261,27 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
         },
       },
     ]),
-    BookingModel.aggregate<{ _id: string; fees: number; hostShare: number }>([
+    BookingModel.aggregate<{ _id: string; fees: number; hostShare: number; hostFees: number }>([
       { $match: { status: 'CANCELLED', cancelledAt: { $gte: range.start, $lt: range.end } } },
       {
         $group: {
           _id: nzDayOf('$cancelledAt'),
           fees: { $sum: { $ifNull: ['$cancellationFeeCents', 0] } },
           hostShare: { $sum: { $ifNull: ['$hostShareCents', 0] } },
+          // The Host's cancellation fee less what an admin waived (hosts/earnings.service.ts does the same).
+          hostFees: {
+            $sum: {
+              $max: [
+                0,
+                {
+                  $subtract: [
+                    { $ifNull: ['$hostCancellationFeeCents', 0] },
+                    { $ifNull: ['$hostCancellationFeeWaivedCents', 0] },
+                  ],
+                },
+              ],
+            },
+          },
         },
       },
     ]),
@@ -286,6 +309,7 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
     day.keptFeesCents += row.fees;
     // The platform keeps a kept fee less the Host's share of it.
     day.cancellationShareCents += row.fees - row.hostShare;
+    day.hostCancellationFeesCents += row.hostFees;
   }
   for (const charge of charges) {
     const day = on(charge.day);
@@ -300,7 +324,11 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
   }
   for (const day of days.values()) {
     day.platformFeesCents =
-      day.serviceFeesCents + day.hostCommissionCents + day.cancellationShareCents + day.extraCommissionCents;
+      day.serviceFeesCents +
+      day.hostCommissionCents +
+      day.cancellationShareCents +
+      day.hostCancellationFeesCents +
+      day.extraCommissionCents;
     day.gstInExtraChargesCents = gstIn(day.extraChargesCents, rate);
     day.gstInCancellationFeesCents = gstIn(day.keptFeesCents, rate);
     day.gstGivenBackCents = gstIn(day.givenBackCents, rate);
@@ -318,6 +346,7 @@ async function dailyFigures(range: ReportRange): Promise<[string, DayFigures][]>
  * Booking revenue (spec §18): what Guests paid for trips, extra charges and kept fees, less the refunds of that
  * money (a cancellation's own refund, and any made before it, are already out of the fee kept, and a late or
  * second payment's was never counted). For each booking it comes to what the platform keeps of what was paid.
+ * A Host cancellation fee is paid by the Host, not for the booking, so it counts in the platform fees only.
  */
 const bookingRevenue = (sum: DayFigures) =>
   sum.tripsCents + sum.extraChargesCents + sum.keptFeesCents - sum.givenBackCents;
@@ -384,6 +413,7 @@ export async function platformReport(
       serviceFeesCents: sum.serviceFeesCents,
       hostCommissionCents: sum.hostCommissionCents,
       cancellationFeesShareCents: sum.cancellationShareCents,
+      hostCancellationFeesCents: sum.hostCancellationFeesCents,
       extraChargeCommissionCents: sum.extraCommissionCents,
       totalCents: sum.platformFeesCents,
     },
@@ -625,7 +655,8 @@ async function cancellationsCsv(range: ReportRange): Promise<Csv> {
 
 /**
  * One row per NZ month, and the total: GST in what Guests paid for trips, extra charges and the fees kept
- * when they cancelled, less the GST in refunds of that money; and the GST in the platform's fees.
+ * when they cancelled, less the GST in refunds of that money; and the GST in the platform's fees, Host
+ * cancellation fees among them.
  */
 async function gstCsv(range: ReportRange): Promise<Csv> {
   const months = new Map<string, DayFigures[]>();
@@ -644,6 +675,7 @@ async function gstCsv(range: ReportRange): Promise<Csv> {
     dollars(figures.givenBackCents),
     dollars(figures.gstGivenBackCents),
     dollars(figures.gstCollectedCents),
+    dollars(figures.hostCancellationFeesCents),
     dollars(figures.platformFeesCents),
     dollars(figures.gstOnPlatformFeesCents),
   ];
@@ -660,6 +692,7 @@ async function gstCsv(range: ReportRange): Promise<Csv> {
       'Refunds of these (GST incl.)',
       'GST given back',
       'GST collected',
+      'Host cancellation fees (GST incl.)',
       'Platform fees (GST incl.)',
       'GST in platform fees',
     ],
@@ -668,8 +701,8 @@ async function gstCsv(range: ReportRange): Promise<Csv> {
 }
 
 /**
- * One row per NZ day with money, and the total: what Guests paid for trips, the platform's fees by kind,
- * extra charges, and refunds. The totals match the summary for the same dates.
+ * One row per NZ day with money, and the total: what Guests paid for trips, booking revenue, the platform's
+ * fees by kind, extra charges, and refunds. The totals match the summary for the same dates.
  */
 async function revenueCsv(range: ReportRange): Promise<Csv> {
   const days = await dailyFigures(range);
@@ -677,10 +710,12 @@ async function revenueCsv(range: ReportRange): Promise<Csv> {
     text(label),
     String(figures.trips),
     dollars(figures.tripsCents),
+    dollars(bookingRevenue(figures)),
     dollars(figures.serviceFeesCents),
     dollars(figures.hostCommissionCents),
     dollars(figures.keptFeesCents),
     dollars(figures.cancellationShareCents),
+    dollars(figures.hostCancellationFeesCents),
     dollars(figures.extraChargesCents),
     dollars(figures.extraCommissionCents),
     dollars(figures.platformFeesCents),
@@ -692,11 +727,13 @@ async function revenueCsv(range: ReportRange): Promise<Csv> {
     header: [
       'Date',
       'Trips starting',
+      'Trips paid (GST incl.)',
       'Booking revenue (GST incl.)',
       'Service fees',
       'Host commission',
       'Cancellation fees kept',
       'Platform share of cancellation fees',
+      'Host cancellation fees',
       'Extra charges',
       'Extra-charge commission',
       'Platform fees',

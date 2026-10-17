@@ -59,7 +59,11 @@ export const DECISION_KEYS = [
   'reviewsAndTrips',
   'company',
   'bookingRules',
+  /** What a listing needs (documents, photos, limits), and the search limits (plan §16, items 13 and 17). */
+  'listingsAndSearch',
   'verificationServices',
+  /** The Become a Host estimator's typical prices and booked days (plan §16, item 18). */
+  'hostEstimator',
   /** The retention periods wait for the client's legal adviser (plan §16, item 11). */
   'retentionAndRisk',
 ] as const;

@@ -75,14 +75,22 @@ import {
   riskQueueQuerySchema,
   staffTicketReplySchema,
   suspendSchema,
+  ticketLinkSchema,
   ticketListQuerySchema,
   ticketUpdateSchema,
+  userExportQuerySchema,
   userListQuerySchema,
   waiveFeeSchema,
 } from './admin-ops.schemas.js';
 import { adminDashboard, auditLog, listJobs, retryJob } from './admin-audit.service.js';
 import { exportReport, platformReport } from './admin-reports.service.js';
-import { listTickets, replyToTicket, staffTicket, updateTicket } from './admin-support.service.js';
+import {
+  linkTicketToAccount,
+  listTickets,
+  replyToTicket,
+  staffTicket,
+  updateTicket,
+} from './admin-support.service.js';
 import { correctUserDetails, exportUserData } from './admin-user-privacy.service.js';
 import {
   clearRiskFlag,
@@ -131,8 +139,10 @@ export function adminOpsRouter() {
     });
   });
 
+  // Only from the privacy request it answers (?ticket=ST-…), like a thread from a report, case or ticket.
   router.get('/users/:id/export', async (req, res) => {
-    const { filename, data } = await exportUserData(req.auth!.userId, param(req, 'id'), req.ip);
+    const { ticket } = validate(userExportQuerySchema, req.query);
+    const { filename, data } = await exportUserData(req.auth!.userId, param(req, 'id'), ticket, req.ip);
     res
       .type('application/json; charset=utf-8')
       .set('Content-Disposition', `attachment; filename="${filename}"`)
@@ -246,6 +256,11 @@ export function adminOpsRouter() {
   router.post('/support/tickets/:ref/messages', async (req, res) => {
     const input = validate(staffTicketReplySchema, req.body);
     res.json({ ticket: await replyToTicket(req.auth!.userId, param(req, 'ref'), input, req.ip) });
+  });
+
+  router.post('/support/tickets/:ref/link-account', async (req, res) => {
+    const { note } = validate(ticketLinkSchema, req.body ?? {});
+    res.json({ ticket: await linkTicketToAccount(req.auth!.userId, param(req, 'ref'), note, req.ip) });
   });
 
   router.patch('/support/tickets/:ref', async (req, res) => {

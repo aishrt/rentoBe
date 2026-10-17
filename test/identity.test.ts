@@ -7,6 +7,7 @@ import { JobModel } from '../src/jobs/job.model.js';
 import { runDataRetention } from '../src/modules/admin/data-retention.service.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
+import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { ConditionReportModel } from '../src/modules/inspections/condition-report.model.js';
 import { MessageModel } from '../src/modules/messages/message.model.js';
 import { ThreadModel } from '../src/modules/messages/thread.model.js';
@@ -115,6 +116,85 @@ describe('the identity check', () => {
       { code: 'PHONE_REQUIRED', message: 'Verify your mobile number.' },
     ]);
     expect((await agent.post('/api/v1/me/verification').send({})).body.error.code).toBe('ALREADY_VERIFIED');
+  });
+
+  it('reads the number and date of birth on the ID only with the restricted key', async () => {
+    const savedKey = env.STRIPE_IDENTITY_KEY;
+    try {
+      const { user } = await guestWithLicence();
+      const checkStarted = { status: 'NONE', providerRef: 'vs_1', sessionStatus: 'requires_input' };
+      session = { ...session, status: 'verified', last_verification_report: 'vr_1' };
+
+      // Stripe never gives them to the secret key: the report is read without them, the ID and selfie pass,
+      // and support checks the licence by hand.
+      env.STRIPE_IDENTITY_KEY = undefined;
+      await UserModel.updateOne({ _id: user._id }, { $set: { identityVerification: checkStarted } });
+      report = {
+        id: 'vr_1',
+        document: { type: 'driving_license' },
+      } as unknown as Partial<Stripe.Identity.VerificationReport>;
+      await syncIdentity(user.id);
+      expect(client.identity.verificationReports.retrieve).toHaveBeenLastCalledWith('vr_1');
+      const unread = await UserModel.findById(user._id);
+      expect(unread!.identityVerification!.status).toBe('APPROVED');
+      expect(unread!.driverLicence!.status).toBe('PENDING');
+
+      // With the restricted key, they're asked for, and the ID's licence number confirms the licence.
+      env.STRIPE_IDENTITY_KEY = 'rk_test_identity';
+      await UserModel.updateOne({ _id: user._id }, { $set: { identityVerification: checkStarted } });
+      report = licenceReport('AB123456');
+      await syncIdentity(user.id);
+      expect(client.identity.verificationReports.retrieve).toHaveBeenLastCalledWith(
+        'vr_1',
+        { expand: ['document.number', 'document.dob'] },
+        { apiKey: 'rk_test_identity' },
+      );
+      expect((await UserModel.findById(user._id))!.driverLicence!.status).toBe('APPROVED');
+    } finally {
+      env.STRIPE_IDENTITY_KEY = savedKey;
+    }
+  });
+
+  it('tells a Host applicant whose ID passed that their application is next', async () => {
+    const user = await createUser({ email: 'tama@example.co.nz', firstName: 'Tama' });
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          'hostProfile.status': 'APPLIED',
+          'hostProfile.appliedAt': new Date(),
+          identityVerification: { status: 'NONE', providerRef: 'vs_1', sessionStatus: 'requires_input' },
+        },
+      },
+    );
+    session = { ...session, status: 'verified', last_verification_report: 'vr_1' };
+    report = {
+      id: 'vr_1',
+      document: { type: 'passport' },
+    } as unknown as Partial<Stripe.Identity.VerificationReport>;
+    expect((await syncIdentity(user.id)).status).toBe('APPROVED');
+
+    const bell = await NotificationModel.findOne({
+      userId: user._id,
+      type: 'IDENTITY_APPROVED',
+      channel: 'IN_APP',
+    }).lean();
+    expect(bell?.payload).toMatchObject({
+      body: 'Our team can now review your Host application.',
+      link: '/host',
+    });
+    const email = await NotificationModel.findOne({
+      userId: user._id,
+      type: 'IDENTITY_APPROVED',
+      channel: 'EMAIL',
+    }).lean();
+    expect(email?.payload).toMatchObject({
+      props: {
+        paragraphs: [expect.any(String), expect.stringContaining('review your Host application')],
+        buttonLabel: 'Go to Hosting',
+        url: 'http://localhost:5173/host',
+      },
+    });
   });
 
   it('sends a mismatched licence number to support, and lets someone retry an abandoned check', async () => {
@@ -407,6 +487,79 @@ describe('data retention', () => {
   });
 });
 
+describe('a turned-down check and a confirmed trip', () => {
+  it('keeps the trip booked, alerts support to it, and tells the Guest whether it can start', async () => {
+    const { user } = await guestWithLicence();
+    const host = await createHost();
+    const vehicle = await createVehicle(host._id);
+    const booking = await createBookingRecord({
+      guestId: user._id,
+      hostId: host._id,
+      vehicleId: vehicle._id,
+    });
+    const inReview = {
+      status: 'PENDING',
+      providerRef: 'vs_1',
+      reviewReason: 'The selfie doesn’t match the ID.',
+    };
+    // Their licence still waits for its check, which comes after the ID.
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { identityVerification: inReview, 'driverLicence.status': 'PENDING' } },
+    );
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    const reject = () =>
+      staff.post(`/api/v1/admin/users/${user.id}/identity-review`).send({ decision: 'REJECT' });
+
+    const rejected = await reject();
+    expect(rejected.status).toBe(200);
+    expect(rejected.body).toMatchObject({
+      identityStatus: 'REJECTED',
+      released: [],
+      stillBooked: [booking.ref],
+    });
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('CONFIRMED');
+    const alert = await NotificationModel.findOne({
+      type: 'IDENTITY_REJECTED_BOOKED_TRIP',
+      channel: 'IN_APP',
+    }).lean();
+    expect(alert?.payload).toMatchObject({
+      title: `Identity check turned down before ${booking.ref}`,
+      body: expect.stringContaining('is refused'),
+      link: `/admin/bookings/${booking.ref}`,
+    });
+    const told = await NotificationModel.findOne({
+      userId: user._id,
+      type: 'IDENTITY_REJECTED',
+      channel: 'IN_APP',
+    }).lean();
+    expect(told?.payload).toMatchObject({
+      body: expect.stringContaining('can’t start until this is sorted out'),
+    });
+
+    // With the licence approved, the trip can still start: support decide.
+    await NotificationModel.deleteMany({});
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { identityVerification: inReview, 'driverLicence.status': 'APPROVED' } },
+    );
+    expect((await reject()).body.stillBooked).toEqual([booking.ref]);
+    const second = await NotificationModel.findOne({
+      type: 'IDENTITY_REJECTED_BOOKED_TRIP',
+      channel: 'IN_APP',
+    }).lean();
+    expect(second?.payload).toMatchObject({ body: expect.stringContaining('can still be checked in') });
+
+    // Nothing to alert about without a confirmed trip.
+    await BookingModel.updateOne({ _id: booking._id }, { $set: { status: 'COMPLETED' } });
+    await NotificationModel.deleteMany({});
+    await UserModel.updateOne({ _id: user._id }, { $set: { identityVerification: inReview } });
+    expect((await reject()).body.stillBooked).toBeUndefined();
+    expect(await NotificationModel.exists({ type: 'IDENTITY_REJECTED_BOOKED_TRIP' })).toBeNull();
+  });
+});
+
 describe('a check already under way', () => {
   it('waits for one Stripe is checking, and applies one that passed, rather than starting another', async () => {
     const { user, agent } = await guestWithLicence();
@@ -503,5 +656,196 @@ describe('a closed account’s identity check', () => {
       identitiesRedacted: 1,
     });
     expect(client.identity.verificationSessions.redact).toHaveBeenLastCalledWith('vs_closed_recent');
+  });
+});
+
+describe('another try after a turned-down check', () => {
+  const reset = (agent: ReturnType<typeof browserAgent>, userId: string, body: object) =>
+    agent.post(`/api/v1/admin/users/${userId}/verification-reset`).send(body);
+
+  it('lets support reopen a turned-down identity check, so the member can start a new one', async () => {
+    const { user, agent } = await guestWithLicence();
+    await createStaff('mere@example.co.nz', 'SUPPORT');
+    const support = await staffAgent('mere@example.co.nz');
+    // A check support turned down: a dead end for the member until support reopen it.
+    expect((await agent.post('/api/v1/me/verification').send({})).status).toBe(200);
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          'identityVerification.status': 'REJECTED',
+          'identityVerification.reviewReason': 'The selfie doesn’t match the ID.',
+          'identityVerification.documentType': 'driving_license',
+          'identityVerification.documentNumberHash': 'hash-of-the-id',
+        },
+      },
+    );
+    expect((await agent.post('/api/v1/me/verification').send({})).body.error.code).toBe('IDENTITY_REJECTED');
+
+    // A reason is needed, and only a turned-down check is reopened.
+    expect((await reset(support, user.id, { kind: 'IDENTITY' })).status).toBe(400);
+    expect((await reset(support, user.id, { kind: 'LICENCE', reason: 'They asked' })).body.error.code).toBe(
+      'NOT_REJECTED',
+    );
+
+    const reason = 'The selfie was too dark; they asked to try again.';
+    const reopened = await reset(support, user.id, { kind: 'IDENTITY', reason });
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.user).toMatchObject({ id: user.id, identityStatus: 'NONE' });
+    const identity = (await UserModel.findById(user._id).lean())!.identityVerification!;
+    expect(identity).toMatchObject({
+      status: 'NONE',
+      earlierSessions: [expect.objectContaining({ providerRef: 'vs_1' })],
+    });
+    expect(identity.providerRef).toBeUndefined();
+    expect(identity.reviewReason).toBeUndefined();
+    expect(identity.documentType).toBeUndefined();
+    // The licence number the ID showed stays, so the account still turns up with others that have it.
+    expect(identity.documentNumberHash).toBe('hash-of-the-id');
+    expect(await AuditLogModel.findOne({ action: 'identity.reopened' }).lean()).toMatchObject({
+      entityId: user.id,
+      before: { status: 'REJECTED', session: 'vs_1' },
+      after: { status: 'NONE', reason },
+    });
+    expect(
+      await NotificationModel.countDocuments({
+        userId: user._id,
+        type: 'IDENTITY_RETRY_ALLOWED',
+        channel: 'EMAIL',
+      }),
+    ).toBe(1);
+    // Reopened once.
+    expect((await reset(support, user.id, { kind: 'IDENTITY', reason })).body.error.code).toBe(
+      'NOT_REJECTED',
+    );
+
+    // A new check starts; the turned-down one is still redacted 90 days after it began (plan §14).
+    session = { id: 'vs_2', status: 'requires_input', url: 'https://verify.stripe.com/start/def' };
+    const started = await agent.post('/api/v1/me/verification').send({});
+    expect(started.body.url).toBe('https://verify.stripe.com/start/def');
+    expect((await UserModel.findById(user._id).lean())!.identityVerification).toMatchObject({
+      status: 'NONE',
+      providerRef: 'vs_2',
+    });
+    await runDataRetention(new Date(Date.now() + 91 * DAY_MS));
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledWith('vs_1');
+  });
+
+  it('sends a turned-down licence back to the queue, where its booked trip waits for the check again', async () => {
+    const { user, agent } = await guestWithLicence();
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          'driverLicence.status': 'REJECTED',
+          identityVerification: { status: 'APPROVED', documentType: 'passport' },
+        },
+      },
+    );
+    const host = await createHost();
+    const vehicle = await createVehicle(host._id);
+    const trip = await createBookingRecord({ guestId: user._id, hostId: host._id, vehicleId: vehicle._id });
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    // The same details saved again stay turned down, and nothing is in the queue.
+    const resaved = await agent.put('/api/v1/me/driver-licence').send({
+      number: 'AB123456',
+      version: '123',
+      class: 'NZ_FULL',
+      issuedAt: '2012-05-01',
+      expiry: '2034-05-01',
+      dob: '1990-04-21',
+    });
+    expect(resaved.body.licence.status).toBe('REJECTED');
+    expect((await staff.get('/api/v1/admin/verifications')).body.items).toEqual([]);
+
+    const reason = 'They sent a clearer photo of the card.';
+    const reopened = await reset(staff, user.id, { kind: 'LICENCE', reason });
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.user.licence.status).toBe('PENDING');
+    const queue = await staff.get('/api/v1/admin/verifications');
+    expect(queue.body.items).toEqual([
+      expect.objectContaining({
+        userId: user.id,
+        kind: 'LICENCE',
+        waitingBookings: [expect.objectContaining({ ref: trip.ref, startsAt: trip.startAt.toISOString() })],
+      }),
+    ]);
+    // Support hear the trip waits for the check; the member is told it's being checked again.
+    expect(
+      await NotificationModel.countDocuments({ type: 'LICENCE_CHECK_BEFORE_TRIP', channel: 'IN_APP' }),
+    ).toBe(1);
+    expect(
+      await NotificationModel.countDocuments({ userId: user._id, type: 'LICENCE_RECHECK', channel: 'EMAIL' }),
+    ).toBe(1);
+    expect(await AuditLogModel.findOne({ action: 'licence.reopened' }).lean()).toMatchObject({
+      entityId: user.id,
+      after: { status: 'PENDING', reason },
+    });
+  });
+
+  it('redacts an old check with no start date on time, counting from the account’s last change', async () => {
+    const user = await createUser();
+    await createStaff('mere@example.co.nz', 'SUPPORT');
+    const lastChanged = new Date(Date.now() - 80 * DAY_MS);
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: { identityVerification: { status: 'REJECTED', providerRef: 'vs_old' }, updatedAt: lastChanged },
+      },
+      { timestamps: false },
+    );
+    const reopened = await reset(await staffAgent('mere@example.co.nz'), user.id, {
+      kind: 'IDENTITY',
+      reason: 'They asked to try again.',
+    });
+    expect(reopened.status).toBe(200);
+    expect((await UserModel.findById(user._id).lean())!.identityVerification!.earlierSessions).toEqual([
+      expect.objectContaining({ providerRef: 'vs_old', startedAt: lastChanged }),
+    ]);
+    // 90 days after that, not after the reopening.
+    await runDataRetention(new Date(Date.now() + 11 * DAY_MS));
+    expect(client.identity.verificationSessions.redact).toHaveBeenCalledWith('vs_old');
+  });
+
+  it('won’t send a licence back to the queue before the identity check it waits for', async () => {
+    const { user } = await guestWithLicence();
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    const reason = 'They sent a clearer photo of the card.';
+
+    // Their identity check was turned down: the licence would wait unchecked, outside the queue.
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { 'driverLicence.status': 'REJECTED', identityVerification: { status: 'REJECTED' } } },
+    );
+    const refused = await reset(staff, user.id, { kind: 'LICENCE', reason });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({
+      code: 'IDENTITY_FIRST',
+      message: 'Allow another identity check first: their licence is checked once their ID is.',
+    });
+
+    // No identity check yet, while one is needed first: the check could confirm a licence support turned down.
+    await UserModel.updateOne({ _id: user._id }, { $set: { identityVerification: { status: 'NONE' } } });
+    expect((await reset(staff, user.id, { kind: 'LICENCE', reason })).body.error.code).toBe('IDENTITY_FIRST');
+    expect((await UserModel.findById(user._id).lean())!.driverLicence!.status).toBe('REJECTED');
+    expect(await AuditLogModel.countDocuments({ action: 'licence.reopened' })).toBe(0);
+
+    // With no identity check needed, the licence goes straight to the queue.
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { verification: { identityBeforeFirstBooking: false } },
+    });
+    expect((await reset(staff, user.id, { kind: 'LICENCE', reason })).status).toBe(200);
+  });
+
+  it('leaves a support member’s own record to another team member', async () => {
+    const member = await createStaff('mere@example.co.nz', 'SUPPORT');
+    await UserModel.updateOne({ _id: member._id }, { $set: { 'identityVerification.status': 'REJECTED' } });
+    const support = await staffAgent('mere@example.co.nz');
+    const refused = await reset(support, member.id, { kind: 'IDENTITY', reason: 'My own check' });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe('OWN_RECORD');
   });
 });

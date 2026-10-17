@@ -8,6 +8,7 @@ import {
   ConditionReportModel,
   REQUIRED_INSPECTION_ANGLES,
 } from '../src/modules/inspections/condition-report.model.js';
+import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { NotificationModel } from '../src/modules/notifications/notification.model.js';
 import { UserModel } from '../src/modules/users/user.model.js';
 import { VehicleModel } from '../src/modules/vehicles/vehicle.model.js';
@@ -196,6 +197,159 @@ describe('check-in', () => {
     // Valid for the whole trip: it starts.
     await licence({});
     expect((await checkIn(guestAgent)).status).toBe(201);
+  });
+
+  it('holds check-in to every licence rule a booked trip is held to, and to support’s check of new details', async () => {
+    const { booking, guestAgent, hostAgent, guest } = await trip();
+    const licence = (overrides: object, dob = new Date('1990-04-21T00:00:00+12:00')) =>
+      UserModel.updateOne(
+        { _id: guest._id },
+        {
+          $set: {
+            dob,
+            driverLicence: {
+              numberHash: 'hash',
+              numberEnding: '456',
+              country: 'NZ',
+              class: 'NZ_FULL',
+              issuedAt: new Date('2012-05-01T00:00:00+12:00'),
+              expiry: new Date(Date.now() + 30 * DAY_MS),
+              status: 'APPROVED',
+              // Changed since the trip was booked, so held to the rules in force now.
+              detailsChangedAt: new Date(),
+              ...overrides,
+            },
+            // Their ID was a passport, so changed licence details go to support (plan §8.2).
+            identityVerification: { status: 'APPROVED', documentType: 'passport' },
+          },
+        },
+      );
+    const checkIn = async (agent: Agent) => {
+      const shots = await photos(agent, booking.ref);
+      return agent.post(`/api/v1/bookings/${booking.ref}/inspections`).send({
+        stage: 'CHECK_IN',
+        odometer: 1000,
+        fuelOrBatteryPct: 50,
+        photos: shots,
+      });
+    };
+    const refusal = async (agent: Agent) => {
+      const refused = await checkIn(agent);
+      expect(refused.status).toBe(409);
+      expect(refused.body.error.code).toBe('LICENCE_NOT_ELIGIBLE');
+      return refused.body.error.message as string;
+    };
+
+    // Under the minimum age (21) on the day the trip starts.
+    await licence({}, new Date(Date.now() - 18 * 365 * DAY_MS));
+    expect(await refusal(guestAgent)).toMatch(
+      /^Your driver licence can’t be used for this trip: the driver is under our minimum age/,
+    );
+    // Held for less than a year.
+    await licence({ issuedAt: new Date(Date.now() - 30 * DAY_MS) });
+    expect(await refusal(hostAgent)).toMatch(
+      /^The guest’s driver licence can’t be used for this trip \(it won’t have been held long enough/,
+    );
+    // An overseas licence that isn't in English, with no permit or translation.
+    await licence({ class: 'OVERSEAS', country: 'JP', inEnglish: false });
+    expect(await refusal(guestAgent)).toMatch(/it isn’t in English/);
+    // New details that meet the rules but wait for support's check: the trip waits for their decision.
+    await licence({ status: 'PENDING' });
+    expect(await refusal(guestAgent)).toMatch(/still being checked by our team/);
+    expect(await refusal(hostAgent)).toMatch(/^The guest’s driver licence details are still being checked/);
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('CONFIRMED');
+
+    // Approved: it starts.
+    await licence({});
+    expect((await checkIn(guestAgent)).status).toBe(201);
+  });
+
+  it('keeps a trip to the rules it was booked under when the settings are raised since', async () => {
+    const { booking, guestAgent, guest } = await trip();
+    // 22, licensed for two years, with an overseas licence not in English and no permit: it met the rules
+    // the trip was booked under (21, a year, no English proof asked for).
+    const licence = (detailsChangedAt: Date) =>
+      UserModel.updateOne(
+        { _id: guest._id },
+        {
+          $set: {
+            dob: new Date(Date.now() - (22 * 365 + 30) * DAY_MS),
+            driverLicence: {
+              numberHash: 'hash',
+              numberEnding: '456',
+              country: 'JP',
+              class: 'OVERSEAS',
+              inEnglish: false,
+              issuedAt: new Date(Date.now() - 2 * 366 * DAY_MS),
+              expiry: new Date(Date.now() + 30 * DAY_MS),
+              status: 'APPROVED',
+              detailsChangedAt,
+            },
+            identityVerification: { status: 'APPROVED', documentType: 'passport' },
+          },
+        },
+      );
+    await PlatformSettingsModel.create({
+      _id: PLATFORM_SETTINGS_ID,
+      settings: { eligibility: { minAge: 25, minYearsLicensed: 3, overseasNeedsEnglishProof: true } },
+    });
+    const checkIn = async () => {
+      const shots = await photos(guestAgent, booking.ref);
+      return guestAgent.post(`/api/v1/bookings/${booking.ref}/inspections`).send({
+        stage: 'CHECK_IN',
+        odometer: 1000,
+        fuelOrBatteryPct: 50,
+        photos: shots,
+      });
+    };
+
+    // Changed after booking: held to the rules in force now.
+    await licence(new Date(booking.createdAt.getTime() + HOUR_MS));
+    const refused = await checkIn();
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({
+      code: 'LICENCE_NOT_ELIGIBLE',
+      message: expect.stringMatching(/the driver is under our minimum age/),
+    });
+
+    // As it was when booked: the trip starts.
+    await licence(new Date(booking.createdAt.getTime() - DAY_MS));
+    expect((await checkIn()).status).toBe(201);
+  });
+
+  it('refuses a licence still waiting for a check, even one support’s queue doesn’t list', async () => {
+    const { booking, guestAgent, guest } = await trip();
+    // Their identity check was turned down after booking: the licence isn't in the queue, and nobody checked it.
+    await UserModel.updateOne(
+      { _id: guest._id },
+      {
+        $set: {
+          dob: new Date('1990-04-21T00:00:00+12:00'),
+          driverLicence: {
+            numberHash: 'hash',
+            numberEnding: '456',
+            country: 'NZ',
+            class: 'NZ_FULL',
+            issuedAt: new Date('2012-05-01T00:00:00+12:00'),
+            expiry: new Date(Date.now() + 30 * DAY_MS),
+            status: 'PENDING',
+          },
+          identityVerification: { status: 'REJECTED' },
+        },
+      },
+    );
+    const shots = await photos(guestAgent, booking.ref);
+    const refused = await guestAgent.post(`/api/v1/bookings/${booking.ref}/inspections`).send({
+      stage: 'CHECK_IN',
+      odometer: 1000,
+      fuelOrBatteryPct: 50,
+      photos: shots,
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatchObject({
+      code: 'LICENCE_NOT_ELIGIBLE',
+      message: expect.stringMatching(/still being checked by our team/),
+    });
   });
 
   it('keeps when a chosen photo says it was taken and where the device was, and shows the place to staff only', async () => {
@@ -485,7 +639,7 @@ describe('check-out', () => {
   });
 
   it('shows staff both reports, and lets support complete a trip with the Host’s readings alone', async () => {
-    const { booking } = await checkedIn();
+    const { booking, guestAgent } = await checkedIn();
     await createStaff('sam@example.co.nz', 'SUPPORT');
     const staff = await staffAgent('sam@example.co.nz');
 
@@ -529,6 +683,8 @@ describe('check-out', () => {
         photos: [],
       },
       kilometres: { driven: 800, allowance: 750, extra: 50, extraChargeCents: 1750 },
+      // Not charged at once: the Host's readings wait for the Guest, like any check-out.
+      extraKmStatus: { status: 'WAITING', amountCents: 1750, waitingFor: 'GUEST' },
     });
     const stored = await BookingModel.findById(booking._id).lean();
     expect(stored!.statusHistory.at(-1)).toMatchObject({
@@ -536,12 +692,40 @@ describe('check-out', () => {
       reason: 'Completed by support: check-out was missing',
     });
     expect(await JobModel.countDocuments({ type: 'trip.extraCharges', refId: booking.id })).toBe(1);
+    const extraKmJob = () => JobModel.findOne({ type: 'trip.extraCharges', refId: booking.id }).lean();
+    // 48 hours by default, from the check-out.
+    const queued = await extraKmJob();
+    expect(queued!.runAt.getTime()).toBeGreaterThan(Date.now() + 47 * HOUR_MS);
+    expect(Date.parse(completed.body.handover.extraKmStatus.chargeAt)).toBe(queued!.runAt.getTime());
+    expect(stored!.extraCharges).toEqual([]);
+
+    // The Guest sees where it stands; confirming the readings alone brings the charge forward.
+    const guestView = await guestAgent.get(`/api/v1/bookings/${booking.ref}/inspections`);
+    expect(guestView.body.handover).toMatchObject({
+      actions: { confirmCheckOut: true },
+      extraKmStatus: { status: 'WAITING', amountCents: 1750, waitingFor: 'GUEST' },
+    });
+    const confirmed = await guestAgent.post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/confirm`);
+    expect(confirmed.status).toBe(200);
+    expect((await extraKmJob())!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(confirmed.body.handover.extraKmStatus).toEqual({
+      status: 'WAITING',
+      amountCents: 1750,
+      chargeAt: expect.any(String),
+    });
+
     await tripExtraChargesJob({ bookingId: booking.id }, {
       log: { info: () => undefined, warn: () => undefined },
     } as unknown as JobContext);
     expect((await BookingModel.findById(booking._id).lean())!.extraCharges).toEqual([
       expect.objectContaining({ type: 'EXTRA_KM', amountCents: 1750, status: 'PENDING' }),
     ]);
+    const charged = await guestAgent.get(`/api/v1/bookings/${booking.ref}/inspections`);
+    expect(charged.body.handover.extraKmStatus).toEqual({
+      status: 'CHARGED',
+      amountCents: 1750,
+      chargeStatus: 'PENDING',
+    });
     expect(await AuditLogModel.findOne({ action: 'booking.completed-by-support' }).lean()).toMatchObject({
       after: { status: 'COMPLETED', odometer: 45800, fuelOrBatteryPct: 60, photos: 0 },
     });
@@ -608,6 +792,50 @@ describe('extra kilometres after check-out (plan §3, §8.2)', () => {
     const confirmed = await hostAgent.post(`/api/v1/bookings/${booking.ref}/inspections/CHECK_OUT/confirm`);
     expect(confirmed.status).toBe(200);
     expect((await extraKmJob(booking.id))!.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('tell both parties where they stand: waiting for the other party, checked by our team, or charged', async () => {
+    const { booking, guestAgent, hostAgent } = await checkedOut();
+    const standing = async (agent: Agent) =>
+      (await agent.get(`/api/v1/bookings/${booking.ref}/inspections`)).body.handover.extraKmStatus;
+    // The Guest checked out, so the Host's confirmation brings the charge forward.
+    const queued = await extraKmJob(booking.id);
+    expect(await standing(hostAgent)).toEqual({
+      status: 'WAITING',
+      amountCents: 1750,
+      chargeAt: queued!.runAt.toISOString(),
+      waitingFor: 'HOST',
+    });
+    expect(await standing(guestAgent)).toMatchObject({ status: 'WAITING', waitingFor: 'HOST' });
+
+    // A reading with an extra digit: the job leaves the charge for our team to check.
+    await ConditionReportModel.updateOne(
+      { bookingId: booking._id, stage: 'CHECK_OUT' },
+      { $set: { odometer: 450000 } },
+    );
+    await runJob(booking.id);
+    await JobModel.updateOne({ _id: queued!._id }, { $set: { status: 'DONE' } });
+    expect(await standing(guestAgent)).toMatchObject({ status: 'CHECKING' });
+
+    // Charged once checked, and paid; or cancelled by staff.
+    await BookingModel.updateOne(
+      { _id: booking._id },
+      {
+        $push: {
+          extraCharges: { type: 'EXTRA_KM', description: '50 km', amountCents: 1750, status: 'SUCCEEDED' },
+        },
+      },
+    );
+    expect(await standing(guestAgent)).toEqual({
+      status: 'CHARGED',
+      amountCents: 1750,
+      chargeStatus: 'PAID',
+    });
+    await BookingModel.updateOne(
+      { _id: booking._id, 'extraCharges.type': 'EXTRA_KM' },
+      { $set: { 'extraCharges.$.status': 'CANCELLED' } },
+    );
+    expect(await standing(hostAgent)).toMatchObject({ status: 'NOT_CHARGED' });
   });
 
   it('lets staff with the refunds permission correct a mistyped reading, which works the charge out again', async () => {

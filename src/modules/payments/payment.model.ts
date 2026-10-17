@@ -56,6 +56,23 @@ export interface Dispute {
   dueBy?: Date;
 }
 
+/**
+ * A dispute that's settled (plan §8.1, item 12): won, lost, an inquiry closed with a warning only, or prevented
+ * (a dispute prevention programme refunded the cardholder, so the money went back as if it were lost).
+ */
+export const CLOSED_DISPUTE_STATUSES = ['won', 'lost', 'warning_closed', 'prevented'] as const;
+
+/**
+ * A chargeback: the cardholder's bank is deciding it, or the money went back to them through it (plan §8.1,
+ * item 12). Stripe refuses a refund of a charge in one, so the dispute decides the money. An inquiry
+ * (`warning_*`) isn't a chargeback yet, and can still be refunded.
+ */
+export const CHARGED_BACK_DISPUTE_STATUSES = ['needs_response', 'under_review', 'lost', 'prevented'] as const;
+
+/** Whether a payment's card dispute is a chargeback (CHARGED_BACK_DISPUTE_STATUSES). */
+export const isChargedBack = (payment: { dispute?: Pick<Dispute, 'status'> } | null | undefined) =>
+  (CHARGED_BACK_DISPUTE_STATUSES as readonly string[]).includes(payment?.dispute?.status ?? '');
+
 /** The `payments` collection (plan §3): one Stripe PaymentIntent. */
 export interface Payment {
   bookingId: Types.ObjectId;

@@ -21,6 +21,7 @@ import {
 import {
   DEFAULT_DOMAINS,
   DEFAULT_WEBHOOK_URL,
+  isConnectEndpoint,
   METHOD_NAMES,
   REQUIRED_METHODS,
   note,
@@ -77,7 +78,8 @@ async function createWebhook(client: Stripe) {
   if (!webhookUrl.startsWith('https://')) throw new Error('The webhook URL must start with https://');
 
   const { data: endpoints } = await client.webhookEndpoints.list({ limit: 100 });
-  const existing = endpoints.find((endpoint) => endpoint.url === webhookUrl);
+  // Not the Connect endpoint at the same URL, which only takes Connect events.
+  const existing = endpoints.find((endpoint) => endpoint.url === webhookUrl && !isConnectEndpoint(endpoint));
   if (existing) {
     const missing = existing.enabled_events.includes('*')
       ? []
@@ -117,9 +119,7 @@ async function createWebhook(client: Stripe) {
 async function createConnectWebhook(client: Stripe) {
   console.log('\nConnect webhook (Host payout accounts)');
   const { data: endpoints } = await client.webhookEndpoints.list({ limit: 100 });
-  const existing = endpoints.find(
-    (endpoint) => endpoint.url === webhookUrl && endpoint.description?.includes('Connect'),
-  );
+  const existing = endpoints.find((endpoint) => endpoint.url === webhookUrl && isConnectEndpoint(endpoint));
   if (existing) {
     tick(`${webhookUrl} (Connect) already set up`);
     return;

@@ -61,12 +61,13 @@ import { adminOpsRouter } from './admin-ops.routes.js';
 import { assertNotOwnRecord, isOwnRecord, OWN_RECORD_MESSAGE } from './own-record.js';
 import { platformSettingsUpdateSchema } from './platform-settings.schemas.js';
 import { getPlatformSettingsForAdmin, updatePlatformSettings } from './platform-settings.service.js';
-import { reviewIdentity } from './admin-verification.service.js';
+import { allowVerificationRetry, reviewIdentity } from './admin-verification.service.js';
 import {
   licenceReviewSchema,
   revealLicenceNumber,
   reviewLicence,
   verificationQueue,
+  verificationResetSchema,
 } from './verification-queue.service.js';
 import {
   incidentAssigneeSchema,
@@ -297,7 +298,9 @@ export function adminRouter() {
   );
 
   // A trip whose check-out is missing 24 h after the return: support completes it with the Host's
-  // odometer and fuel reading and any photos, which become the check-out record (plan §8.2).
+  // odometer and fuel reading and any photos, which become the check-out record (plan §8.2). It moves no
+  // money at once: the extra kilometres wait for the Guest's confirmation or the damage-report window, like
+  // any check-out's (trip-completion.ts), and charging them sooner needs the refunds permission (/extra-km).
   router.post('/bookings/:id/complete', async (req, res) => {
     const input = validate(staffCompletionSchema, req.body ?? {});
     const { booking } = await findBookingFor(
@@ -450,6 +453,14 @@ export function adminRouter() {
   router.post('/users/:id/identity-review', async (req, res) => {
     const { decision, note } = validate(identityReviewSchema, req.body);
     res.json(await reviewIdentity(String(req.params.id), decision, req.auth!.userId, note, req.ip));
+  });
+
+  // Another try after a turned-down identity check or licence, with the reason in the audit log.
+  router.post('/users/:id/verification-reset', async (req, res) => {
+    const { kind, reason } = validate(verificationResetSchema, req.body);
+    res.json({
+      user: await allowVerificationRetry(String(req.params.id), kind, reason, req.auth!.userId, req.ip),
+    });
   });
 
   // The calendar override (plan §9, Days 10–11): staff block or unblock dates, never over a booking.

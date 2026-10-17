@@ -274,12 +274,16 @@ export async function sweepReviewReveals(now = new Date()): Promise<number> {
   return published;
 }
 
-/** POST /reviews: the Guest's or the Host's review of a completed trip, once each, within the window. */
+/**
+ * POST /reviews: the Guest's or the Host's review of a completed trip, once each, within the window. With
+ * whether the other side's review of them is published now, so the thanks doesn't claim both went out
+ * together when theirs is held, hidden or not written (with `revealTogether` off, a review needn't wait).
+ */
 export async function submitReview(
   userId: string,
   input: ReviewInput,
   now = new Date(),
-): Promise<ReviewView> {
+): Promise<{ review: ReviewView; otherPublished: boolean }> {
   const booking = await BookingModel.findOne({ ref: input.bookingRef.toUpperCase() }).lean<BookingRecord>();
   const direction = booking ? directionFor(booking, userId) : null;
   if (!booking || !direction) throw new HttpError(404, 'NOT_FOUND', "We couldn't find that trip.");
@@ -322,8 +326,15 @@ export async function submitReview(
     throw error;
   }
   await revealReviews(booking._id, now);
-  const fresh = await ReviewModel.findById(created._id).lean<ReviewRecord>();
-  return (await toViews([fresh!], userId))[0]!;
+  const [fresh, other] = await Promise.all([
+    ReviewModel.findById(created._id).lean<ReviewRecord>(),
+    ReviewModel.exists({
+      bookingId: booking._id,
+      direction: guestReview ? 'HOST_TO_GUEST' : 'GUEST_TO_HOST',
+      status: 'PUBLISHED',
+    }),
+  ]);
+  return { review: (await toViews([fresh!], userId))[0]!, otherPublished: Boolean(other) };
 }
 
 /**
@@ -390,7 +401,9 @@ export async function requestReviews(bookingId: string): Promise<void> {
             role === 'GUEST'
               ? `Tell other guests about your trip in ${other?.firstName ?? 'your host'}'s ${booking.vehicleSnapshot.title}.`
               : `Tell other hosts how ${other?.firstName ?? 'your guest'} looked after your ${booking.vehicleSnapshot.title}.`,
-            'Reviews are shown once you’ve both written one, or when the time to review closes, so you can be honest.',
+            settings.reviews.revealTogether
+              ? 'Reviews are shown once you’ve both written one, or when the time to review closes, so you can be honest.'
+              : 'Your review is shown as soon as you’ve written it, unless our team needs to check it first.',
           ],
           buttonLabel: 'Write a review',
           url: `${siteUrl()}${path}`,

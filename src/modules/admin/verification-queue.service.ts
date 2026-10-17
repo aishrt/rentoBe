@@ -4,16 +4,19 @@ import { env } from '../../env.js';
 import { logger } from '../../integrations/logger.js';
 import { countryName } from '../../lib/countries.js';
 import { decrypt } from '../../lib/encryption.js';
+import { formatNzDateTime } from '../../lib/format.js';
 import { HttpError } from '../../lib/http-error.js';
 import { nzDate } from '../../lib/nz-time.js';
 import { recordAudit } from '../audit/audit.service.js';
-import { BookingModel } from '../bookings/booking.model.js';
+import { BookingModel, type Booking } from '../bookings/booking.model.js';
 import { resolveVerificationReview } from '../bookings/booking.service.js';
 import { verificationOutcomeShape, type VerificationOutcome } from '../bookings/bookings.schemas.js';
 import { notify } from '../notifications/notify.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import {
+  licenceAwaitingReview,
   licenceCountryCode,
+  licenceProblemsAtCheckIn,
   licenceProblemsForTrip,
   verificationInReview,
   type EligibilityProblem,
@@ -72,7 +75,15 @@ export const verificationItemSchema = z
     dob: z.string().optional(),
     riskFlags: z.array(z.string()),
     waitingBookings: z.array(
-      z.object({ ref: z.string(), vehicleTitle: z.string(), expiresAt: z.iso.datetime().optional() }),
+      z.object({
+        ref: z.string(),
+        vehicleTitle: z.string(),
+        expiresAt: z.iso.datetime().optional(),
+        startsAt: z.iso.datetime().optional().meta({
+          description:
+            'Set for a confirmed trip held by a licence waiting for its check: when it starts. Its check-in is refused until support decides; the decision neither confirms nor releases it',
+        }),
+      }),
     ),
   })
   .meta({ id: 'VerificationQueueItem' });
@@ -93,6 +104,19 @@ export const licenceReviewResultSchema = z
   .object({ licenceStatus: z.enum(['APPROVED', 'REJECTED']), ...verificationOutcomeShape })
   .meta({ id: 'LicenceReviewResult' });
 export type LicenceReviewResult = z.infer<typeof licenceReviewResultSchema>;
+
+/** Another try after a turned-down identity check or licence (the member asked, or it was a mistake). */
+export const verificationResetSchema = z
+  .object({
+    kind: z.enum(['IDENTITY', 'LICENCE']),
+    reason: z
+      .string()
+      .trim()
+      .min(3, { error: 'Say why' })
+      .max(500)
+      .meta({ description: 'Why another try is allowed: kept in the audit log' }),
+  })
+  .meta({ id: 'VerificationResetRequest' });
 
 export const licenceNumberSchema = z
   .object({ number: z.string().meta({ description: 'The full licence number, as the person entered it' }) })
@@ -120,7 +144,9 @@ export function staffLicenceView(licence: User['driverLicence']): z.infer<typeof
 export function documentComparison(user: LicenceUser): z.infer<typeof documentComparisonSchema> {
   const identity = user.identityVerification;
   return {
+    // Only a driver licence the latest check read: a number kept from a check turned down since has no type.
     ...(identity?.documentNumberHash &&
+      identity.documentType === 'driving_license' &&
       user.driverLicence && {
         licenceNumberMatched: identity.documentNumberHash === user.driverLicence.numberHash,
       }),
@@ -197,10 +223,18 @@ export async function verificationQueue(): Promise<VerificationItem[]> {
   ]);
   const waiting = await BookingModel.find({
     guestId: mongoose.trusted({ $in: [...identities, ...licences].map((user) => user._id) }),
-    status: 'PENDING',
-    'verificationReview.status': 'PENDING',
+    $or: [
+      { status: 'PENDING', 'verificationReview.status': 'PENDING' },
+      // A licence waiting for its check holds its Guest's confirmed trips at check-in too (plan §8.2).
+      {
+        guestId: mongoose.trusted({ $in: licences.map((user) => user._id) }),
+        status: 'CONFIRMED',
+        endAt: mongoose.trusted({ $gt: new Date() }),
+      },
+    ],
   })
-    .select('guestId ref vehicleSnapshot.title requestExpiresAt')
+    .sort({ startAt: 1 })
+    .select('guestId ref status startAt vehicleSnapshot.title requestExpiresAt')
     .lean();
 
   const item = (user: QueueUser, kind: 'IDENTITY' | 'LICENCE'): VerificationItem => ({
@@ -229,7 +263,9 @@ export async function verificationQueue(): Promise<VerificationItem[]> {
       .map((booking) => ({
         ref: booking.ref,
         vehicleTitle: booking.vehicleSnapshot.title,
-        ...(booking.requestExpiresAt && { expiresAt: booking.requestExpiresAt.toISOString() }),
+        ...(booking.status === 'CONFIRMED'
+          ? { startsAt: booking.startAt.toISOString() }
+          : booking.requestExpiresAt && { expiresAt: booking.requestExpiresAt.toISOString() }),
       })),
   });
   return [
@@ -273,6 +309,63 @@ const LICENCE_PROBLEM_WORDS: Partial<Record<EligibilityProblem['code'], string>>
   ENGLISH_PROOF_REQUIRED: 'the overseas licence isn’t in English and has no English proof',
 };
 
+type HeldBooking = Pick<Booking, 'ref' | 'status' | 'startAt' | 'requestExpiresAt'> & {
+  _id: mongoose.Types.ObjectId;
+};
+
+/**
+ * Licence details waiting for support's check hold the Guest's booked trips until support decides (plan
+ * §8.2: a licence that needs a person to check it turns the booking into a request until support approves
+ * it). A request waits for the check as one made meanwhile does, so the Host's acceptance doesn't take the
+ * payment; a confirmed trip's check-in is refused (assertLicenceForTrip). Support hear of each, with when it
+ * expires or starts: a request once each time it's held, a confirmed trip once for each version of the details.
+ */
+async function holdForLicenceCheck(
+  guest: Pick<User, 'firstName' | 'driverLicence'>,
+  booking: HeldBooking,
+  now: Date,
+  reopened: boolean,
+) {
+  if (booking.status === 'PENDING') {
+    const held = await BookingModel.updateOne(
+      {
+        _id: booking._id,
+        status: 'PENDING',
+        'verificationReview.status': mongoose.trusted({ $ne: 'PENDING' }),
+      },
+      { $set: { verificationReview: { status: 'PENDING' } } },
+    );
+    // Waiting for support already (this check, or the identity check): they heard of it then.
+    if (held.modifiedCount === 0) return;
+    await alertStaff({
+      type: 'VERIFICATION_BOOKING_WAITING',
+      title: `Request ${booking.ref} waits for a licence check`,
+      body: `${guest.firstName}'s driver licence details are waiting for our check, so request ${booking.ref} waits for it too: the host's acceptance won't take the payment until the licence is approved.${booking.requestExpiresAt ? ` It expires at ${formatNzDateTime(booking.requestExpiresAt)} if nobody decides.` : ''}`,
+      link: '/admin/verifications',
+      dedupeKey: `LICENCE_CHECK_HOLD:${booking._id.toString()}:${now.getTime()}`,
+    });
+    return;
+  }
+  const licence = guest.driverLicence;
+  await alertStaff({
+    type: 'LICENCE_CHECK_BEFORE_TRIP',
+    title: `Licence check needed before ${booking.ref}`,
+    body: `${guest.firstName}'s driver licence details are waiting for our check, and their confirmed booking ${booking.ref} starts ${formatNzDateTime(booking.startAt)}. Check-in is refused until the licence is approved or turned down, so check it in the verification queue before then.`,
+    link: '/admin/verifications',
+    // Once for each version of the details, however often the same ones are saved.
+    dedupeKey: [
+      'LICENCE_CHECK_BEFORE_TRIP',
+      booking._id.toString(),
+      licence?.numberHash ?? '',
+      licence?.class ?? '',
+      licence ? nzDate(licence.expiry) : '',
+      licence?.issuedAt ? nzDate(licence.issuedAt) : '',
+      licence?.englishProof ?? '',
+      reopened ? now.getTime() : '',
+    ].join(':'),
+  });
+}
+
 /**
  * The Guest saved new licence details, or support turned their licence down: each upcoming booking is held to
  * the licence rules again, as booking it was (plan §3: a licence valid until the trip ends, of a class the
@@ -280,12 +373,15 @@ const LICENCE_PROBLEM_WORDS: Partial<Record<EligibilityProblem['code'], string>>
  * review does), so the Host's acceptance doesn't take the payment; a confirmed trip that no longer qualifies
  * is flagged to support, and check-in refuses it. Support hear of each. With `rejected`, the requests are
  * released next, so only the confirmed trips are flagged. Requests held this way go ahead once the licence is
- * fixed and approved, and nothing else waits for support. Returns the confirmed trips flagged.
+ * fixed and approved, and nothing else waits for support. Details that meet the rules but wait for support's
+ * check (changed ones, plan §8.2) hold each booking until support decides, as holdForLicenceCheck() says;
+ * `reopened` (support sent a turned-down licence back for another check) alerts support about them again.
+ * Returns the confirmed trips flagged.
  */
 export async function recheckBookedTrips(
   guestId: string,
   now = new Date(),
-  { rejected = false }: { rejected?: boolean } = {},
+  { rejected = false, reopened = false }: { rejected?: boolean; reopened?: boolean } = {},
 ): Promise<{ flagged: string[] }> {
   const guest = await UserModel.findById(guestId)
     .select('firstName phoneVerifiedAt dob identityVerification driverLicence')
@@ -298,8 +394,9 @@ export async function recheckBookedTrips(
     endAt: mongoose.trusted({ $gt: now }),
   })
     .sort({ startAt: 1 })
-    .select('ref status startAt endAt verificationReview')
+    .select('ref status startAt endAt requestExpiresAt verificationReview createdAt')
     .lean();
+  const awaitingCheck = licenceAwaitingReview(guest, settings);
   const flagged: string[] = [];
   let waitingForSupport = false;
   let blocked = false;
@@ -307,8 +404,16 @@ export async function recheckBookedTrips(
     if (booking.status === 'PENDING' && booking.verificationReview?.status === 'PENDING') {
       waitingForSupport = true;
     }
-    const problems = licenceProblemsForTrip(guest, settings, booking, now);
-    if (problems.length === 0) continue;
+    // A confirmed trip as check-in judges it: settings raised since it was booked don't stop it, unless the
+    // Guest changed their details since (licenceProblemsAtCheckIn).
+    const problems =
+      booking.status === 'CONFIRMED'
+        ? licenceProblemsAtCheckIn(guest, settings, booking, now)
+        : licenceProblemsForTrip(guest, settings, booking, now);
+    if (problems.length === 0) {
+      if (awaitingCheck) await holdForLicenceCheck(guest, booking, now, reopened);
+      continue;
+    }
     blocked = true;
     if (booking.status === 'PENDING') {
       await BookingModel.updateOne(

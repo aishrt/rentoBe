@@ -4,6 +4,7 @@ import type Stripe from 'stripe';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { JobModel } from '../src/jobs/job.model.js';
+import { isValidGstNumber } from '../src/lib/gst-number.js';
 import { forget } from '../src/lib/memo.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
@@ -106,17 +107,24 @@ describe('Host application', () => {
       .post('/api/v1/me/host-application')
       .send({ acceptHostAgreement: true, gstRegistered: true });
     expect(noGst.body.error.fields.gstNumber).toBe('Enter your GST number');
+    // The right shape, but not a number Inland Revenue could have issued.
+    const badGst = await agent
+      .post('/api/v1/me/host-application')
+      .send({ acceptHostAgreement: true, gstRegistered: true, gstNumber: '123-456-789' });
+    expect(badGst.body.error.fields.gstNumber).toBe(
+      'That isn’t a valid GST number. Check it on your IRD registration.',
+    );
 
     const applied = await agent.post('/api/v1/me/host-application').send({
       acceptHostAgreement: true,
       bio: 'Auckland local.',
       gstRegistered: true,
-      gstNumber: '123456789',
+      gstNumber: '136410132',
     });
     expect(applied.status).toBe(200);
     expect(applied.body.host).toMatchObject({
       status: 'APPLIED',
-      gstNumber: '123-456-789',
+      gstNumber: '136-410-132',
       bio: 'Auckland local.',
     });
 
@@ -155,6 +163,56 @@ describe('Host application', () => {
   });
 });
 
+describe('GST numbers', () => {
+  it('pass with Inland Revenue’s check digit, written with or without hyphens or spaces', () => {
+    for (const number of ['49-091-850', '49091850', '136-410-132', '136 410 132', '100-000-131']) {
+      expect(isValidGstNumber(number)).toBe(true);
+    }
+  });
+
+  it('fail with the wrong check digit, outside the range IRD issues, or not 8 or 9 digits', () => {
+    for (const number of ['123-456-789', '136-410-133', '49-091-851', '9-999-999', '150-000-001', '1234']) {
+      expect(isValidGstNumber(number)).toBe(false);
+    }
+  });
+});
+
+describe('The Host profile’s GST number', () => {
+  it('keeps one saved before the check digit came in, and checks one that’s changed', async () => {
+    const { user, agent } = await applicant();
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          roles: ['GUEST', 'HOST'],
+          hostProfile: {
+            status: 'APPROVED',
+            appliedAt: new Date(),
+            gstRegistered: true,
+            gstNumber: '123-456-789',
+          },
+        },
+      },
+    );
+    const patch = (body: object) => agent.patch('/api/v1/me/host-profile').send(body);
+
+    // The form sends the saved number with a new bio: it stands.
+    const kept = await patch({ bio: 'Auckland local.', gstRegistered: true, gstNumber: '123-456-789' });
+    expect(kept.status).toBe(200);
+    expect(kept.body.host).toMatchObject({ bio: 'Auckland local.', gstNumber: '123-456-789' });
+
+    // A different number has to pass Inland Revenue's check digit.
+    const changed = await patch({ gstRegistered: true, gstNumber: '136-410-133' });
+    expect(changed.status).toBe(400);
+    expect(changed.body.error.fields.gstNumber).toBe(
+      'That isn’t a valid GST number. Check it on your IRD registration.',
+    );
+    const fixed = await patch({ gstRegistered: true, gstNumber: '136410132' });
+    expect(fixed.status).toBe(200);
+    expect(fixed.body.host.gstNumber).toBe('136-410-132');
+  });
+});
+
 describe('Applying again', () => {
   it('keeps an approved Host’s Stripe payout state, what they owe and their record', async () => {
     const { user, agent } = await applicant();
@@ -187,7 +245,7 @@ describe('Applying again', () => {
 
     const updated = await agent
       .post('/api/v1/me/host-application')
-      .send({ acceptHostAgreement: true, bio: 'New bio', gstRegistered: true, gstNumber: '123456789' });
+      .send({ acceptHostAgreement: true, bio: 'New bio', gstRegistered: true, gstNumber: '49091850' });
     expect(updated.status).toBe(200);
     const profile = (await UserModel.findById(user._id).lean())!.hostProfile!;
     expect(profile).toMatchObject({
@@ -199,7 +257,7 @@ describe('Applying again', () => {
       payoutDelayDays: 3,
       bio: 'New bio',
       gstRegistered: true,
-      gstNumber: '123-456-789',
+      gstNumber: '49-091-850',
       responseRate: 90,
       tripCount: 4,
       rating: { avg: 4.5, count: 4 },
@@ -388,12 +446,21 @@ describe('Vehicle onboarding', () => {
     expect((await request(app).get('/api/v1/search').query({ where: 'Ponsonby' })).body.results).toEqual([]);
     expect((await agent.get('/api/v1/host/vehicles')).body.vehicles[0].waitingForPayouts).toBe(true);
     await UserModel.updateOne({ _id: user._id }, { $set: { 'hostProfile.stripeAccountId': 'acct_test' } });
-    await applyAccountState({
+    const payoutsOn = {
       id: 'acct_test',
       payouts_enabled: true,
       capabilities: { transfers: 'active' },
       requirements: { currently_due: [], past_due: [] },
-    } as unknown as Stripe.Account);
+    } as unknown as Stripe.Account;
+    // The sync on the Host's return from Stripe and the webhook often arrive together: announced once.
+    await Promise.all([applyAccountState(payoutsOn), applyAccountState(payoutsOn)]);
+    expect(
+      await NotificationModel.countDocuments({
+        userId: user._id,
+        type: 'PAYOUT_SETUP_DONE',
+        channel: 'IN_APP',
+      }),
+    ).toBe(1);
 
     expect((await agent.get(`/api/v1/host/vehicles/${id}`)).body.vehicle.waitingForPayouts).toBe(false);
     // Live: in search, with the approved photos served publicly.

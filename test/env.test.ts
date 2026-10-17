@@ -49,6 +49,15 @@ describe('environment', () => {
     expect(() => parseEnv({ ...baseEnv, STRIPE_WEBHOOK_SECRET: 'sk_test_51Abc' })).toThrow(/whsec_/);
   });
 
+  it('takes only a restricted key, trimmed, for reading ID checks', () => {
+    expect(parseEnv(baseEnv).STRIPE_IDENTITY_KEY).toBeUndefined();
+    expect(parseEnv({ ...baseEnv, STRIPE_IDENTITY_KEY: ' rk_test_51Abc\n' }).STRIPE_IDENTITY_KEY).toBe(
+      'rk_test_51Abc',
+    );
+    // The secret key gets no ID numbers or dates of birth from Stripe, so it's refused here.
+    expect(() => parseEnv({ ...baseEnv, STRIPE_IDENTITY_KEY: 'sk_test_51Abc' })).toThrow(/rk_test_/);
+  });
+
   it("takes Resend's webhook signing secret, trimmed, and refuses anything else", () => {
     const secret = `whsec_${Buffer.from('a-test-signing-key-of-32-bytes!!').toString('base64')}`;
     expect(parseEnv(baseEnv).RESEND_WEBHOOK_SECRET).toBeUndefined();

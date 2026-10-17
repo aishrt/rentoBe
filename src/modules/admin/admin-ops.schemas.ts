@@ -56,7 +56,7 @@ export const adminDashboardSchema = z
       }),
       platformFeesCents: cents.meta({
         description:
-          'Service fees and commission on trips starting in the range, the platform’s share of cancellation fees kept and the commission on extra charges (the report’s fees.totalCents)',
+          'Service fees and commission on trips starting in the range, the platform’s share of cancellation fees kept, Host cancellation fees and the commission on extra charges (the report’s fees.totalCents)',
       }),
       hostPayoutsCents: cents.meta({ description: 'Paid to Hosts in the range' }),
       cancellations: z.number().int(),
@@ -185,6 +185,23 @@ export const adminUserDetailSchema = adminUserRowSchema
         description:
           'The ID used in the identity check: a driver licence’s number compared with the licence on the account now, and the date of birth compared when it was checked',
       }),
+    sameLicence: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            name: z.string(),
+            status: z.enum(USER_STATUSES),
+            closed: z.boolean(),
+            createdAt: iso.meta({ description: 'When they joined' }),
+          })
+          .meta({ id: 'SameLicenceAccount' }),
+      )
+      .optional()
+      .meta({
+        description:
+          'Other accounts with the same licence number, entered or read from their ID (what a DUPLICATE_LICENCE flag is about), oldest first, at most 20. Left out when there are none',
+      }),
     host: z
       .object({
         status: z.enum(HOST_STATUSES),
@@ -248,6 +265,17 @@ export const adminUserUpdateSchema = z
     path: ['firstName'],
   })
   .meta({ id: 'AdminUserUpdateRequest' });
+
+/** A copy of someone's information answers their privacy request (plan §14): it's downloaded from that ticket. */
+export const userExportQuerySchema = z.object({
+  ticket: z
+    .string({ error: 'Download their data from their privacy request' })
+    .trim()
+    .regex(/^ST-[A-Z0-9]{6}$/i, { error: 'Download their data from their privacy request' })
+    .meta({
+      description: 'The reference of the privacy (PRIVACY) support ticket they raised, e.g. ST-ABC123',
+    }),
+});
 
 // Bookings ---------------------------------------------------------------------------------------------------
 
@@ -556,6 +584,11 @@ export const ticketListQuerySchema = z.object({
   category: z.enum(TICKET_CATEGORIES).optional(),
   q: z.string().trim().max(100).optional(),
   mine: z.enum(['true']).optional(),
+  user: z
+    .string()
+    .regex(/^[0-9a-f]{24}$/)
+    .optional()
+    .meta({ description: 'Only tickets a member sent while signed in, such as their privacy requests' }),
   page,
 });
 
@@ -581,6 +614,10 @@ export const staffTicketsResponseSchema = z
 
 export const staffTicketSchema = staffTicketRowSchema
   .extend({
+    accountWithEmail: z.object({ id: z.string(), name: z.string() }).optional().meta({
+      description:
+        'For a request sent signed out: the open account with its email address, which staff can link it to once they’ve checked it’s them (POST …/link-account)',
+    }),
     thread: z.array(
       z.object({
         id: z.string(),
@@ -626,6 +663,17 @@ export const ticketUpdateSchema = z
       }),
   })
   .meta({ id: 'TicketUpdateRequest' });
+
+export const ticketLinkSchema = z
+  .object({
+    note: z
+      .string()
+      .trim()
+      .max(500)
+      .optional()
+      .meta({ description: 'How staff checked it’s them, for the audit log' }),
+  })
+  .meta({ id: 'TicketLinkRequest' });
 
 // Moderation and risk ----------------------------------------------------------------------------------------
 
@@ -973,7 +1021,7 @@ export const platformReportSchema = z
       refundsCents: cents.meta({ description: 'Sent to Guests in the range' }),
       platformFeesCents: cents.meta({
         description:
-          'Service fees and commission, the platform’s share of cancellation fees kept and the commission on extra charges (fees.totalCents)',
+          'Service fees and commission, the platform’s share of cancellation fees kept, Host cancellation fees and the commission on extra charges (fees.totalCents)',
       }),
       hostPayoutsPaidCents: cents,
       extraChargesCents: cents.meta({ description: 'Paid in the range, GST included' }),
@@ -986,6 +1034,10 @@ export const platformReportSchema = z
       hostCommissionCents: cents.meta({ description: 'On trips starting in the range' }),
       cancellationFeesShareCents: cents.meta({
         description: 'The platform’s share of the fees kept from bookings cancelled in the range',
+      }),
+      hostCancellationFeesCents: cents.meta({
+        description:
+          'Charged to Hosts who cancelled a confirmed booking in the range, less any part waived, GST included',
       }),
       extraChargeCommissionCents: cents.meta({ description: 'On extra charges paid in the range' }),
       totalCents: cents,

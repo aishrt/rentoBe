@@ -106,7 +106,7 @@ describe('support staff and their own records', () => {
         ),
       // Correcting his own details, or downloading them, on a privacy request.
       () => agent.patch(`/api/v1/admin/users/${sam._id}`).send({ lastName: 'Smith', reason: 'Spelling' }),
-      () => agent.get(`/api/v1/admin/users/${sam._id}/export`),
+      () => agent.get(`/api/v1/admin/users/${sam._id}/export`).query({ ticket: 'ST-OWN001' }),
       () =>
         agent
           .post(`/api/v1/admin/bookings/${asGuest.ref}/status`)

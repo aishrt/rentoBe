@@ -192,6 +192,41 @@ describe('Availability service', () => {
     expect(busy).toHaveLength(1);
   });
 
+  it('applies weekly availability again where a released trip was, in a job queued with it', async () => {
+    const { createJobRunner } = await import('../src/jobs/runner.js');
+    const { JobModel } = await import('../src/jobs/job.model.js');
+    const host = await createHost();
+    const vehicle = await createVehicle(host._id, {
+      recurringRules: [{ daysOfWeek: [0, 1, 2, 3, 4, 5, 6], startTime: '01:00', endTime: '05:00' }],
+    });
+    const noRules = await createVehicle(host._id);
+    const bookingId = await reserve(vehicle._id, nzDay(3, '00:00'), nzDay(4, '12:00'));
+    const otherId = await reserve(noRules._id, nzDay(3), nzDay(4));
+    const { skipped } = await rebuildRecurringBlocks(vehicle._id);
+    expect(skipped).toHaveLength(2);
+
+    await withTransaction((session) => releaseTripDates(bookingId, session));
+    await withTransaction((session) => releaseTripDates(otherId, session));
+    // Released again (nothing left to free): no second rebuild.
+    await withTransaction((session) => releaseTripDates(bookingId, session));
+    // Only the car with rules is rebuilt, once.
+    expect(await JobModel.find({ type: 'availability.expandRecurring' }).lean()).toEqual([
+      expect.objectContaining({ payload: { vehicleId: vehicle.id }, status: 'QUEUED' }),
+    ]);
+
+    await createJobRunner().drain();
+    for (const range of skipped) {
+      expect(
+        await AvailabilityBlockModel.exists({
+          vehicleId: vehicle._id,
+          reason: 'RECURRING',
+          startAt: range.startAt,
+        }),
+      ).not.toBeNull();
+    }
+    expect(await AvailabilityBlockModel.countDocuments({ vehicleId: noRules._id })).toBe(0);
+  });
+
   it('keeps a recurring occurrence removed on its own out of later rebuilds, until it has passed', async () => {
     const host = await createHost();
     const everyDay = [0, 1, 2, 3, 4, 5, 6];

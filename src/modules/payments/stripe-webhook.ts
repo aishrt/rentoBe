@@ -13,8 +13,9 @@ type StripeEventType = Stripe.Event['type'];
 export type StripeEventHandler = (event: Stripe.Event, session: ClientSession) => Promise<void>;
 
 /**
- * The events the webhook endpoint subscribes to (plan §8.1): payments, refunds and card disputes.
- * `npm run stripe:setup` registers them with Stripe.
+ * The events the webhook endpoint subscribes to (plan §8.1): payments, refunds, card disputes and Radar's early
+ * fraud warnings (plan §14). `npm run stripe:setup` registers them with Stripe, adding any missing to an
+ * endpoint set up before.
  */
 export const STRIPE_WEBHOOK_EVENTS = [
   'payment_intent.succeeded',
@@ -25,6 +26,7 @@ export const STRIPE_WEBHOOK_EVENTS = [
   'refund.failed',
   'charge.dispute.created',
   'charge.dispute.closed',
+  'radar.early_fraud_warning.created',
   'identity.verification_session.verified',
   'identity.verification_session.requires_input',
   'identity.verification_session.processing',

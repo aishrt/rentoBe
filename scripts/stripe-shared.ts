@@ -9,6 +9,14 @@ export const DEFAULT_DOMAINS = ['www.rentovroom.com', 'staging.rentovroom.com'];
 export const WEBHOOK_PATH = '/api/v1/payments/webhook';
 export const DEFAULT_WEBHOOK_URL = `https://api.rentovroom.com${WEBHOOK_PATH}`;
 
+/**
+ * Two endpoints share the webhook URL (plan §8.1): the account's own events, and the Connect one for Hosts'
+ * payout accounts, which Stripe sends only to an endpoint made for them. Stripe's listing doesn't say which
+ * is which, so they're told apart by the description `stripe:setup` gives the Connect one.
+ */
+export const isConnectEndpoint = (endpoint: Stripe.WebhookEndpoint) =>
+  Boolean(endpoint.description?.includes('Connect'));
+
 /** Cards, and the two wallets most visitors will pay with. */
 export const REQUIRED_METHODS = ['card', 'apple_pay', 'google_pay'] as const;
 export type RequiredMethod = (typeof REQUIRED_METHODS)[number];

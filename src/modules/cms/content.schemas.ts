@@ -110,7 +110,13 @@ export const publicPoliciesSchema = z
       bookedDaysPerMonth: z.number().int(),
       dailyCentsByBodyType: z.record(z.enum(BODY_TYPES), z.number().int()),
     }),
-    reviews: z.object({ windowDays: z.number().int() }),
+    reviews: z.object({
+      windowDays: z.number().int(),
+      revealTogether: z.boolean().meta({
+        description:
+          'Whether a review waits for the other side’s (or the window to close) before it’s published, so the copy can say so',
+      }),
+    }),
     trips: z.object({ lateReturnGraceMinutes: z.number().int() }),
   })
   .meta({ id: 'PublicPolicies' });

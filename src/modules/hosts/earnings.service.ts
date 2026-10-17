@@ -7,7 +7,7 @@ import { BookingModel, type Booking } from '../bookings/booking.model.js';
 import { keptFeeCommission } from '../bookings/policies.js';
 import { PaymentModel, type Payment } from '../payments/payment.model.js';
 import { PayoutModel, type Payout } from '../payouts/payout.model.js';
-import { gstIn, hostPartOf, reservedCents } from '../payouts/payouts.service.js';
+import { gstIn, hostPartOf, ownHostRefunds, reservedCents } from '../payouts/payouts.service.js';
 import { UserModel, type HostProfile } from '../users/user.model.js';
 
 /*
@@ -251,21 +251,8 @@ async function upcomingPayoutsNet(hostId: string, profile: Partial<HostProfile>)
       continue;
     }
     // A trip's payout first takes the refunds of the booking's payment; an extra charge's, those of that charge.
-    const own =
-      payout.type === 'CANCELLATION_FEE'
-        ? 0
-        : payments
-            .filter(
-              (payment) =>
-                payment.bookingId.equals(payout.bookingId) &&
-                (payout.type === 'TRIP'
-                  ? payment.type === 'BOOKING'
-                  : payment.type === 'EXTRA_CHARGE' &&
-                    Boolean(payment.extraChargeId?.equals(payout.extraChargeId!))),
-            )
-            .flatMap((payment) => payment.refunds)
-            .filter((refund) => refund.fundedBy === 'HOST' && refund.status !== 'FAILED')
-            .reduce((sum, refund) => sum + hostPartOf(refund), 0);
+    // The payouts list shows them as its lines (listHostPayouts).
+    const own = ownHostRefunds(payout, payments).reduce((sum, refund) => sum + refund.amountCents, 0);
     const left = Math.max(0, payout.amountCents - own);
     const taken = Math.min(left, owed);
     owed -= taken;

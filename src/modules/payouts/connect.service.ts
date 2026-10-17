@@ -102,11 +102,12 @@ export async function applyAccountState(
   if (!host?.hostProfile) return;
   if (host.hostProfile.payoutStateAt && at < host.hostProfile.payoutStateAt) return;
   const enabled = Boolean(account.payouts_enabled) && account.capabilities?.transfers === 'active';
-  const wasEnabled = host.hostProfile.payoutsEnabled;
   const due = [...(account.requirements?.currently_due ?? []), ...(account.requirements?.past_due ?? [])];
   const delay = account.settings?.payouts?.schedule?.delay_days;
 
-  const applied = await UserModel.updateOne(
+  // The state before is read in the same write: the sync on the Host's return from Stripe and the webhook
+  // often arrive together, and only the one that turns payouts on announces it.
+  const before = await UserModel.findOneAndUpdate(
     {
       _id: host._id,
       // A newer state applied meanwhile wins.
@@ -123,9 +124,10 @@ export async function applyAccountState(
         ...(typeof delay === 'number' && { 'hostProfile.payoutDelayDays': delay }),
       },
     },
-    { session },
-  );
-  if (applied.matchedCount === 0) return;
+    { new: false, session, projection: { 'hostProfile.payoutsEnabled': 1 } },
+  ).lean();
+  if (!before) return;
+  const wasEnabled = Boolean(before.hostProfile?.payoutsEnabled);
 
   if (enabled && !wasEnabled) {
     await releaseHeldPayouts({ hostId: host._id }, 'PAYOUT_SETUP', { session });

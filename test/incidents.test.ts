@@ -446,7 +446,9 @@ describe('a case’s charges', () => {
     const caseRef = opened.body.incident.caseRef as string;
     await createStaff();
     const staff = await staffAgent();
-    await staff.post(`/api/v1/admin/incidents/${caseRef}/events`).send({ status: 'RESOLVED', note: 'Agreed.' });
+    await staff
+      .post(`/api/v1/admin/incidents/${caseRef}/events`)
+      .send({ status: 'RESOLVED', note: 'Agreed.' });
     const charge = (body: object) => staff.post(`/api/v1/admin/incidents/${caseRef}/charges`).send(body);
     return { ...parts, caseRef, staff, charge };
   }
@@ -463,6 +465,28 @@ describe('a case’s charges', () => {
     );
     const more = await charge({ type: 'DAMAGE', description: 'Paint', amountCents: 3_000 });
     expect(more.body.error.code).toBe('OVER_EXCESS');
+  });
+
+  it('saves a charge only with its collection, so a failed submit can be sent again', async () => {
+    const { booking, charge } = await resolvedCase('CLEANING');
+    // Queuing the charge's collection fails: the charge isn't left behind, never to be collected.
+    vi.spyOn(JobModel, 'findOneAndUpdate').mockRejectedValueOnce(new Error('The job queue is down'));
+    const body = {
+      type: 'CLEANING',
+      description: 'Valet',
+      amountCents: 8_000,
+      idempotencyKey: 'valet-charge-1',
+    };
+    expect((await charge(body)).status).toBe(500);
+    expect((await BookingModel.findById(booking._id).lean())!.extraCharges).toEqual([]);
+    expect(await JobModel.countDocuments({ type: 'extraCharge.collect' })).toBe(0);
+
+    expect((await charge(body)).status).toBe(200);
+    const [added] = (await BookingModel.findById(booking._id).lean())!.extraCharges;
+    expect(added).toMatchObject({ status: 'PENDING', amountCents: 8_000 });
+    expect(
+      await JobModel.findOne({ type: 'extraCharge.collect', 'payload.chargeId': added!._id!.toString() }),
+    ).not.toBeNull();
   });
 
   it('shows a charge cancelled or refunded on the case’s history', async () => {
@@ -497,7 +521,13 @@ describe('a case’s charges', () => {
     expect(refunded.status).toBe(200);
     expect((await PaymentModel.findById(paid._id).lean())!.status).toBe('PARTIALLY_REFUNDED');
 
-    const seen = (await guestAgent.get(`/api/v1/incidents/${caseRef}`)).body.incident.events as {
+    const view = (await guestAgent.get(`/api/v1/incidents/${caseRef}`)).body.incident;
+    // The Guest sees where each charge stands: the valet taken off, $20 of the refuel given back.
+    expect(view.extraCharges).toEqual([
+      { type: 'CLEANING', description: 'Valet', amountCents: 8_000, status: 'CANCELLED' },
+      { type: 'FUEL', description: 'Refuel', amountCents: 5_000, status: 'SUCCEEDED', refundedCents: 2_000 },
+    ]);
+    const seen = view.events as {
       action: string;
       note?: string;
     }[];

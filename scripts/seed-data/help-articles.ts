@@ -113,7 +113,7 @@ If the host isn't there, the guest takes the photos and the host confirms them l
 
 ## Guests
 
-Open the trip and choose **Cancel**. You'll see exactly what will be refunded before you confirm. A request that the host hasn't answered yet can be withdrawn at no cost.
+Open the trip and choose **Cancel**. You'll see exactly what will be refunded before you confirm. The policy's refund is of the rental and the service fee; any delivery fee and protection are always refunded in full. A request that the host hasn't answered yet can be withdrawn at no cost.
 
 ## Hosts
 

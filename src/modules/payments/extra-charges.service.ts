@@ -142,8 +142,17 @@ export async function addExtraCharge(
   return chargeId.toString();
 }
 
-/** The card the Guest paid for the booking with, saved for charges like this (plan §8.1, item 3). */
-async function savedCard(booking: BookingRecord): Promise<string | undefined> {
+/**
+ * The card to charge: the one the Guest paid for the booking with, saved for charges like this (plan §8.1, item
+ * 3), while it's still saved to their Stripe customer. One they've removed since (plan §8.1, item 7) can't be
+ * charged, so their newest saved card that hasn't expired is used instead; with none, there's nothing to charge
+ * and the Guest gets the pay link.
+ */
+async function savedCard(booking: BookingRecord, now = new Date()): Promise<string | undefined> {
+  const guest = await UserModel.findById(booking.guestId).select('stripeCustomerId').lean();
+  const customer = guest?.stripeCustomerId;
+  if (!customer) return undefined;
+  const client = stripe();
   const payment = await PaymentModel.findOne({
     bookingId: booking._id,
     type: 'BOOKING',
@@ -151,11 +160,34 @@ async function savedCard(booking: BookingRecord): Promise<string | undefined> {
   })
     .sort({ createdAt: -1 })
     .lean();
-  if (!payment) return undefined;
-  const intent = await stripe().paymentIntents.retrieve(payment.stripePaymentIntentId);
-  const method = intent.payment_method;
-  return typeof method === 'string' ? method : method?.id;
+  if (payment) {
+    const intent = await client.paymentIntents.retrieve(payment.stripePaymentIntentId);
+    const paidWith =
+      typeof intent.payment_method === 'string' ? intent.payment_method : intent.payment_method?.id;
+    const method = paidWith
+      ? await client.paymentMethods.retrieve(paidWith).catch((error: unknown) => {
+          // Gone altogether: the same as removed.
+          if (error instanceof Stripe.errors.StripeInvalidRequestError) return undefined;
+          throw error;
+        })
+      : undefined;
+    const owner = typeof method?.customer === 'string' ? method.customer : method?.customer?.id;
+    if (method && owner === customer) return method.id;
+  }
+  // Newest first. A card is good until the end of its expiry month.
+  const { data } = await client.customers.listPaymentMethods(customer, { type: 'card', limit: 10 });
+  return data.find(
+    (method) => method.card && new Date(Date.UTC(method.card.exp_year, method.card.exp_month, 1)) > now,
+  )?.id;
 }
+
+/**
+ * Stripe refusing the saved card itself, not the payment (removed from the Guest's account while the charge was
+ * being made, say): the same as having no saved card, so the Guest gets the pay link instead of the job retrying.
+ */
+const unusableCard = (error: unknown) =>
+  error instanceof Stripe.errors.StripeInvalidRequestError &&
+  (error.param === 'payment_method' || Boolean(error.code?.startsWith('payment_method_')));
 
 /**
  * Marks a paid extra charge, pays the Host their share and sends the Guest a receipt. A charge refunded since
@@ -260,6 +292,13 @@ async function chargeSucceeded(payment: PaymentDocument, session: ClientSession,
   );
 }
 
+/**
+ * Why a charge's saved card didn't pay it: DECLINED by the card or bank; NO_CARD, none saved that can be charged
+ * (the Guest removed it, say); NEEDS_ACTION, the bank wants the Guest to confirm it; ERROR, Stripe kept giving
+ * an error until the job's last try.
+ */
+type ChargeFailure = 'DECLINED' | 'NO_CARD' | 'NEEDS_ACTION' | 'ERROR';
+
 /** A charge that didn't go through: the Guest gets the pay link, and support hears on the last try. */
 async function chargeFailed(
   booking: BookingRecord,
@@ -267,14 +306,32 @@ async function chargeFailed(
   payment: PaymentDocument,
   reason: string,
   attempt: number,
+  failure: ChargeFailure = 'DECLINED',
 ) {
   const guest = await UserModel.findById(booking.guestId).select('firstName').lean();
   const path = payLinkPath(payment.id);
+  const amount = formatNzdExact(charge.amountCents);
+  const trip = `your trip in the ${booking.vehicleSnapshot.title} (${charge.description})`;
+  // Tried again tomorrow with whatever card is saved by then, until the last try.
+  const retry =
+    attempt >= MAX_ATTEMPTS
+      ? ''
+      : failure === 'NO_CARD'
+        ? ' If you save a card to your account instead, we’ll try charging it in a day.'
+        : ' We’ll try your saved card again in a day.';
   await notify({
     userId: booking.guestId,
     type: 'EXTRA_CHARGE_FAILED',
-    title: `Please pay ${formatNzdExact(charge.amountCents)} for ${booking.ref}`,
-    body: `${charge.description}. Your saved card was declined.`,
+    title: `Please pay ${amount} for ${booking.ref}`,
+    body: `${charge.description}. ${
+      failure === 'NO_CARD'
+        ? 'There’s no saved card to charge it to.'
+        : failure === 'NEEDS_ACTION'
+          ? 'Your bank needs you to confirm it.'
+          : failure === 'ERROR'
+            ? 'We couldn’t charge your saved card.'
+            : 'Your saved card was declined.'
+    }`,
     link: path,
     email: {
       template: 'tripNotice',
@@ -282,8 +339,12 @@ async function chargeFailed(
         firstName: guest?.firstName ?? 'there',
         heading: 'A charge for your trip didn’t go through',
         paragraphs: [
-          `We tried to charge ${formatNzdExact(charge.amountCents)} to your saved card for your trip in the ${booking.vehicleSnapshot.title} (${charge.description}), but it didn’t go through: ${reason}`,
-          'Please pay it with the link below. We’ll try your saved card again in a day.',
+          failure === 'NO_CARD'
+            ? `We couldn’t charge ${amount} for ${trip}. ${reason}`
+            : failure === 'ERROR'
+              ? `We couldn’t charge ${amount} to your saved card for ${trip}.`
+              : `We tried to charge ${amount} to your saved card for ${trip}, but it didn’t go through: ${reason}`,
+          `Please pay it with the link below.${retry}`,
         ],
         rows: [
           { label: 'Booking', value: booking.ref },
@@ -295,7 +356,17 @@ async function chargeFailed(
     },
     dedupeKey: `EXTRA_CHARGE_FAILED:${payment.id}`,
   });
-  if (attempt >= MAX_ATTEMPTS - 1) {
+  // Stripe giving errors for hours is worth a look at once, whatever the try. Its own alert, so the one for a
+  // charge that keeps failing still goes out later.
+  if (failure === 'ERROR') {
+    await alertStaff({
+      type: 'EXTRA_CHARGE_FAILED',
+      title: `An extra charge on ${booking.ref} keeps failing`,
+      body: `Stripe kept giving errors when charging the ${amount} charge (${charge.description}) on booking ${booking.ref}, so the guest has been sent a link to pay it. Check Stripe's status and the job log.`,
+      link: `/admin/bookings/${booking.ref}`,
+      dedupeKey: `EXTRA_CHARGE_FAILED:${charge._id!.toString()}:error`,
+    });
+  } else if (attempt >= MAX_ATTEMPTS - 1) {
     await alertStaff({
       type: 'EXTRA_CHARGE_FAILED',
       title: `An extra charge on ${booking.ref} keeps failing`,
@@ -357,15 +428,19 @@ async function chargeIntent(booking: BookingRecord, charge: ExtraChargeRecord): 
 }
 
 /**
- * `extraCharge.collect`: charges one extra charge to the saved card, off-session. A decline keeps the
- * PaymentIntent for the pay link and tries again tomorrow, up to 3 times. Any other error (a timeout, Stripe
- * being down) is thrown, so the job runs again with the same idempotency keys and never charges twice.
+ * `extraCharge.collect`: charges one extra charge to the saved card, off-session. A decline, or no saved card
+ * that can be charged (the Guest removed it), keeps the PaymentIntent for the pay link, which the Guest is
+ * sent, and tries again tomorrow, up to 3 times. Any other error (a timeout, Stripe being down) is thrown, so
+ * the job runs again with the same idempotency keys and never charges twice. On the job's last run (`lastTry`)
+ * an error that keeps coming back is treated as a failed charge instead, so the Guest still gets the pay link
+ * rather than the charge waiting with no way to pay it.
  */
 export async function collectExtraCharge(
   bookingId: string,
   chargeId: string,
   attempt: number,
   now = new Date(),
+  { lastTry = false }: { lastTry?: boolean } = {},
 ): Promise<'paid' | 'failed' | 'skipped'> {
   const booking = await BookingModel.findById(bookingId).lean<BookingRecord>();
   const charge = booking?.extraCharges.find((candidate) => candidate._id?.equals(chargeId));
@@ -379,11 +454,28 @@ export async function collectExtraCharge(
   const payment = existing ?? (await chargeIntent(booking, charge));
 
   const client = stripe();
-  const method = await savedCard(booking);
+  // The pay page shows this to the Guest; Stripe's own error is in the job's log.
+  const keepsErroring = 'We couldn’t charge the card saved on your account.';
+  let method: string | undefined;
+  let lookupFailed = false;
+  try {
+    method = await savedCard(booking, now);
+  } catch (error) {
+    // Stripe erroring while the card is looked up: tried again by the job, until its last try.
+    if (!lastTry) throw error;
+    lookupFailed = true;
+  }
   let intent: Stripe.PaymentIntent;
   let failure: string | undefined;
-  if (!method) {
-    failure = 'there’s no saved card for this booking';
+  let failedAs: ChargeFailure = 'DECLINED';
+  if (lookupFailed) {
+    // As for an error charging the card on the last try: the Guest gets the pay link.
+    failure = keepsErroring;
+    failedAs = 'ERROR';
+    intent = await client.paymentIntents.retrieve(payment.stripePaymentIntentId);
+  } else if (!method) {
+    failure = 'There’s no saved card on your account to charge it to.';
+    failedAs = 'NO_CARD';
     intent = await client.paymentIntents.retrieve(payment.stripePaymentIntentId);
   } else {
     try {
@@ -394,7 +486,9 @@ export async function collectExtraCharge(
           off_session: true,
           return_url: `${siteUrl()}${payLinkPath(payment.id)}`,
         },
-        { idempotencyKey: `extra-charge-${chargeId}-confirm-${attempt}` },
+        // A job retry may pick another card (the one paid with removed meanwhile, say), which Stripe would
+        // refuse under the same key.
+        { idempotencyKey: `extra-charge-${chargeId}-confirm-${attempt}-${method}` },
       );
     } catch (error) {
       if (error instanceof Stripe.errors.StripeCardError) {
@@ -402,14 +496,27 @@ export async function collectExtraCharge(
         failure = error.message || 'the card was declined';
         intent =
           error.payment_intent ?? (await client.paymentIntents.retrieve(payment.stripePaymentIntentId));
+      } else if (unusableCard(error)) {
+        // The card can't be charged any more (removed a moment ago, say): the PaymentIntent waits for the Guest
+        // on the pay link, as with no saved card. One paid there meanwhile is applied as paid below.
+        failure = 'The card saved on your account can’t be charged any more.';
+        failedAs = 'NO_CARD';
+        intent = await client.paymentIntents.retrieve(payment.stripePaymentIntentId);
       } else {
         // Paid meanwhile on the pay link, or charged although the answer was lost: applied as paid. Anything
         // else is tried again by the job, with the same key.
         const current = await client.paymentIntents
           .retrieve(payment.stripePaymentIntentId)
           .catch(() => undefined);
-        if (current?.status !== 'succeeded') throw error;
-        intent = current;
+        if (current?.status === 'succeeded') {
+          intent = current;
+        } else if (current && lastTry) {
+          failure = keepsErroring;
+          failedAs = 'ERROR';
+          intent = current;
+        } else {
+          throw error;
+        }
       }
     }
   }
@@ -459,7 +566,14 @@ export async function collectExtraCharge(
   }
   // Still with the bank: its webhook says how it ends.
   if (intent.status === 'processing') return 'skipped';
-  await chargeFailed(booking, charge, payment, failure ?? 'it needs your confirmation', attempt);
+  await chargeFailed(
+    booking,
+    charge,
+    payment,
+    failure ?? 'it needs your confirmation',
+    attempt,
+    failure ? failedAs : 'NEEDS_ACTION',
+  );
   if (attempt < MAX_ATTEMPTS) {
     await enqueue(
       'extraCharge.collect',
@@ -750,8 +864,7 @@ export async function refundUnwantedCharge(
   const unwanted =
     reason === 'CHARGE_CANCELLED'
       ? charge.status === 'CANCELLED'
-      : charge.status === 'SUCCEEDED' &&
-        Boolean(charge.paymentId && !charge.paymentId.equals(payment._id));
+      : charge.status === 'SUCCEEDED' && Boolean(charge.paymentId && !charge.paymentId.equals(payment._id));
   if (!unwanted) return false;
   const client = stripe();
   const intent = await client.paymentIntents.retrieve(payment.stripePaymentIntentId);
@@ -796,16 +909,42 @@ export async function refundUnwantedCharge(
       );
       return;
     }
+    const amount = formatNzdExact(refund.amount);
+    const guest = await UserModel.findById(booking.guestId).select('firstName').session(session).lean();
+    // By email too: a charge cancelled as it was taken was last emailed as "nothing to pay" (cancelExtraCharge).
     await notify(
       {
         userId: booking.guestId,
         type: 'REFUND_ISSUED',
-        title: `${formatNzdExact(refund.amount)} refunded`,
+        title: `${amount} refunded`,
         body:
           reason === 'CHARGE_CANCELLED'
             ? `The charge for ${charge.description} on ${booking.ref} was cancelled, so its payment is refunded.`
             : `The charge for ${charge.description} on ${booking.ref} was paid twice, so the second payment is refunded.`,
         link: `/trips/${booking.ref}`,
+        email: {
+          template: 'tripNotice',
+          props: {
+            firstName: guest?.firstName ?? 'there',
+            heading:
+              reason === 'CHARGE_CANCELLED'
+                ? `${amount} refunded: the charge was cancelled`
+                : `${amount} refunded: you paid a charge twice`,
+            paragraphs: [
+              reason === 'CHARGE_CANCELLED'
+                ? `The ${amount} charge for your trip in the ${booking.vehicleSnapshot.title} (${charge.description}) went through just as it was cancelled. You don’t owe it, so we’ve refunded it in full to the card you paid with.`
+                : `The ${amount} charge for your trip in the ${booking.vehicleSnapshot.title} (${charge.description}) was paid twice. We’ve refunded the second payment in full to the card you paid it with. The charge itself stays paid.`,
+              'It usually reaches your account within 5–10 business days.',
+            ],
+            rows: [
+              { label: 'Booking', value: booking.ref },
+              { label: 'Charge', value: charge.description },
+              { label: 'Refund', value: amount },
+            ],
+            buttonLabel: 'View your trip',
+            url: `${siteUrl()}/trips/${booking.ref}`,
+          },
+        },
         dedupeKey: `REFUND_ISSUED:${payment.id}:${key}`,
       },
       { session },

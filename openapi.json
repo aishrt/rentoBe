@@ -1073,6 +1073,11 @@
                 "expiresAt": {
                   "type": "string",
                   "format": "date-time"
+                },
+                "startsAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Set for a confirmed trip held by a licence waiting for its check: when it starts. Its check-in is refused until support decides; the decision neither confirms nor releases it"
                 }
               },
               "required": [
@@ -1173,6 +1178,460 @@
         },
         "required": [
           "decision"
+        ]
+      },
+      "AdminUserResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/AdminUserDetail"
+          }
+        },
+        "required": [
+          "user"
+        ]
+      },
+      "AdminUserDetail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "GUEST",
+                "HOST",
+                "ADMIN",
+                "SUPPORT"
+              ]
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "identityStatus": {
+            "type": "string",
+            "enum": [
+              "NONE",
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ]
+          },
+          "hostStatus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "APPLIED",
+              "APPROVED",
+              "REJECTED",
+              "SUSPENDED",
+              null
+            ]
+          },
+          "openRiskFlags": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "suspendedReason": {
+            "type": "string"
+          },
+          "emailVerified": {
+            "type": "boolean"
+          },
+          "emailProblem": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "BOUNCED",
+                  "SUPPRESSED"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "kind",
+              "at"
+            ],
+            "description": "Emails to the address bounced, or Resend won't send to it (plan §7). Cleared by the next delivery."
+          },
+          "phoneVerified": {
+            "type": "boolean"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lastLoginAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "licence": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "class": {
+                "type": "string"
+              },
+              "country": {
+                "type": "string"
+              },
+              "numberEnding": {
+                "type": "string"
+              },
+              "expiry": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "issuedAt": {
+                "type": "string"
+              },
+              "inEnglish": {
+                "type": "boolean",
+                "description": "Overseas: false when it isn’t in English"
+              },
+              "englishProof": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "class",
+              "country",
+              "numberEnding",
+              "expiry",
+              "status"
+            ]
+          },
+          "dob": {
+            "type": "string",
+            "description": "Their date of birth, to compare with the licence"
+          },
+          "identityDocument": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "driving_license, passport or id_card"
+              },
+              "licenceNumberMatched": {
+                "type": "boolean"
+              },
+              "dobMatched": {
+                "type": "boolean"
+              }
+            },
+            "description": "The ID used in the identity check: a driver licence’s number compared with the licence on the account now, and the date of birth compared when it was checked"
+          },
+          "sameLicence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SameLicenceAccount"
+            },
+            "description": "Other accounts with the same licence number, entered or read from their ID (what a DUPLICATE_LICENCE flag is about), oldest first, at most 20. Left out when there are none"
+          },
+          "host": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "APPLIED",
+                  "APPROVED",
+                  "REJECTED",
+                  "SUSPENDED"
+                ]
+              },
+              "payoutsEnabled": {
+                "type": "boolean"
+              },
+              "feesOwedCents": {
+                "type": "integer"
+              },
+              "tripCount": {
+                "type": "integer"
+              },
+              "rating": {
+                "type": "object",
+                "properties": {
+                  "avg": {
+                    "type": "number"
+                  },
+                  "count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "avg",
+                  "count"
+                ]
+              },
+              "vehicles": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "payoutsEnabled",
+              "feesOwedCents",
+              "tripCount",
+              "rating",
+              "vehicles"
+            ]
+          },
+          "riskFlags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RiskFlag"
+            }
+          },
+          "bookings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminBookingRow"
+            },
+            "description": "As Guest and as Host, newest first"
+          },
+          "upcomingBookings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminBookingRow"
+            },
+            "description": "Confirmed or pending trips still to come: what a suspension affects"
+          }
+        },
+        "required": [
+          "id",
+          "firstName",
+          "lastName",
+          "email",
+          "roles",
+          "status",
+          "closed",
+          "identityStatus",
+          "hostStatus",
+          "openRiskFlags",
+          "createdAt",
+          "emailVerified",
+          "phoneVerified",
+          "permissions",
+          "licence",
+          "host",
+          "riskFlags",
+          "bookings",
+          "upcomingBookings"
+        ]
+      },
+      "SameLicenceAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When they joined"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "closed",
+          "createdAt"
+        ]
+      },
+      "RiskFlag": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "clearedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "createdAt"
+        ]
+      },
+      "AdminBookingRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PAYMENT_PENDING",
+              "PENDING",
+              "CONFIRMED",
+              "ACTIVE",
+              "COMPLETED",
+              "CANCELLED",
+              "DECLINED",
+              "EXPIRED"
+            ]
+          },
+          "vehicleTitle": {
+            "type": "string"
+          },
+          "guest": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "host": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "totalCents": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "ref",
+          "status",
+          "vehicleTitle",
+          "guest",
+          "host",
+          "start",
+          "end",
+          "totalCents",
+          "createdAt"
+        ]
+      },
+      "VerificationResetRequest": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "IDENTITY",
+              "LICENCE"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500,
+            "description": "Why another try is allowed: kept in the audit log"
+          }
+        },
+        "required": [
+          "kind",
+          "reason"
         ]
       },
       "LicenceNumber": {
@@ -1956,7 +2415,47 @@
                   "note"
                 ]
               },
+              "listingsAndSearch": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
               "verificationServices": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "hostEstimator": {
                 "type": "object",
                 "properties": {
                   "status": {
@@ -2007,7 +2506,9 @@
               "reviewsAndTrips",
               "company",
               "bookingRules",
+              "listingsAndSearch",
               "verificationServices",
+              "hostEstimator",
               "retentionAndRisk"
             ]
           },
@@ -2857,7 +3358,47 @@
                   "note"
                 ]
               },
+              "listingsAndSearch": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
               "verificationServices": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING",
+                      "CONFIRMED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "status",
+                  "note"
+                ]
+              },
+              "hostEstimator": {
                 "type": "object",
                 "properties": {
                   "status": {
@@ -5568,10 +6109,15 @@
             "properties": {
               "windowDays": {
                 "type": "integer"
+              },
+              "revealTogether": {
+                "type": "boolean",
+                "description": "Whether a review waits for the other side’s (or the window to close) before it’s published, so the copy can say so"
               }
             },
             "required": [
-              "windowDays"
+              "windowDays",
+              "revealTogether"
             ]
           },
           "trips": {
@@ -8601,90 +9147,6 @@
           "changedAt"
         ]
       },
-      "AdminBookingRow": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "ref": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "PAYMENT_PENDING",
-              "PENDING",
-              "CONFIRMED",
-              "ACTIVE",
-              "COMPLETED",
-              "CANCELLED",
-              "DECLINED",
-              "EXPIRED"
-            ]
-          },
-          "vehicleTitle": {
-            "type": "string"
-          },
-          "guest": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "host": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "start": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "end": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "totalCents": {
-            "type": "integer"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "ref",
-          "status",
-          "vehicleTitle",
-          "guest",
-          "host",
-          "start",
-          "end",
-          "totalCents",
-          "createdAt"
-        ]
-      },
       "PhotoDecision": {
         "type": "object",
         "properties": {
@@ -9513,6 +9975,10 @@
             "format": "date-time",
             "description": "PAYMENT_PENDING: when the dates are released"
           },
+          "paymentProcessing": {
+            "type": "boolean",
+            "description": "PAYMENT_PENDING past holdExpiresAt: the payment is still processing at the bank, so the dates stay held until it succeeds or fails"
+          },
           "requestExpiresAt": {
             "type": "string",
             "format": "date-time",
@@ -9677,6 +10143,10 @@
               "earlierRefundCents": {
                 "type": "integer",
                 "description": "Refunds made before the cancellation, which came off what it could give back (all of the payment, when the refund is 0 and nothing was kept)"
+              },
+              "disputed": {
+                "type": "boolean",
+                "description": "Cancelled by support while the payment was in a card dispute (a chargeback): the dispute decides what goes back to the card, so the cancellation refunded and kept nothing"
               },
               "hostShareCents": {
                 "type": "integer"
@@ -11187,6 +11657,13 @@
               "type": "string"
             },
             "description": "Bookings not confirmed because the Guest’s licence no longer meets the rules for that trip (it expires before the trip ends, say): they keep waiting until the Guest updates it, support cancels them or their time runs out"
+          },
+          "stillBooked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Set when a turned-down check leaves the Guest with confirmed trips: they stay booked, and support are alerted to each to decide (check-in refuses them unless the licence is approved)"
           }
         },
         "required": [
@@ -11890,6 +12367,52 @@
               "extraChargeCents"
             ],
             "description": "After check-out"
+          },
+          "extraKmStatus": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "WAITING",
+                  "CHECKING",
+                  "CHARGED",
+                  "NOT_CHARGED"
+                ],
+                "description": "WAITING: charged at chargeAt, or sooner once waitingFor confirms the check-out; CHECKING: above the daily review limit, so staff check the readings before it’s charged; CHARGED: see chargeStatus; NOT_CHARGED: staff cancelled the charge"
+              },
+              "amountCents": {
+                "type": "integer",
+                "description": "CHARGED: the charges not cancelled; otherwise kilometres.extraChargeCents"
+              },
+              "chargeAt": {
+                "type": "string",
+                "format": "date-time",
+                "description": "WAITING: when it’s charged at the latest"
+              },
+              "waitingFor": {
+                "type": "string",
+                "enum": [
+                  "GUEST",
+                  "HOST"
+                ],
+                "description": "WAITING: whose confirmation of the check-out brings the charge forward; missing once confirmed"
+              },
+              "chargeStatus": {
+                "type": "string",
+                "enum": [
+                  "PENDING",
+                  "PAID",
+                  "NOT_PAID"
+                ],
+                "description": "CHARGED: being taken from the saved card, paid, or not paid (the card didn’t cover it)"
+              }
+            },
+            "required": [
+              "status",
+              "amountCents"
+            ],
+            "description": "Where a completed trip’s extra kilometres stand (plan §8.2), when there are any"
           },
           "fuelShortfall": {
             "type": "boolean",
@@ -12882,15 +13405,20 @@
           "currency"
         ]
       },
-      "ReviewResponse": {
+      "SubmittedReviewResponse": {
         "type": "object",
         "properties": {
           "review": {
             "$ref": "#/components/schemas/Review"
+          },
+          "otherPublished": {
+            "type": "boolean",
+            "description": "Whether the other side’s review of you is published now: not when they haven’t written one, or it’s held for a moderator or hidden"
           }
         },
         "required": [
-          "review"
+          "review",
+          "otherPublished"
         ]
       },
       "Review": {
@@ -13371,6 +13899,17 @@
           "moderationReason"
         ]
       },
+      "ReviewResponse": {
+        "type": "object",
+        "properties": {
+          "review": {
+            "$ref": "#/components/schemas/Review"
+          }
+        },
+        "required": [
+          "review"
+        ]
+      },
       "ModerateReviewRequest": {
         "type": "object",
         "properties": {
@@ -13572,6 +14111,10 @@
                     "FAILED",
                     "CANCELLED"
                   ]
+                },
+                "refundedCents": {
+                  "type": "integer",
+                  "description": "A paid (SUCCEEDED) charge’s refunds that didn’t fail; the whole amount when it was refunded in full. Left out when none"
                 }
               },
               "required": [
@@ -14074,7 +14617,7 @@
               },
               "platformFeesCents": {
                 "type": "integer",
-                "description": "Service fees and commission on trips starting in the range, the platform’s share of cancellation fees kept and the commission on extra charges (the report’s fees.totalCents)"
+                "description": "Service fees and commission on trips starting in the range, the platform’s share of cancellation fees kept, Host cancellation fees and the commission on extra charges (the report’s fees.totalCents)"
               },
               "hostPayoutsCents": {
                 "type": "integer",
@@ -14290,314 +14833,6 @@
           "identityStatus",
           "hostStatus",
           "openRiskFlags",
-          "createdAt"
-        ]
-      },
-      "AdminUserResponse": {
-        "type": "object",
-        "properties": {
-          "user": {
-            "$ref": "#/components/schemas/AdminUserDetail"
-          }
-        },
-        "required": [
-          "user"
-        ]
-      },
-      "AdminUserDetail": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "firstName": {
-            "type": "string"
-          },
-          "lastName": {
-            "type": "string"
-          },
-          "email": {
-            "type": "string"
-          },
-          "phone": {
-            "type": "string"
-          },
-          "roles": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "GUEST",
-                "HOST",
-                "ADMIN",
-                "SUPPORT"
-              ]
-            }
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "ACTIVE",
-              "SUSPENDED"
-            ]
-          },
-          "closed": {
-            "type": "boolean"
-          },
-          "identityStatus": {
-            "type": "string",
-            "enum": [
-              "NONE",
-              "PENDING",
-              "APPROVED",
-              "REJECTED"
-            ]
-          },
-          "hostStatus": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "APPLIED",
-              "APPROVED",
-              "REJECTED",
-              "SUSPENDED",
-              null
-            ]
-          },
-          "openRiskFlags": {
-            "type": "integer"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "suspendedReason": {
-            "type": "string"
-          },
-          "emailVerified": {
-            "type": "boolean"
-          },
-          "emailProblem": {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "BOUNCED",
-                  "SUPPRESSED"
-                ]
-              },
-              "detail": {
-                "type": "string"
-              },
-              "at": {
-                "type": "string",
-                "format": "date-time"
-              }
-            },
-            "required": [
-              "kind",
-              "at"
-            ],
-            "description": "Emails to the address bounced, or Resend won't send to it (plan §7). Cleared by the next delivery."
-          },
-          "phoneVerified": {
-            "type": "boolean"
-          },
-          "permissions": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "lastLoginAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "licence": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "class": {
-                "type": "string"
-              },
-              "country": {
-                "type": "string"
-              },
-              "numberEnding": {
-                "type": "string"
-              },
-              "expiry": {
-                "type": "string"
-              },
-              "status": {
-                "type": "string"
-              },
-              "version": {
-                "type": "string"
-              },
-              "issuedAt": {
-                "type": "string"
-              },
-              "inEnglish": {
-                "type": "boolean",
-                "description": "Overseas: false when it isn’t in English"
-              },
-              "englishProof": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "class",
-              "country",
-              "numberEnding",
-              "expiry",
-              "status"
-            ]
-          },
-          "dob": {
-            "type": "string",
-            "description": "Their date of birth, to compare with the licence"
-          },
-          "identityDocument": {
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "description": "driving_license, passport or id_card"
-              },
-              "licenceNumberMatched": {
-                "type": "boolean"
-              },
-              "dobMatched": {
-                "type": "boolean"
-              }
-            },
-            "description": "The ID used in the identity check: a driver licence’s number compared with the licence on the account now, and the date of birth compared when it was checked"
-          },
-          "host": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "properties": {
-              "status": {
-                "type": "string",
-                "enum": [
-                  "APPLIED",
-                  "APPROVED",
-                  "REJECTED",
-                  "SUSPENDED"
-                ]
-              },
-              "payoutsEnabled": {
-                "type": "boolean"
-              },
-              "feesOwedCents": {
-                "type": "integer"
-              },
-              "tripCount": {
-                "type": "integer"
-              },
-              "rating": {
-                "type": "object",
-                "properties": {
-                  "avg": {
-                    "type": "number"
-                  },
-                  "count": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "avg",
-                  "count"
-                ]
-              },
-              "vehicles": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "status",
-              "payoutsEnabled",
-              "feesOwedCents",
-              "tripCount",
-              "rating",
-              "vehicles"
-            ]
-          },
-          "riskFlags": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RiskFlag"
-            }
-          },
-          "bookings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AdminBookingRow"
-            },
-            "description": "As Guest and as Host, newest first"
-          },
-          "upcomingBookings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AdminBookingRow"
-            },
-            "description": "Confirmed or pending trips still to come: what a suspension affects"
-          }
-        },
-        "required": [
-          "id",
-          "firstName",
-          "lastName",
-          "email",
-          "roles",
-          "status",
-          "closed",
-          "identityStatus",
-          "hostStatus",
-          "openRiskFlags",
-          "createdAt",
-          "emailVerified",
-          "phoneVerified",
-          "permissions",
-          "licence",
-          "host",
-          "riskFlags",
-          "bookings",
-          "upcomingBookings"
-        ]
-      },
-      "RiskFlag": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "code": {
-            "type": "string"
-          },
-          "detail": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "clearedAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "code",
           "createdAt"
         ]
       },
@@ -15443,6 +15678,22 @@
             "type": "string",
             "format": "date-time"
           },
+          "accountWithEmail": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "description": "For a request sent signed out: the open account with its email address, which staff can link it to once they’ve checked it’s them (POST …/link-account)"
+          },
           "thread": {
             "type": "array",
             "items": {
@@ -15537,6 +15788,16 @@
         "required": [
           "body"
         ]
+      },
+      "TicketLinkRequest": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "How staff checked it’s them, for the audit log"
+          }
+        }
       },
       "TicketUpdateRequest": {
         "type": "object",
@@ -16576,7 +16837,7 @@
               },
               "platformFeesCents": {
                 "type": "integer",
-                "description": "Service fees and commission, the platform’s share of cancellation fees kept and the commission on extra charges (fees.totalCents)"
+                "description": "Service fees and commission, the platform’s share of cancellation fees kept, Host cancellation fees and the commission on extra charges (fees.totalCents)"
               },
               "hostPayoutsPaidCents": {
                 "type": "integer"
@@ -16623,6 +16884,10 @@
                 "type": "integer",
                 "description": "The platform’s share of the fees kept from bookings cancelled in the range"
               },
+              "hostCancellationFeesCents": {
+                "type": "integer",
+                "description": "Charged to Hosts who cancelled a confirmed booking in the range, less any part waived, GST included"
+              },
               "extraChargeCommissionCents": {
                 "type": "integer",
                 "description": "On extra charges paid in the range"
@@ -16635,6 +16900,7 @@
               "serviceFeesCents",
               "hostCommissionCents",
               "cancellationFeesShareCents",
+              "hostCancellationFeesCents",
               "extraChargeCommissionCents",
               "totalCents"
             ]
@@ -19214,6 +19480,105 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LicenceReviewResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{id}/verification-reset": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: allow another try after a turned-down identity check or licence",
+        "description": "IDENTITY: the turned-down check is set aside (its session is still redacted 90 days after it began, plan §14) and the status goes back to NONE, so the member can start a new check. LICENCE: the licence goes back to PENDING, for support to check again in the queue (the member can correct it first); their booked trips wait for the check again (plan §8.2). The reason goes to the audit log, and the member is notified and emailed. 409 NOT_REJECTED when that check wasn’t turned down, 409 ACCOUNT_CLOSED for a closed account, 409 IDENTITY_FIRST for a LICENCE whose identity check was turned down (or is still to do while it comes before booking), as the licence is checked once their ID is; 403 OWN_RECORD for a support member’s own record.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationResetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Their record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserResponse"
                 }
               }
             }
@@ -23745,6 +24110,28 @@
             }
           }
         }
+      },
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "The List-Unsubscribe link opened in a browser",
+        "description": "An email app that opens the header’s link instead of posting to it is sent to the site’s unsubscribe page with the same token, which asks before turning anything off. Works without signing in; changes nothing itself.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "token",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To {FRONTEND_URL}/unsubscribe?token=…"
+          }
+        }
       }
     },
     "/admin/host-applications": {
@@ -25925,7 +26312,7 @@
           "Bookings"
         ],
         "summary": "Cancel a booking, or withdraw a request",
-        "description": "The Guest: an unpaid checkout is released, a request withdrawn (nothing charged), a confirmed booking refunded under its tier; after the pick-up time it counts as not turning up, so the tier applies as at the start time. The Host: a confirmed booking is refunded in full and any Host cancellation fee applies, until the start time (then 409 TRIP_STARTED: support handles it); a request is declined instead (409 USE_DECLINE). With expectedRefundCents, a refund now lower than the preview showed cancels nothing (409 REFUND_CHANGED).",
+        "description": "The Guest: an unpaid checkout is released, a request withdrawn (nothing charged), a confirmed booking refunded under its tier; after the pick-up time it counts as not turning up, so the tier applies as at the start time. The Host: a confirmed booking is refunded in full and any Host cancellation fee applies, until the start time (then 409 TRIP_STARTED: support handles it); a request is declined instead (409 USE_DECLINE). With expectedRefundCents, a refund now lower than the preview showed cancels nothing (409 REFUND_CHANGED). A booking whose payment is in a card dispute (a chargeback) can be cancelled only by support (409 PAYMENT_DISPUTED; the preview says so).",
         "security": [
           {
             "cookieAuth": []
@@ -26026,7 +26413,7 @@
           "Bookings"
         ],
         "summary": "Host: accept a request",
-        "description": "Captures the authorised payment and confirms the booking. 409 when it has expired or was answered.",
+        "description": "Captures the authorised payment and confirms the booking. While the Guest’s identity check or licence waits for support (checked again here), the acceptance is recorded and the booking is confirmed once support approves it. 409 when it has expired or was answered; 409 GUEST_SUSPENDED while the Guest’s account is on hold (nothing is charged, and staff are alerted).",
         "security": [
           {
             "cookieAuth": []
@@ -26198,7 +26585,7 @@
           "Admin"
         ],
         "summary": "Staff: cancel for a no-show, or as a platform cancellation",
-        "description": "Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. An ACTIVE trip only as a Guest no-show, when the Host did the check-in alone and the Guest hasn’t confirmed it (409 NOT_CANCELLABLE otherwise). Earlier refunds come off the refund. Both parties are told, except the Host of an Instant Book that never reached them.",
+        "description": "Admins, and support staff with the REFUNDS permission. A confirmed booking: a Guest no-show is a Guest cancellation at the start time; a Host no-show a Host cancellation; a platform cancellation a full refund. A PENDING booking (a request, or one waiting for the Guest’s verification) is a platform cancellation only (409 NOT_CONFIRMED for a no-show): its card authorisation is released and its held dates freed. An ACTIVE trip only as a Guest no-show, when the Host did the check-in alone and the Guest hasn’t confirmed it (409 NOT_CANCELLABLE otherwise). Earlier refunds come off the refund. A booking whose payment is in a card dispute (a chargeback) is cancelled with nothing refunded or kept, as the dispute decides the money, and no payout or kept-fee share for the Host; staff are alerted to refund it if the dispute is won. Both parties are told, except the Host of an Instant Book that never reached them.",
         "security": [
           {
             "cookieAuth": []
@@ -26505,7 +26892,7 @@
           "Admin"
         ],
         "summary": "Staff: decide an identity check that needed a manual review",
-        "description": "Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2).",
+        "description": "Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2); their confirmed trips stay booked (`stillBooked`), and support are alerted to each to decide.",
         "security": [
           {
             "cookieAuth": []
@@ -27504,6 +27891,7 @@
           "Handover"
         ],
         "summary": "Confirm the other party’s report",
+        "description": "Once both parties have confirmed the check-out (or the Guest has, when support completed the trip), any extra kilometres are charged without waiting for the damage-report window to close.",
         "security": [
           {
             "cookieAuth": []
@@ -27677,7 +28065,7 @@
           "Admin"
         ],
         "summary": "Staff: complete a trip whose check-out is missing",
-        "description": "With the Host’s odometer and fuel or battery reading, and any photos they sent (plan §8.2), which become the check-out record. The booking becomes COMPLETED, and extra kilometres (worked out against the check-in reading, when there is one), reviews and the payout follow as normal. 409 NOT_CHECK_OUT unless the trip is under way without a check-out; 400 when the odometer is below the check-in reading.",
+        "description": "With the Host’s odometer and fuel or battery reading, and any photos they sent (plan §8.2), which become the check-out record. The booking becomes COMPLETED, and extra kilometres (worked out against the check-in reading, when there is one), reviews and the payout follow as normal: the extra kilometres wait like any check-out’s, charged once the Guest confirms the readings or when the damage-report window closes (`handover.extraKmStatus` says where they stand). Charging them sooner is POST /admin/bookings/{id}/extra-km, with the refunds permission. 409 NOT_CHECK_OUT unless the trip is under way without a check-out; 400 when the odometer is below the check-in reading.",
         "security": [
           {
             "cookieAuth": []
@@ -28589,7 +28977,7 @@
           "Reviews"
         ],
         "summary": "Review a completed trip",
-        "description": "The Guest reviews the Host and car (cleanliness), the Host reviews the Guest (care), once each, within the review window. Both are published together once both are in, or when the window closes. A review with contact details, links or abusive language waits for a moderator.",
+        "description": "The Guest reviews the Host and car (cleanliness), the Host reviews the Guest (care), once each, within the review window. Both are published together once both are in, or when the window closes; with the `revealTogether` setting off, each is published as soon as it’s written. A review with contact details, links or abusive language waits for a moderator. `otherPublished` says whether the other side’s review is published now.",
         "security": [
           {
             "cookieAuth": []
@@ -28614,7 +29002,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ReviewResponse"
+                  "$ref": "#/components/schemas/SubmittedReviewResponse"
                 }
               }
             }
@@ -30280,7 +30668,7 @@
           "Admin"
         ],
         "summary": "Staff: lift a suspension",
-        "description": "Their listings return to search and held payouts are sent. 409 ACCOUNT_CLOSED for an account closed on request, which stays suspended.",
+        "description": "Their listings return to search, and payouts held because of the suspension are sent. 409 ACCOUNT_CLOSED for an account closed on request, which stays suspended.",
         "security": [
           {
             "cookieAuth": []
@@ -30774,7 +31162,7 @@
           "Admin"
         ],
         "summary": "Staff: download a copy of a person’s information (a privacy request)",
-        "description": "A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Any staff member, audit-logged; 403 OWN_RECORD for their own account.",
+        "description": "A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Downloaded from the privacy request it answers: `ticket` is a PRIVACY ticket they raised, in any status (one sent signed out is linked to their account first: POST /admin/support/tickets/{ref}/link-account) (400 without one; 403 NO_PRIVACY_REQUEST when it isn’t). Any staff member, the admin included, audit-logged with the ticket; 403 OWN_RECORD for their own account.",
         "security": [
           {
             "cookieAuth": []
@@ -30791,6 +31179,17 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^ST-[A-Z0-9]{6}$/i",
+              "description": "The reference of the privacy (PRIVACY) support ticket they raised, e.g. ST-ABC123"
+            },
+            "required": true,
+            "description": "The reference of the privacy (PRIVACY) support ticket they raised, e.g. ST-ABC123",
+            "name": "ticket",
+            "in": "query"
           }
         ],
         "responses": {
@@ -30801,6 +31200,16 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -31134,7 +31543,7 @@
           "Admin"
         ],
         "summary": "Staff with the refunds permission: refund the Guest",
-        "description": "A Host-funded refund comes off the trip’s payout, or once that’s sent, off the Host’s next payout or back from the Stripe transfer as staff choose (recoverFrom). The answer’s hostRefund says which (plan §8.1, item 15).",
+        "description": "A Host-funded refund comes off the trip’s payout, or once that’s sent, off the Host’s next payout or back from the Stripe transfer as staff choose (recoverFrom). The answer’s hostRefund says which (plan §8.1, item 15). A refund Stripe refuses is 409: PAYMENT_DISPUTED for a payment in a card dispute, REFUND_REFUSED otherwise.",
         "security": [
           {
             "cookieAuth": []
@@ -32148,6 +32557,17 @@
           },
           {
             "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{24}$",
+              "description": "Only tickets a member sent while signed in, such as their privacy requests"
+            },
+            "required": false,
+            "description": "Only tickets a member sent while signed in, such as their privacy requests",
+            "name": "user",
+            "in": "query"
+          },
+          {
+            "schema": {
               "type": "integer",
               "minimum": 1,
               "maximum": 500,
@@ -32444,6 +32864,105 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/support/tickets/{ref}/link-account": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: link a request sent signed out to the account with its email",
+        "description": "Once staff have checked it’s them (plan §14), the request becomes the member’s own: listed in their account and on their record, replies reach them there and can carry files, and a privacy request’s copy of their data is downloaded from it. Audit-logged with the note. 409 ALREADY_LINKED for a request already on an account; 404 NO_ACCOUNT when no open account has its email; 403 OWN_RECORD for a support member’s own account or booking.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffTicketResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {

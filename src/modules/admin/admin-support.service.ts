@@ -83,6 +83,7 @@ export async function listTickets(staffId: string, query: z.infer<typeof ticketL
     status: query.status ?? mongoose.trusted({ $in: ['OPEN', 'PENDING'] }),
     ...(query.category && { category: query.category }),
     ...(query.mine && { assignedTo: new mongoose.Types.ObjectId(staffId) }),
+    ...(query.user && { userId: new mongoose.Types.ObjectId(query.user) }),
   };
   if (query.q) {
     if (/^ST-[A-Z0-9]{6}$/i.test(query.q)) filter.ref = query.q.toUpperCase();
@@ -126,13 +127,27 @@ async function findTicket(ref: string) {
   return ticket;
 }
 
+/** For a request sent signed out (the Contact form): the open account with its email address, if there is one. */
+async function accountWithEmail(ticket: TicketRecord) {
+  if (ticket.userId || !ticket.email) return null;
+  return UserModel.findOne({
+    email: ticket.email.toLowerCase(),
+    closedAt: mongoose.trusted({ $exists: false }),
+  })
+    .select('firstName lastName')
+    .lean();
+}
+
 /** GET /admin/support/tickets/{ref}: the whole conversation, internal notes included. */
 export async function staffTicket(ref: string): Promise<z.infer<typeof staffTicketSchema>> {
   const ticket = await findTicket(ref);
-  const [row] = await rows([ticket]);
+  const [[row], account] = await Promise.all([rows([ticket]), accountWithEmail(ticket)]);
   const nameOf = await names(ticket.messages.flatMap((message) => message.authorId ?? []));
   return {
     ...row!,
+    ...(account && {
+      accountWithEmail: { id: account._id.toString(), name: `${account.firstName} ${account.lastName}` },
+    }),
     thread: ticket.messages.map((message, index) => {
       const fromUser = !message.authorId || (ticket.userId && message.authorId.equals(ticket.userId));
       return {
@@ -229,6 +244,38 @@ export async function replyToTicket(
     entity: 'supportTicket',
     entityId: ticket.ref,
     after: { status },
+    ...(ip && { ip }),
+  });
+  return staffTicket(ticket.ref);
+}
+
+/**
+ * POST /admin/support/tickets/{ref}/link-account: a request sent signed out, from the email address on an
+ * account, becomes that member's own once staff have checked it's them (plan §14): it's listed with the
+ * requests in their account and on their record, replies reach them there and can carry files, and a privacy
+ * request's copy of their information is downloaded from it. Written to the audit log, with how staff checked.
+ * 409 ALREADY_LINKED for a request already on an account; 404 NO_ACCOUNT when no open account has its email;
+ * 403 OWN_RECORD when it's a support member's own account, or a booking of theirs.
+ */
+export async function linkTicketToAccount(staffId: string, ref: string, note?: string, ip?: string) {
+  const ticket = await findTicket(ref);
+  const alreadyLinked = () =>
+    new HttpError(409, 'ALREADY_LINKED', 'This request is already on a member’s account.');
+  if (ticket.userId) throw alreadyLinked();
+  const account = await accountWithEmail(ticket);
+  if (!account) throw new HttpError(404, 'NO_ACCOUNT', 'No account uses this email address.');
+  await assertNotOwnRecord(staffId, [account._id, ...(await ticketSubjects(ticket))]);
+  const linked = await SupportTicketModel.updateOne(
+    { _id: ticket._id, userId: mongoose.trusted({ $exists: false }) },
+    { $set: { userId: account._id } },
+  );
+  if (linked.modifiedCount === 0) throw alreadyLinked();
+  await recordAudit({
+    actorId: staffId,
+    action: 'ticket.linked',
+    entity: 'supportTicket',
+    entityId: ticket.ref,
+    after: { userId: account._id.toString(), ...(note && { note }) },
     ...(ip && { ip }),
   });
   return staffTicket(ticket.ref);

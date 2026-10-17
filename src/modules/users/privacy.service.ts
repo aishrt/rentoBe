@@ -5,7 +5,7 @@ import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { recordAudit } from '../audit/audit.service.js';
 import { BookingModel } from '../bookings/booking.model.js';
 import { IncidentModel } from '../incidents/incident.model.js';
-import { PaymentModel } from '../payments/payment.model.js';
+import { CLOSED_DISPUTE_STATUSES, PaymentModel } from '../payments/payment.model.js';
 import { PayoutModel } from '../payouts/payout.model.js';
 import { openTicket, replyToMyTicket } from '../support/support.service.js';
 import { SupportTicketModel } from '../support/support-ticket.model.js';
@@ -91,10 +91,10 @@ export async function accountClosure(
       PaymentModel.find({ bookingId: mongoose.trusted({ $in: theirTrips }), 'refunds.status': 'FAILED' })
         .select('refunds')
         .lean(),
-      // Not yet decided by the bank: Stripe's open statuses.
+      // Not yet decided by the bank: anything but a settled status (a prevented one is settled too).
       PaymentModel.exists({
         bookingId: mongoose.trusted({ $in: theirBookings }),
-        'dispute.status': mongoose.trusted({ $exists: true, $nin: ['won', 'lost', 'warning_closed'] }),
+        'dispute.status': mongoose.trusted({ $exists: true, $nin: [...CLOSED_DISPUTE_STATUSES] }),
       }),
       BookingModel.exists({
         guestId: id,

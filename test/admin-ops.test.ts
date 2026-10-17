@@ -238,7 +238,7 @@ describe('user management', () => {
     await createStaff('sam@example.co.nz', 'SUPPORT');
     const agent = await staffAgent('sam@example.co.nz');
 
-    const download = await agent.get(`/api/v1/admin/users/${guest.id}/export`);
+    const download = await agent.get(`/api/v1/admin/users/${guest.id}/export`).query({ ticket: 'st-exp001' });
     expect(download.status).toBe(200);
     expect(download.headers['content-disposition']).toMatch(/^attachment; filename="rento-vroom-data-/);
     const data = JSON.parse(download.text);
@@ -254,7 +254,88 @@ describe('user management', () => {
     ]);
     expect(download.text).not.toContain('Hana');
     expect(download.text).not.toContain('021 555 0101');
-    expect(await AuditLogModel.exists({ action: 'user.exported', entityId: guest.id })).toBeTruthy();
+    expect(await AuditLogModel.findOne({ action: 'user.exported', entityId: guest.id }).lean()).toMatchObject(
+      { after: { ticket: 'ST-EXP001' } },
+    );
+  });
+
+  it('downloads someone’s information only from a privacy request they sent, even for the admin', async () => {
+    const { host, guest } = await trip();
+    await SupportTicketModel.create([
+      // Hana's privacy request, and a booking question from Kiri.
+      { ref: 'ST-HANA01', userId: host._id, subject: 'Privacy: my data', category: 'PRIVACY' },
+      { ref: 'ST-KIRI01', userId: guest._id, subject: 'Where do I pick up?', category: 'BOOKING' },
+      // Resolved, but still the request the download answers.
+      {
+        ref: 'ST-KIRI02',
+        userId: guest._id,
+        subject: 'Privacy: a copy of my information',
+        category: 'PRIVACY',
+        status: 'RESOLVED',
+      },
+    ]);
+    await createStaff();
+    const admin = await staffAgent();
+    const exportOf = (ticket?: string) =>
+      admin.get(`/api/v1/admin/users/${guest.id}/export`).query(ticket ? { ticket } : {});
+
+    expect((await exportOf()).status).toBe(400);
+    for (const ticket of ['ST-HANA01', 'ST-KIRI01', 'ST-NONE01']) {
+      const refused = await exportOf(ticket);
+      expect(refused.status, ticket).toBe(403);
+      expect(refused.body.error.code, ticket).toBe('NO_PRIVACY_REQUEST');
+    }
+    expect(await AuditLogModel.exists({ action: 'user.exported' })).toBeNull();
+    expect((await exportOf('ST-KIRI02')).status).toBe(200);
+  });
+
+  it('links a request sent signed out to the account with its email, after which its download works', async () => {
+    const { guest } = await trip();
+    await SupportTicketModel.create([
+      // From the Contact form while signed out, with the email on Kiri's account.
+      {
+        ref: 'ST-OUT001',
+        name: 'Kiri',
+        email: guest.email,
+        subject: 'Privacy: my data',
+        category: 'PRIVACY',
+      },
+      // And one from an address no account has.
+      { ref: 'ST-OUT002', name: 'Rua', email: 'rua@example.co.nz', subject: 'Privacy', category: 'PRIVACY' },
+    ]);
+    await createStaff();
+    const admin = await staffAgent();
+    const exportOf = () => admin.get(`/api/v1/admin/users/${guest.id}/export`).query({ ticket: 'ST-OUT001' });
+
+    const shown = await admin.get('/api/v1/admin/support/tickets/ST-OUT001');
+    expect(shown.body.ticket.accountWithEmail).toEqual({ id: guest.id, name: 'Kiri Tester' });
+    const other = await admin.get('/api/v1/admin/support/tickets/ST-OUT002');
+    expect(other.body.ticket.accountWithEmail).toBeUndefined();
+    // Not their request until it's linked.
+    expect((await exportOf()).status).toBe(403);
+
+    const linked = await admin
+      .post('/api/v1/admin/support/tickets/ST-OUT001/link-account')
+      .send({ note: 'They replied from that address' });
+    expect(linked.status).toBe(200);
+    expect(linked.body.ticket.from.userId).toBe(guest.id);
+    expect(linked.body.ticket.accountWithEmail).toBeUndefined();
+    expect(
+      await AuditLogModel.findOne({ action: 'ticket.linked', entityId: 'ST-OUT001' }).lean(),
+    ).toMatchObject({
+      after: { userId: guest.id, note: 'They replied from that address' },
+    });
+    const again = await admin.post('/api/v1/admin/support/tickets/ST-OUT001/link-account').send({});
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('ALREADY_LINKED');
+    const nobody = await admin.post('/api/v1/admin/support/tickets/ST-OUT002/link-account').send({});
+    expect(nobody.status).toBe(404);
+    expect(nobody.body.error.code).toBe('NO_ACCOUNT');
+
+    expect((await exportOf()).status).toBe(200);
+    // It's theirs now: in their account's requests too.
+    const theirs = await SupportTicketModel.findOne({ ref: 'ST-OUT001' }).lean();
+    expect(theirs?.userId?.equals(guest._id)).toBe(true);
   });
 
   it('keeps support away from staff accounts and from closing accounts', async () => {
@@ -300,6 +381,44 @@ describe('user management', () => {
     expect(user!.email).toMatch(/^closed-.+@closed\.rentovroom\.invalid$/);
     expect(user!.firstName).toBe('Former');
     expect(await BookingModel.countDocuments({ guestId: guest._id })).toBe(1);
+  });
+
+  it('removes a closed account’s saved cards and details from Stripe, and closes it even if Stripe fails', async () => {
+    const kiri = await createUser();
+    const mere = await createUser({ email: 'mere@example.co.nz', firstName: 'Mere' });
+    await UserModel.updateOne({ _id: kiri._id }, { $set: { stripeCustomerId: 'cus_kiri' } });
+    await UserModel.updateOne({ _id: mere._id }, { $set: { stripeCustomerId: 'cus_mere' } });
+    const update = vi
+      .spyOn(client.customers, 'update')
+      .mockResolvedValueOnce({ id: 'cus_kiri' } as Stripe.Response<Stripe.Customer>)
+      .mockRejectedValueOnce(new Error('Stripe is down'));
+    vi.spyOn(client.customers, 'listPaymentMethods').mockResolvedValue({
+      data: [{ id: 'pm_visa' }, { id: 'pm_mastercard' }],
+    } as unknown as Stripe.Response<Stripe.ApiList<Stripe.PaymentMethod>>);
+    const detach = vi
+      .spyOn(client.paymentMethods, 'detach')
+      .mockResolvedValue({ id: 'pm_visa' } as Stripe.Response<Stripe.PaymentMethod>);
+    await createStaff();
+    const agent = await staffAgent();
+
+    expect((await agent.post(`/api/v1/admin/users/${kiri.id}/close`)).status).toBe(200);
+    // Updated, not deleted, so the payments kept for the law still resolve.
+    expect(update).toHaveBeenCalledWith('cus_kiri', {
+      name: 'Former member',
+      email: '',
+      phone: '',
+      description: '',
+      address: '',
+      shipping: '',
+      metadata: '',
+    });
+    expect(detach.mock.calls.map(([id]) => id)).toEqual(['pm_visa', 'pm_mastercard']);
+    expect((await UserModel.findById(kiri._id).lean())!.stripeCustomerId).toBeUndefined();
+
+    // Stripe refusing doesn't keep the account open.
+    expect((await agent.post(`/api/v1/admin/users/${mere.id}/close`)).status).toBe(200);
+    expect((await UserModel.findById(mere._id).lean())!.closedAt).toBeDefined();
+    expect(detach).toHaveBeenCalledTimes(4);
   });
 
   it('lets the admin give a support member the refunds permission', async () => {
@@ -524,6 +643,14 @@ describe('support inbox and moderation', () => {
 
     const inbox = await agent.get('/api/v1/admin/support/tickets');
     expect(inbox.body.tickets.map((ticket: { ref: string }) => ticket.ref)).toEqual(['ST-ABC123']);
+    // One member's tickets, as a link from their record asks for.
+    const theirs = await agent.get(`/api/v1/admin/support/tickets?user=${guest.id}`);
+    expect(theirs.body.tickets.map((ticket: { ref: string }) => ticket.ref)).toEqual(['ST-ABC123']);
+    const someoneElse = await agent.get(
+      `/api/v1/admin/support/tickets?user=${new mongoose.Types.ObjectId()}`,
+    );
+    expect(someoneElse.body.tickets).toEqual([]);
+    expect((await agent.get('/api/v1/admin/support/tickets?user=nope')).status).toBe(400);
     await agent
       .post('/api/v1/admin/support/tickets/ST-ABC123/messages')
       .send({ body: 'Refund was approved by the team lead.', internal: true });

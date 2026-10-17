@@ -1,4 +1,5 @@
 import mongoose, { type ClientSession, type Types } from 'mongoose';
+import { withTransaction } from '../../db.js';
 import { env } from '../../env.js';
 import { formatNzdExact } from '../../lib/format.js';
 import { HttpError } from '../../lib/http-error.js';
@@ -11,6 +12,7 @@ import type { Actor } from '../bookings/booking.service.js';
 import { ConditionReportModel } from '../inspections/condition-report.model.js';
 import { notify } from '../notifications/notify.js';
 import { addExtraCharge } from '../payments/extra-charges.service.js';
+import { PaymentModel } from '../payments/payment.model.js';
 import { holdBookingPayouts, releaseHeldPayouts } from '../payouts/payouts.service.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import { findActiveStaff, listActiveStaff } from '../staff/staff.service.js';
@@ -190,6 +192,25 @@ async function toView(
     : undefined;
   const reporterRole = roleIn(booking, incident.reporterId);
   const limit = role === 'STAFF' ? chargeLimit(incident, booking) : undefined;
+  const charges = (booking.extraCharges ?? []).filter((charge) => charge.incidentId?.equals(incident._id));
+  // A paid charge's refunds, from the payment that paid it, as the trip page counts them (plan §8.1, item 15).
+  const chargePayments = charges.some((charge) => charge.status === 'SUCCEEDED')
+    ? await PaymentModel.find({ bookingId: booking._id, type: 'EXTRA_CHARGE' })
+        .select('extraChargeId refunds')
+        .lean()
+    : [];
+  const refundedCents = (charge: (typeof charges)[number]) =>
+    charge.status === 'SUCCEEDED'
+      ? chargePayments
+          .filter((payment) =>
+            charge.paymentId
+              ? payment._id.equals(charge.paymentId)
+              : payment.extraChargeId?.equals(charge._id!),
+          )
+          .flatMap((payment) => payment.refunds ?? [])
+          .filter((refund) => refund.status !== 'FAILED')
+          .reduce((sum, refund) => sum + refund.amountCents, 0)
+      : 0;
   return {
     caseRef: incident.caseRef,
     bookingRef: booking.ref,
@@ -253,14 +274,16 @@ async function toView(
         },
       }),
     ...(limit && { chargeLimitCents: limit.remaining }),
-    extraCharges: booking.extraCharges
-      .filter((charge) => charge.incidentId?.equals(incident._id))
-      .map((charge) => ({
+    extraCharges: charges.map((charge) => {
+      const refunded = refundedCents(charge);
+      return {
         type: charge.type,
         description: charge.description,
         amountCents: charge.amountCents,
         status: charge.status,
-      })),
+        ...(refunded > 0 && { refundedCents: refunded }),
+      };
+    }),
   };
 }
 
@@ -940,16 +963,23 @@ export async function chargeFromIncident(
   if (limit && input.amountCents > limit.remaining) throw overExcess(limit);
   let chargeId: string;
   try {
-    chargeId = await addExtraCharge(booking._id, {
-      type: input.type as Booking['extraCharges'][number]['type'],
-      description: input.description,
-      amountCents: input.amountCents,
-      incidentId: incident._id,
-      addedBy: staffId,
-      ...(key && { idempotencyKey: key }),
-      // Checked again as it's added: another charge from the case may have gone in a moment ago.
-      ...(limit && { capCents: limit.plan.excessCents, ...(limit.types && { capTypes: limit.types }) }),
-    });
+    // The charge and its collection are saved together: one saved without its job would never be collected.
+    chargeId = await withTransaction((session) =>
+      addExtraCharge(
+        booking._id,
+        {
+          type: input.type as Booking['extraCharges'][number]['type'],
+          description: input.description,
+          amountCents: input.amountCents,
+          incidentId: incident._id,
+          addedBy: staffId,
+          ...(key && { idempotencyKey: key }),
+          // Checked again as it's added: another charge from the case may have gone in a moment ago.
+          ...(limit && { capCents: limit.plan.excessCents, ...(limit.types && { capTypes: limit.types }) }),
+        },
+        session,
+      ),
+    );
   } catch (error) {
     // The same submit just added it, at the same moment.
     if (error instanceof HttpError && error.code === 'ALREADY_CHARGED') {
