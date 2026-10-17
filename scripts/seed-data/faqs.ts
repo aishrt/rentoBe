@@ -83,7 +83,7 @@ export const FAQS: SeedFaq[] = [
   {
     question: 'Can I cancel a booking?',
     answer:
-      'Yes. Each listing shows its cancellation policy before you book, and you’ll see exactly what would be refunded before you confirm a cancellation.',
+      'Yes. Each listing shows its cancellation policy before you book, and you’ll see exactly what would be refunded before you confirm a cancellation. The policy’s refund is of the rental and the service fee; any delivery fee and protection are always refunded in full.',
     category: 'Booking',
     audience: 'ALL',
     showOnHome: false,
