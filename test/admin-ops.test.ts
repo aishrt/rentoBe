@@ -289,6 +289,55 @@ describe('user management', () => {
     expect((await exportOf('ST-KIRI02')).status).toBe(200);
   });
 
+  it('links a request sent signed out to the account with its email, after which its download works', async () => {
+    const { guest } = await trip();
+    await SupportTicketModel.create([
+      // From the Contact form while signed out, with the email on Kiri's account.
+      {
+        ref: 'ST-OUT001',
+        name: 'Kiri',
+        email: guest.email,
+        subject: 'Privacy: my data',
+        category: 'PRIVACY',
+      },
+      // And one from an address no account has.
+      { ref: 'ST-OUT002', name: 'Rua', email: 'rua@example.co.nz', subject: 'Privacy', category: 'PRIVACY' },
+    ]);
+    await createStaff();
+    const admin = await staffAgent();
+    const exportOf = () => admin.get(`/api/v1/admin/users/${guest.id}/export`).query({ ticket: 'ST-OUT001' });
+
+    const shown = await admin.get('/api/v1/admin/support/tickets/ST-OUT001');
+    expect(shown.body.ticket.accountWithEmail).toEqual({ id: guest.id, name: 'Kiri Tester' });
+    const other = await admin.get('/api/v1/admin/support/tickets/ST-OUT002');
+    expect(other.body.ticket.accountWithEmail).toBeUndefined();
+    // Not their request until it's linked.
+    expect((await exportOf()).status).toBe(403);
+
+    const linked = await admin
+      .post('/api/v1/admin/support/tickets/ST-OUT001/link-account')
+      .send({ note: 'They replied from that address' });
+    expect(linked.status).toBe(200);
+    expect(linked.body.ticket.from.userId).toBe(guest.id);
+    expect(linked.body.ticket.accountWithEmail).toBeUndefined();
+    expect(
+      await AuditLogModel.findOne({ action: 'ticket.linked', entityId: 'ST-OUT001' }).lean(),
+    ).toMatchObject({
+      after: { userId: guest.id, note: 'They replied from that address' },
+    });
+    const again = await admin.post('/api/v1/admin/support/tickets/ST-OUT001/link-account').send({});
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('ALREADY_LINKED');
+    const nobody = await admin.post('/api/v1/admin/support/tickets/ST-OUT002/link-account').send({});
+    expect(nobody.status).toBe(404);
+    expect(nobody.body.error.code).toBe('NO_ACCOUNT');
+
+    expect((await exportOf()).status).toBe(200);
+    // It's theirs now: in their account's requests too.
+    const theirs = await SupportTicketModel.findOne({ ref: 'ST-OUT001' }).lean();
+    expect(theirs?.userId?.equals(guest._id)).toBe(true);
+  });
+
   it('keeps support away from staff accounts and from closing accounts', async () => {
     const guest = await createUser();
     const other = await createStaff('mere@example.co.nz', 'SUPPORT');

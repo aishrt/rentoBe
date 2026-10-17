@@ -61,6 +61,7 @@ import {
   staffTicketResponseSchema,
   staffTicketsResponseSchema,
   suspendSchema,
+  ticketLinkSchema,
   ticketListQuerySchema,
   ticketUpdateSchema,
   userExportQuerySchema,
@@ -232,7 +233,7 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: download a copy of a person’s information (a privacy request)',
     description:
-      'A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Downloaded from the privacy request it answers: `ticket` is a PRIVACY ticket they raised, in any status (400 without one; 403 NO_PRIVACY_REQUEST when it isn’t). Any staff member, the admin included, audit-logged with the ticket; 403 OWN_RECORD for their own account.',
+      'A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Downloaded from the privacy request it answers: `ticket` is a PRIVACY ticket they raised, in any status (one sent signed out is linked to their account first: POST /admin/support/tickets/{ref}/link-account) (400 without one; 403 NO_PRIVACY_REQUEST when it isn’t). Any staff member, the admin included, audit-logged with the ticket; 403 OWN_RECORD for their own account.',
     security: signedIn,
     request: { params: id, query: userExportQuerySchema },
     responses: {
@@ -395,6 +396,17 @@ export function registerAdminOpsPaths(registry: OpenAPIRegistry) {
     body: staffTicketReplySchema,
     response: staffTicketResponseSchema,
     errors: [400, 401, 403, 404],
+  });
+  add({
+    method: 'post',
+    path: '/admin/support/tickets/{ref}/link-account',
+    summary: 'Staff: link a request sent signed out to the account with its email',
+    description:
+      'Once staff have checked it’s them (plan §14), the request becomes the member’s own: listed in their account and on their record, replies reach them there and can carry files, and a privacy request’s copy of their data is downloaded from it. Audit-logged with the note. 409 ALREADY_LINKED for a request already on an account; 404 NO_ACCOUNT when no open account has its email; 403 OWN_RECORD for a support member’s own account or booking.',
+    params: ref,
+    body: ticketLinkSchema,
+    response: staffTicketResponseSchema,
+    errors: [400, 401, 403, 404, 409],
   });
   add({
     method: 'patch',

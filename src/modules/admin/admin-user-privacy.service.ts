@@ -163,7 +163,8 @@ const iso = (date: Date | undefined) => date?.toISOString();
  * reviews by and about them, their support requests and the cases they reported. Other people's details,
  * internal notes and staff-only fields are left out. It answers their privacy request, so it's downloaded
  * from that ticket: a PRIVACY ticket they raised themselves, in any status, so a request can still be
- * answered after it's marked resolved. As with opening a thread (plan §6.2), there's no exception for the
+ * answered after it's marked resolved. One sent signed out from their email address is linked to their
+ * account first (linkTicketToAccount), once staff have checked it's them. As with opening a thread (plan §6.2), there's no exception for the
  * admin. Any staff member can, and each download is audit-logged with the ticket.
  */
 export async function exportUserData(staffId: string, userId: string, ticketRef: string, ip?: string) {
@@ -177,7 +178,7 @@ export async function exportUserData(staffId: string, userId: string, ticketRef:
     throw new HttpError(
       403,
       'NO_PRIVACY_REQUEST',
-      'That ticket isn’t a privacy request from them. Download their data from the privacy request they sent us.',
+      'That ticket isn’t a privacy request from them. Download their data from the privacy request they sent us (one sent signed out is linked to their account first).',
     );
   }
 

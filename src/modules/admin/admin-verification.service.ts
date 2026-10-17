@@ -1,21 +1,60 @@
 import mongoose from 'mongoose';
+import { formatNzDateTime } from '../../lib/format.js';
 import { HttpError } from '../../lib/http-error.js';
 import { recordAudit } from '../audit/audit.service.js';
+import { BookingModel } from '../bookings/booking.model.js';
 import { resolveVerificationReview } from '../bookings/booking.service.js';
 import type { IdentityReviewResult } from '../bookings/bookings.schemas.js';
 import { env } from '../../env.js';
 import { notify } from '../notifications/notify.js';
+import { alertStaff } from '../staff/staff-alerts.js';
 import { licenceAwaitingReview } from '../users/driver-licence.service.js';
-import { UserModel } from '../users/user.model.js';
+import { UserModel, type User } from '../users/user.model.js';
 import { userDetail } from './admin-users.service.js';
 import { assertNotOwnRecord } from './own-record.js';
 import { getPlatformSettings } from './platform-settings.service.js';
 import { recheckBookedTrips } from './verification-queue.service.js';
 
 /**
+ * A turned-down identity check doesn't end the Guest's confirmed trips (plan §8.2): support are alerted to
+ * each, to contact the Guest and decide. With their licence turned down, or still waiting for its check (one
+ * that comes after the ID, so nobody makes it now), check-in refuses the trip; with it approved, the trip can
+ * start. Returns the trips, and whether check-in refuses them.
+ */
+async function alertBookedTrips(
+  user: Pick<User, 'firstName' | 'driverLicence'> & { _id: mongoose.Types.ObjectId },
+  now: Date,
+): Promise<{ refs: string[]; checkInRefused: boolean }> {
+  const trips = await BookingModel.find({
+    guestId: user._id,
+    status: 'CONFIRMED',
+    endAt: mongoose.trusted({ $gt: now }),
+  })
+    .sort({ startAt: 1 })
+    .select('ref startAt')
+    .lean();
+  const licence = user.driverLicence?.status;
+  for (const trip of trips) {
+    const booking = `their confirmed booking ${trip.ref}, starting ${formatNzDateTime(trip.startAt)}`;
+    await alertStaff({
+      type: 'IDENTITY_REJECTED_BOOKED_TRIP',
+      title: `Identity check turned down before ${trip.ref}`,
+      body:
+        licence === 'APPROVED'
+          ? `${user.firstName}'s identity check was turned down, but their driver licence is approved, so ${booking}, can still be checked in. Contact the guest, and cancel the booking if the trip shouldn't go ahead.`
+          : `${user.firstName}'s identity check was turned down, and their driver licence ${licence === 'REJECTED' ? 'was turned down too' : 'waits for a check that comes after their ID'}, so check-in for ${booking}, is refused. Contact the guest: allow another identity check from their record, or cancel the booking if the trip can't go ahead.`,
+      link: `/admin/bookings/${trip.ref}`,
+      dedupeKey: `IDENTITY_REJECTED_BOOKED_TRIP:${trip._id.toString()}:${now.getTime()}`,
+    });
+  }
+  return { refs: trips.map((trip) => trip.ref), checkInRefused: licence !== 'APPROVED' };
+}
+
+/**
  * Support decides an identity check that needed a manual review (plan §8.2). The Guest's bookings that
- * waited for it are confirmed or released in the same step. The review queue that lists these checks
- * arrives with the identity check itself (plan §9, Days 19–20); this is what its buttons call.
+ * waited for it are confirmed or released in the same step; turning it down leaves their confirmed trips
+ * booked, and alerts support to each (alertBookedTrips). The review queue that lists these checks arrives
+ * with the identity check itself (plan §9, Days 19–20); this is what its buttons call.
  */
 export async function reviewIdentity(
   userId: string,
@@ -50,9 +89,18 @@ export async function reviewIdentity(
     ip,
   });
 
-  const result = { identityStatus, ...(await resolveVerificationReview(user.id, decision, staffId, now)) };
+  const outcome = await resolveVerificationReview(user.id, decision, staffId, now);
+  const booked = decision === 'REJECT' ? await alertBookedTrips(user, now) : null;
+  const stillBooked = booked?.refs ?? [];
+  const result = { identityStatus, ...outcome, ...(stillBooked.length > 0 && { stillBooked }) };
   // Bookings that still wait, for their licence check (plan §8.2).
   const stillWaiting = result.stillInReview ?? [];
+  const bookedLine =
+    stillBooked.length === 0
+      ? null
+      : booked?.checkInRefused
+        ? `Your booking ${stillBooked.join(', ')} is still booked, but it can’t start until this is sorted out.`
+        : `Your booking ${stillBooked.join(', ')} is still booked. Our team will be in touch about it.`;
   await notify({
     userId: user._id,
     type: decision === 'APPROVE' ? 'IDENTITY_APPROVED' : 'IDENTITY_REJECTED',
@@ -64,7 +112,7 @@ export async function reviewIdentity(
           : stillWaiting.length > 0
             ? `Booking ${stillWaiting.join(', ')} waits for our check of your driver licence.`
             : 'You’re all set to book.'
-        : 'Any booking waiting for the check was released. Contact support if you have questions.',
+        : `Any booking waiting for the check was released.${bookedLine ? ` ${bookedLine}` : ''} Contact support if you have questions.`,
     link: '/account',
     email: {
       template: 'tripNotice',
@@ -91,7 +139,10 @@ export async function reviewIdentity(
                       `Booking ${result.released.join(', ')} was released, and your card authorisation with it: nothing was charged.`,
                     ]
                   : []),
-                'If you think this is a mistake, reply to this email.',
+                ...(bookedLine ? [bookedLine] : []),
+                bookedLine
+                  ? 'Reply to this email and our team will help, including if you think this is a mistake.'
+                  : 'If you think this is a mistake, reply to this email.',
               ],
         buttonLabel: 'Your account',
         url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/account`,

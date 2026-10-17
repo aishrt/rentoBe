@@ -11657,6 +11657,13 @@
               "type": "string"
             },
             "description": "Bookings not confirmed because the Guest’s licence no longer meets the rules for that trip (it expires before the trip ends, say): they keep waiting until the Guest updates it, support cancels them or their time runs out"
+          },
+          "stillBooked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Set when a turned-down check leaves the Guest with confirmed trips: they stay booked, and support are alerted to each to decide (check-in refuses them unless the licence is approved)"
           }
         },
         "required": [
@@ -15671,6 +15678,22 @@
             "type": "string",
             "format": "date-time"
           },
+          "accountWithEmail": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "description": "For a request sent signed out: the open account with its email address, which staff can link it to once they’ve checked it’s them (POST …/link-account)"
+          },
           "thread": {
             "type": "array",
             "items": {
@@ -15765,6 +15788,16 @@
         "required": [
           "body"
         ]
+      },
+      "TicketLinkRequest": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "How staff checked it’s them, for the audit log"
+          }
+        }
       },
       "TicketUpdateRequest": {
         "type": "object",
@@ -26859,7 +26892,7 @@
           "Admin"
         ],
         "summary": "Staff: decide an identity check that needed a manual review",
-        "description": "Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2).",
+        "description": "Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2); their confirmed trips stay booked (`stillBooked`), and support are alerted to each to decide.",
         "security": [
           {
             "cookieAuth": []
@@ -31129,7 +31162,7 @@
           "Admin"
         ],
         "summary": "Staff: download a copy of a person’s information (a privacy request)",
-        "description": "A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Downloaded from the privacy request it answers: `ticket` is a PRIVACY ticket they raised, in any status (400 without one; 403 NO_PRIVACY_REQUEST when it isn’t). Any staff member, the admin included, audit-logged with the ticket; 403 OWN_RECORD for their own account.",
+        "description": "A JSON file of their account, bookings, payments and refunds, payouts, messages they sent, reviews by and about them, support requests and the incidents they reported (plan §14). Other people’s details, internal notes and staff-only fields are left out. Downloaded from the privacy request it answers: `ticket` is a PRIVACY ticket they raised, in any status (one sent signed out is linked to their account first: POST /admin/support/tickets/{ref}/link-account) (400 without one; 403 NO_PRIVACY_REQUEST when it isn’t). Any staff member, the admin included, audit-logged with the ticket; 403 OWN_RECORD for their own account.",
         "security": [
           {
             "cookieAuth": []
@@ -32831,6 +32864,105 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/support/tickets/{ref}/link-account": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Staff: link a request sent signed out to the account with its email",
+        "description": "Once staff have checked it’s them (plan §14), the request becomes the member’s own: listed in their account and on their record, replies reach them there and can carry files, and a privacy request’s copy of their data is downloaded from it. Audit-logged with the note. 409 ALREADY_LINKED for a request already on an account; 404 NO_ACCOUNT when no open account has its email; 403 OWN_RECORD for a support member’s own account or booking.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "ref",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TicketLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffTicketResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input. `error.fields` has one message per invalid field.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed in, but this account can't do this (or the request came from an untrusted origin)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with existing data, e.g. the email address already has an account",
             "content": {
               "application/json": {
                 "schema": {

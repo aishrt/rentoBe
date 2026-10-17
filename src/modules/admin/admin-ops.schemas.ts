@@ -614,6 +614,10 @@ export const staffTicketsResponseSchema = z
 
 export const staffTicketSchema = staffTicketRowSchema
   .extend({
+    accountWithEmail: z.object({ id: z.string(), name: z.string() }).optional().meta({
+      description:
+        'For a request sent signed out: the open account with its email address, which staff can link it to once they’ve checked it’s them (POST …/link-account)',
+    }),
     thread: z.array(
       z.object({
         id: z.string(),
@@ -659,6 +663,17 @@ export const ticketUpdateSchema = z
       }),
   })
   .meta({ id: 'TicketUpdateRequest' });
+
+export const ticketLinkSchema = z
+  .object({
+    note: z
+      .string()
+      .trim()
+      .max(500)
+      .optional()
+      .meta({ description: 'How staff checked it’s them, for the audit log' }),
+  })
+  .meta({ id: 'TicketLinkRequest' });
 
 // Moderation and risk ----------------------------------------------------------------------------------------
 

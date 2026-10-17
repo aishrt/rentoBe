@@ -114,7 +114,14 @@ export type VerificationOutcome = {
 };
 
 export const identityReviewResponseSchema = z
-  .object({ identityStatus: z.enum(['APPROVED', 'REJECTED']), ...verificationOutcomeShape })
+  .object({
+    identityStatus: z.enum(['APPROVED', 'REJECTED']),
+    ...verificationOutcomeShape,
+    stillBooked: z.array(z.string()).optional().meta({
+      description:
+        'Set when a turned-down check leaves the Guest with confirmed trips: they stay booked, and support are alerted to each to decide (check-in refuses them unless the licence is approved)',
+    }),
+  })
   .meta({ id: 'IdentityReviewResponse' });
 export type IdentityReviewResult = z.infer<typeof identityReviewResponseSchema>;
 

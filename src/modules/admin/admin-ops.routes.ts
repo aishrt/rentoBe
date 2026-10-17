@@ -75,6 +75,7 @@ import {
   riskQueueQuerySchema,
   staffTicketReplySchema,
   suspendSchema,
+  ticketLinkSchema,
   ticketListQuerySchema,
   ticketUpdateSchema,
   userExportQuerySchema,
@@ -83,7 +84,13 @@ import {
 } from './admin-ops.schemas.js';
 import { adminDashboard, auditLog, listJobs, retryJob } from './admin-audit.service.js';
 import { exportReport, platformReport } from './admin-reports.service.js';
-import { listTickets, replyToTicket, staffTicket, updateTicket } from './admin-support.service.js';
+import {
+  linkTicketToAccount,
+  listTickets,
+  replyToTicket,
+  staffTicket,
+  updateTicket,
+} from './admin-support.service.js';
 import { correctUserDetails, exportUserData } from './admin-user-privacy.service.js';
 import {
   clearRiskFlag,
@@ -249,6 +256,11 @@ export function adminOpsRouter() {
   router.post('/support/tickets/:ref/messages', async (req, res) => {
     const input = validate(staffTicketReplySchema, req.body);
     res.json({ ticket: await replyToTicket(req.auth!.userId, param(req, 'ref'), input, req.ip) });
+  });
+
+  router.post('/support/tickets/:ref/link-account', async (req, res) => {
+    const { note } = validate(ticketLinkSchema, req.body ?? {});
+    res.json({ ticket: await linkTicketToAccount(req.auth!.userId, param(req, 'ref'), note, req.ip) });
   });
 
   router.patch('/support/tickets/:ref', async (req, res) => {

@@ -7,6 +7,7 @@ import { JobModel } from '../src/jobs/job.model.js';
 import { runDataRetention } from '../src/modules/admin/data-retention.service.js';
 import { PLATFORM_SETTINGS_ID, PlatformSettingsModel } from '../src/modules/admin/platform-settings.model.js';
 import { AuditLogModel } from '../src/modules/audit/audit-log.model.js';
+import { BookingModel } from '../src/modules/bookings/booking.model.js';
 import { ConditionReportModel } from '../src/modules/inspections/condition-report.model.js';
 import { MessageModel } from '../src/modules/messages/message.model.js';
 import { ThreadModel } from '../src/modules/messages/thread.model.js';
@@ -404,6 +405,79 @@ describe('data retention', () => {
     expect(await AuditLogModel.countDocuments({ action: 'identity.redacted', entityId: user.id })).toBe(2);
     // Done once.
     expect(await runDataRetention(later)).toMatchObject({ identitiesRedacted: 0 });
+  });
+});
+
+describe('a turned-down check and a confirmed trip', () => {
+  it('keeps the trip booked, alerts support to it, and tells the Guest whether it can start', async () => {
+    const { user } = await guestWithLicence();
+    const host = await createHost();
+    const vehicle = await createVehicle(host._id);
+    const booking = await createBookingRecord({
+      guestId: user._id,
+      hostId: host._id,
+      vehicleId: vehicle._id,
+    });
+    const inReview = {
+      status: 'PENDING',
+      providerRef: 'vs_1',
+      reviewReason: 'The selfie doesn’t match the ID.',
+    };
+    // Their licence still waits for its check, which comes after the ID.
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { identityVerification: inReview, 'driverLicence.status': 'PENDING' } },
+    );
+    await createStaff('aroha@example.co.nz', 'ADMIN');
+    const staff = await staffAgent();
+    const reject = () =>
+      staff.post(`/api/v1/admin/users/${user.id}/identity-review`).send({ decision: 'REJECT' });
+
+    const rejected = await reject();
+    expect(rejected.status).toBe(200);
+    expect(rejected.body).toMatchObject({
+      identityStatus: 'REJECTED',
+      released: [],
+      stillBooked: [booking.ref],
+    });
+    expect((await BookingModel.findById(booking._id).lean())!.status).toBe('CONFIRMED');
+    const alert = await NotificationModel.findOne({
+      type: 'IDENTITY_REJECTED_BOOKED_TRIP',
+      channel: 'IN_APP',
+    }).lean();
+    expect(alert?.payload).toMatchObject({
+      title: `Identity check turned down before ${booking.ref}`,
+      body: expect.stringContaining('is refused'),
+      link: `/admin/bookings/${booking.ref}`,
+    });
+    const told = await NotificationModel.findOne({
+      userId: user._id,
+      type: 'IDENTITY_REJECTED',
+      channel: 'IN_APP',
+    }).lean();
+    expect(told?.payload).toMatchObject({
+      body: expect.stringContaining('can’t start until this is sorted out'),
+    });
+
+    // With the licence approved, the trip can still start: support decide.
+    await NotificationModel.deleteMany({});
+    await UserModel.updateOne(
+      { _id: user._id },
+      { $set: { identityVerification: inReview, 'driverLicence.status': 'APPROVED' } },
+    );
+    expect((await reject()).body.stillBooked).toEqual([booking.ref]);
+    const second = await NotificationModel.findOne({
+      type: 'IDENTITY_REJECTED_BOOKED_TRIP',
+      channel: 'IN_APP',
+    }).lean();
+    expect(second?.payload).toMatchObject({ body: expect.stringContaining('can still be checked in') });
+
+    // Nothing to alert about without a confirmed trip.
+    await BookingModel.updateOne({ _id: booking._id }, { $set: { status: 'COMPLETED' } });
+    await NotificationModel.deleteMany({});
+    await UserModel.updateOne({ _id: user._id }, { $set: { identityVerification: inReview } });
+    expect((await reject()).body.stillBooked).toBeUndefined();
+    expect(await NotificationModel.exists({ type: 'IDENTITY_REJECTED_BOOKED_TRIP' })).toBeNull();
   });
 });
 

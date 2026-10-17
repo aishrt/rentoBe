@@ -321,7 +321,7 @@ export function registerBookingPaths(registry: OpenAPIRegistry) {
     tags: ['Admin'],
     summary: 'Staff: decide an identity check that needed a manual review',
     description:
-      'Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2).',
+      'Approving confirms the Guest’s bookings that waited for the check (capturing their card authorisations), except requests their Host still has to accept. Rejecting ends those bookings and releases the authorisations (plan §8.2); their confirmed trips stay booked (`stillBooked`), and support are alerted to each to decide.',
     security: signedIn,
     request: {
       params: z.object({ id: z.string().meta({ description: 'The user’s id' }) }),
