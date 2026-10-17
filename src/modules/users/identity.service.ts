@@ -170,7 +170,9 @@ export async function syncIdentity(
   sessionId?: string,
   now = new Date(),
 ): Promise<IdentityStatusView> {
-  const user = await UserModel.findById(userId).select('firstName dob driverLicence identityVerification');
+  const user = await UserModel.findById(userId).select(
+    'firstName dob driverLicence identityVerification hostProfile.status',
+  );
   if (!user) throw new HttpError(404, 'NOT_FOUND', 'No such user.');
   const ref = sessionId ?? user.identityVerification?.providerRef;
   const identity = user.identityVerification;
@@ -205,9 +207,17 @@ export async function syncIdentity(
         : session.last_verification_report?.id;
     if (reportId) {
       try {
-        const report = await stripe().identity.verificationReports.retrieve(reportId, {
-          expand: ['document.number', 'document.dob'],
-        });
+        // Stripe gives the document's number and date of birth only to a restricted key with "Recent Detailed
+        // Verification Results" (for 48 hours after the check), never to the secret key. Without one, the
+        // report is read without them: the ID and selfie still pass, and support checks the licence by hand.
+        const identityKey = env.STRIPE_IDENTITY_KEY;
+        const report = identityKey
+          ? await stripe().identity.verificationReports.retrieve(
+              reportId,
+              { expand: ['document.number', 'document.dob'] },
+              { apiKey: identityKey },
+            )
+          : await stripe().identity.verificationReports.retrieve(reportId);
         const document = report.document;
         documentType = document?.type ?? undefined;
         if (document?.type === 'driving_license' && document.number) {
@@ -280,6 +290,12 @@ export async function syncIdentity(
   const accountUrl = `${siteUrl()}/account`;
   if (outcome === 'APPROVED') {
     const { confirmed } = await resolveVerificationReview(user.id, 'APPROVE', undefined, now);
+    // A Host applicant verifies for their application, not to book: the news is that it can be reviewed now.
+    const hostApplicant =
+      confirmed.length === 0 &&
+      !licenceToCheck &&
+      !licenceTurnedDown &&
+      user.hostProfile?.status === 'APPLIED';
     await notify({
       userId: user._id,
       type: 'IDENTITY_APPROVED',
@@ -291,8 +307,10 @@ export async function syncIdentity(
             ? 'Our team is checking your driver licence next.'
             : licenceTurnedDown
               ? 'Your driver licence still needs sorting out before you can book.'
-              : 'You’re all set to book.',
-      link: '/account',
+              : hostApplicant
+                ? 'Our team can now review your Host application.'
+                : 'You’re all set to book.',
+      link: hostApplicant ? '/host' : '/account',
       email: {
         template: 'tripNotice',
         props: {
@@ -306,10 +324,12 @@ export async function syncIdentity(
                 ? 'Your ID didn’t confirm your driver licence, so our team will check your licence details by hand, usually within a few hours. A booking made meanwhile is held for you as a request, and your card isn’t charged until it’s approved.'
                 : licenceTurnedDown
                   ? 'We still couldn’t accept your driver licence details. Update them from your account, or contact support and we’ll help.'
-                  : 'You’re all set to book a car.',
+                  : hostApplicant
+                    ? 'Our team can now review your Host application, and we’ll email you as soon as it’s decided.'
+                    : 'You’re all set to book a car.',
           ],
-          buttonLabel: 'Go to your account',
-          url: accountUrl,
+          buttonLabel: hostApplicant ? 'Go to Hosting' : 'Go to your account',
+          url: hostApplicant ? `${siteUrl()}/host` : accountUrl,
         },
       },
       dedupeKey: `IDENTITY_APPROVED:${ref}`,

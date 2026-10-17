@@ -446,12 +446,21 @@ describe('Vehicle onboarding', () => {
     expect((await request(app).get('/api/v1/search').query({ where: 'Ponsonby' })).body.results).toEqual([]);
     expect((await agent.get('/api/v1/host/vehicles')).body.vehicles[0].waitingForPayouts).toBe(true);
     await UserModel.updateOne({ _id: user._id }, { $set: { 'hostProfile.stripeAccountId': 'acct_test' } });
-    await applyAccountState({
+    const payoutsOn = {
       id: 'acct_test',
       payouts_enabled: true,
       capabilities: { transfers: 'active' },
       requirements: { currently_due: [], past_due: [] },
-    } as unknown as Stripe.Account);
+    } as unknown as Stripe.Account;
+    // The sync on the Host's return from Stripe and the webhook often arrive together: announced once.
+    await Promise.all([applyAccountState(payoutsOn), applyAccountState(payoutsOn)]);
+    expect(
+      await NotificationModel.countDocuments({
+        userId: user._id,
+        type: 'PAYOUT_SETUP_DONE',
+        channel: 'IN_APP',
+      }),
+    ).toBe(1);
 
     expect((await agent.get(`/api/v1/host/vehicles/${id}`)).body.vehicle.waitingForPayouts).toBe(false);
     // Live: in search, with the approved photos served publicly.

@@ -118,6 +118,85 @@ describe('the identity check', () => {
     expect((await agent.post('/api/v1/me/verification').send({})).body.error.code).toBe('ALREADY_VERIFIED');
   });
 
+  it('reads the number and date of birth on the ID only with the restricted key', async () => {
+    const savedKey = env.STRIPE_IDENTITY_KEY;
+    try {
+      const { user } = await guestWithLicence();
+      const checkStarted = { status: 'NONE', providerRef: 'vs_1', sessionStatus: 'requires_input' };
+      session = { ...session, status: 'verified', last_verification_report: 'vr_1' };
+
+      // Stripe never gives them to the secret key: the report is read without them, the ID and selfie pass,
+      // and support checks the licence by hand.
+      env.STRIPE_IDENTITY_KEY = undefined;
+      await UserModel.updateOne({ _id: user._id }, { $set: { identityVerification: checkStarted } });
+      report = {
+        id: 'vr_1',
+        document: { type: 'driving_license' },
+      } as unknown as Partial<Stripe.Identity.VerificationReport>;
+      await syncIdentity(user.id);
+      expect(client.identity.verificationReports.retrieve).toHaveBeenLastCalledWith('vr_1');
+      const unread = await UserModel.findById(user._id);
+      expect(unread!.identityVerification!.status).toBe('APPROVED');
+      expect(unread!.driverLicence!.status).toBe('PENDING');
+
+      // With the restricted key, they're asked for, and the ID's licence number confirms the licence.
+      env.STRIPE_IDENTITY_KEY = 'rk_test_identity';
+      await UserModel.updateOne({ _id: user._id }, { $set: { identityVerification: checkStarted } });
+      report = licenceReport('AB123456');
+      await syncIdentity(user.id);
+      expect(client.identity.verificationReports.retrieve).toHaveBeenLastCalledWith(
+        'vr_1',
+        { expand: ['document.number', 'document.dob'] },
+        { apiKey: 'rk_test_identity' },
+      );
+      expect((await UserModel.findById(user._id))!.driverLicence!.status).toBe('APPROVED');
+    } finally {
+      env.STRIPE_IDENTITY_KEY = savedKey;
+    }
+  });
+
+  it('tells a Host applicant whose ID passed that their application is next', async () => {
+    const user = await createUser({ email: 'tama@example.co.nz', firstName: 'Tama' });
+    await UserModel.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          'hostProfile.status': 'APPLIED',
+          'hostProfile.appliedAt': new Date(),
+          identityVerification: { status: 'NONE', providerRef: 'vs_1', sessionStatus: 'requires_input' },
+        },
+      },
+    );
+    session = { ...session, status: 'verified', last_verification_report: 'vr_1' };
+    report = {
+      id: 'vr_1',
+      document: { type: 'passport' },
+    } as unknown as Partial<Stripe.Identity.VerificationReport>;
+    expect((await syncIdentity(user.id)).status).toBe('APPROVED');
+
+    const bell = await NotificationModel.findOne({
+      userId: user._id,
+      type: 'IDENTITY_APPROVED',
+      channel: 'IN_APP',
+    }).lean();
+    expect(bell?.payload).toMatchObject({
+      body: 'Our team can now review your Host application.',
+      link: '/host',
+    });
+    const email = await NotificationModel.findOne({
+      userId: user._id,
+      type: 'IDENTITY_APPROVED',
+      channel: 'EMAIL',
+    }).lean();
+    expect(email?.payload).toMatchObject({
+      props: {
+        paragraphs: [expect.any(String), expect.stringContaining('review your Host application')],
+        buttonLabel: 'Go to Hosting',
+        url: 'http://localhost:5173/host',
+      },
+    });
+  });
+
   it('sends a mismatched licence number to support, and lets someone retry an abandoned check', async () => {
     const { user, agent } = await guestWithLicence();
     await createStaff('aroha@example.co.nz', 'ADMIN');

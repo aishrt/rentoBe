@@ -114,6 +114,18 @@ const envSchema = z
       .string()
       .regex(/^whsec_\w+$/, 'STRIPE_CONNECT_WEBHOOK_SECRET starts with whsec_')
       .optional(),
+    // A restricted key with "Identity Verification Results" and "Recent Detailed Verification Results" set to
+    // Read, used only to read the licence number and date of birth on an ID check (plan §9 Days 19–20), which
+    // Stripe never gives the secret key. Without it the ID and selfie still pass, and support checks the licence
+    // by hand.
+    STRIPE_IDENTITY_KEY: z
+      .string()
+      .trim()
+      .regex(
+        /^rk_(test|live)_\w+$/,
+        'STRIPE_IDENTITY_KEY is a restricted key: it starts with rk_test_ or rk_live_',
+      )
+      .optional(),
 
     // SMS notifications such as new booking requests (plan §7), sent with Twilio when SMS_DRIVER=twilio.
     // One of the two: a Messaging Service (MG…) or a Twilio number. Twilio has no NZ numbers for SMS: an

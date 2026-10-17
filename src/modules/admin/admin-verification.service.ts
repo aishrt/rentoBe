@@ -101,6 +101,13 @@ export async function reviewIdentity(
       : booked?.checkInRefused
         ? `Your booking ${stillBooked.join(', ')} is still booked, but it can’t start until this is sorted out.`
         : `Your booking ${stillBooked.join(', ')} is still booked. Our team will be in touch about it.`;
+  // A Host applicant verifies for their application, not to book: the news is that it can be reviewed now.
+  const hostApplicant =
+    decision === 'APPROVE' &&
+    result.confirmed.length === 0 &&
+    stillWaiting.length === 0 &&
+    user.hostProfile?.status === 'APPLIED';
+  const siteUrl = env.FRONTEND_URL.replace(/\/+$/, '');
   await notify({
     userId: user._id,
     type: decision === 'APPROVE' ? 'IDENTITY_APPROVED' : 'IDENTITY_REJECTED',
@@ -111,9 +118,11 @@ export async function reviewIdentity(
           ? `Booking ${result.confirmed.join(', ')} is confirmed.`
           : stillWaiting.length > 0
             ? `Booking ${stillWaiting.join(', ')} waits for our check of your driver licence.`
-            : 'You’re all set to book.'
+            : hostApplicant
+              ? 'Our team can now review your Host application.'
+              : 'You’re all set to book.'
         : `Any booking waiting for the check was released.${bookedLine ? ` ${bookedLine}` : ''} Contact support if you have questions.`,
-    link: '/account',
+    link: hostApplicant ? '/host' : '/account',
     email: {
       template: 'tripNotice',
       props: {
@@ -131,6 +140,11 @@ export async function reviewIdentity(
                       `Your booking ${stillWaiting.join(', ')} is still held for you while we check your driver licence, usually within a few hours. Your card isn’t charged until it’s approved.`,
                     ]
                   : []),
+                ...(hostApplicant
+                  ? [
+                      'Our team can now review your Host application, and we’ll email you as soon as it’s decided.',
+                    ]
+                  : []),
               ]
             : [
                 'Our team couldn’t verify your identity from the ID and selfie you sent, so you can’t book a car for now.',
@@ -144,8 +158,8 @@ export async function reviewIdentity(
                   ? 'Reply to this email and our team will help, including if you think this is a mistake.'
                   : 'If you think this is a mistake, reply to this email.',
               ],
-        buttonLabel: 'Your account',
-        url: `${env.FRONTEND_URL.replace(/\/+$/, '')}/account`,
+        buttonLabel: hostApplicant ? 'Go to Hosting' : 'Your account',
+        url: `${siteUrl}${hostApplicant ? '/host' : '/account'}`,
       },
     },
     dedupeKey: `IDENTITY_REVIEWED:${user.id}:${now.getTime()}`,
