@@ -60,6 +60,10 @@ Demo Guests have verified mobiles and approved licence details, so they can book
 | `npm run photos:placeholders`                     | Gives listing photos uploaded before 14/10/2026 their blurred placeholder, once (in production: `DEPLOYING_UPDATES.md`, section 9). Safe to re-run                           |
 | `npm run email:dev`                               | Previews every email template in the browser on http://localhost:3030, with sample details. Nothing is sent.                                                                 |
 | `npm run email:test -- you@example.com`           | Sends the welcome email through the configured mailer                                                                                                                        |
+| `npm run stripe:check`                            | Validates Stripe account capabilities, settlement currency (NZD), and webhook endpoint events                                                                                |
+| `npm run stripe:setup`                            | Configures Stripe webhook endpoints and payment method domains for sandbox/staging/production                                                                                |
+| `npm run load:seed`                               | Seeds 10,000 synthetic vehicles across 15 NZ cities for k6 load and stress testing (`scripts/seed-load-test.ts`)                                                              |
+| `npm run security:check`                          | Runs automated 8-point security and compliance check (JWT, CORS, NoSQL injection, AES-256-GCM, TOTP 2FA, CSP, CSRF, rate limits)                                              |
 | `npm run format`                                  | Prettier                                                                                                                                                                     |
 
 ## Data model

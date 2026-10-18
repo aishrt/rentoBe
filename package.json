@@ -22,7 +22,9 @@
     "email:test": "tsx scripts/send-test-email.ts",
     "email:dev": "tsx watch scripts/email-preview.ts",
     "stripe:check": "tsx scripts/stripe-check.ts",
-    "stripe:setup": "tsx scripts/stripe-setup.ts"
+    "stripe:setup": "tsx scripts/stripe-setup.ts",
+    "load:seed": "tsx scripts/seed-load-test.ts",
+    "security:check": "tsx scripts/security-check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1144.0",
