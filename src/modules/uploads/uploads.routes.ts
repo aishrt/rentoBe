@@ -165,7 +165,11 @@ export function filesRouter() {
     const cacheControl = `private, max-age=${left}`;
     const download = await getStorage().downloadUrl(key, left);
     if (download) {
-      res.set('Cache-Control', cacheControl).redirect(302, download);
+      res
+        .set('Cache-Control', cacheControl)
+        // The website shows these images from another subdomain; the browser checks this on the redirect too.
+        .set('Cross-Origin-Resource-Policy', 'same-site')
+        .redirect(302, download);
       return;
     }
     await sendLocalFile(res, key, cacheControl);
