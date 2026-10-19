@@ -24,6 +24,11 @@ export interface AddressDetails {
   label: string;
   lat: number;
   lng: number;
+  /** The parts Google knows, even without a street, so a suburb or town from Google fills in an address. */
+  suburb?: string;
+  city?: string;
+  region?: NzRegion;
+  postcode?: string;
   /** Filled in when Google has every part an NZ address needs (plan §3). */
   address?: {
     unit?: string;
@@ -132,28 +137,33 @@ export function createGooglePlaces(apiKey: string, fetchImpl: typeof fetch = fet
       const part = (type: string) =>
         place.addressComponents?.find((component) => component.types?.includes(type));
       const street = part('route')?.longText;
+      const suburb = (part('sublocality_level_1') ?? part('sublocality'))?.longText;
       const city = (part('locality') ?? part('postal_town'))?.longText;
       const region = toRegion(part('administrative_area_level_1')?.longText);
       const postcode = part('postal_code')?.longText;
+      const nzPostcode = postcode && /^\d{4}$/.test(postcode) ? postcode : undefined;
 
       return {
         placeId: place.id,
         label: (place.formattedAddress ?? '').replace(/, New Zealand$/, ''),
         lat: place.location.latitude,
         lng: place.location.longitude,
+        ...(suburb && { suburb }),
+        ...(city && { city }),
+        ...(region && { region }),
+        ...(nzPostcode && { postcode: nzPostcode }),
         ...(street &&
           city &&
           region &&
-          postcode &&
-          /^\d{4}$/.test(postcode) && {
+          nzPostcode && {
             address: {
               unit: part('subpremise')?.longText,
               streetNumber: part('street_number')?.longText,
               street,
-              suburb: (part('sublocality_level_1') ?? part('sublocality'))?.longText,
+              suburb,
               city,
               region,
-              postcode,
+              postcode: nzPostcode,
             },
           }),
       };

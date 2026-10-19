@@ -4276,6 +4276,14 @@
           "lng": {
             "type": "number"
           },
+          "suburb": {
+            "type": "string",
+            "description": "Google places: the suburb, when Google knows it, even without a street"
+          },
+          "postcode": {
+            "type": "string",
+            "description": "Google places: the 4-digit postcode, when Google knows it"
+          },
           "address": {
             "type": "object",
             "properties": {

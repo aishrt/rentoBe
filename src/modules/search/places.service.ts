@@ -168,6 +168,11 @@ export async function placeDetails(id: string, sessionToken?: string): Promise<P
         ? [details.address.streetNumber, details.address.street].filter(Boolean).join(' ')
         : details.label,
       label: details.label,
+      // A suburb or town from Google has no street, but its parts still fill in an address form.
+      ...(details.suburb && { suburb: details.suburb }),
+      ...(details.city && { city: details.city }),
+      ...(details.region && { region: details.region }),
+      ...(details.postcode && { postcode: details.postcode }),
       lat: details.lat,
       lng: details.lng,
       ...(details.address && { address: details.address }),
