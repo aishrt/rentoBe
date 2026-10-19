@@ -154,6 +154,8 @@ export const platformSettingsSchema = z.object({
     windowDays: z.number().int().min(1),
     /** Both reviews are revealed together, so neither side can retaliate. */
     revealTogether: z.boolean(),
+    /** Every review waits for a moderator's approval before it's published (spec §16). */
+    requireApproval: z.boolean(),
     /** Published reviews needed before the homepage shows the reviews section. */
     homepageThreshold: count,
   }),

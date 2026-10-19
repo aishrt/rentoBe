@@ -20,7 +20,7 @@ export function registerReviewPaths(registry: OpenAPIRegistry) {
     tags: ['Reviews'],
     summary: 'Review a completed trip',
     description:
-      'The Guest reviews the Host and car (cleanliness), the Host reviews the Guest (care), once each, within the review window. Both are published together once both are in, or when the window closes; with the `revealTogether` setting off, each is published as soon as it’s written. A review with contact details, links or abusive language waits for a moderator. `otherPublished` says whether the other side’s review is published now.',
+      'The Guest reviews the Host and car (cleanliness), the Host reviews the Guest (care), once each, within the review window. Both are published together once both are in, or when the window closes; with the `revealTogether` setting off, each is published as soon as it’s written. With the `requireApproval` setting on (the default), every review waits for a moderator; otherwise only a review with contact details, links or abusive language does. `otherPublished` says whether the other side’s review is published now.',
     security: signedIn,
     request: { body: jsonBody(reviewInputSchema) },
     responses: {

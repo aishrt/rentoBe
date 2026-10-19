@@ -109,6 +109,7 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
   reviews: {
     windowDays: 14,
     revealTogether: true,
+    requireApproval: true,
     homepageThreshold: 10,
   },
   trips: {

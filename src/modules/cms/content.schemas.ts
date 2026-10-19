@@ -116,6 +116,9 @@ export const publicPoliciesSchema = z
         description:
           'Whether a review waits for the other side’s (or the window to close) before it’s published, so the copy can say so',
       }),
+      requireApproval: z.boolean().meta({
+        description: 'Whether a moderator approves every review before it’s published, so the copy can say so',
+      }),
     }),
     trips: z.object({ lateReturnGraceMinutes: z.number().int() }),
   })
