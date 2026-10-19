@@ -99,6 +99,10 @@ describe('Google Places driver', () => {
       label: '12 The Square, Palmerston North Central, Palmerston North 4410',
       lat: -40.3523,
       lng: 175.6082,
+      suburb: 'Palmerston North Central',
+      city: 'Palmerston North',
+      region: 'Manawatū-Whanganui',
+      postcode: '4410',
       address: {
         unit: undefined,
         streetNumber: '12',
@@ -134,6 +138,32 @@ describe('Google Places driver', () => {
       json({ error: { code: 404, status: 'NOT_FOUND' } }, 404),
     );
     expect(await missing.details('ChIJgone')).toBeNull();
+  });
+
+  it('gives the suburb, town, region and postcode of a place without a street', async () => {
+    const ponsonby = {
+      id: 'ChIJponsonby',
+      formattedAddress: 'Ponsonby, Auckland 1011, New Zealand',
+      location: { latitude: -36.856, longitude: 174.744 },
+      addressComponents: [
+        { longText: 'Ponsonby', types: ['sublocality_level_1', 'sublocality', 'political'] },
+        { longText: 'Auckland', types: ['locality', 'political'] },
+        { longText: 'Auckland', types: ['administrative_area_level_1', 'political'] },
+        { longText: '1011', types: ['postal_code'] },
+      ],
+    };
+    const google = createGooglePlaces('test-key-0123456789abcdef', async () => json(ponsonby));
+
+    expect(await google.details('ChIJponsonby')).toEqual({
+      placeId: 'ChIJponsonby',
+      label: 'Ponsonby, Auckland 1011',
+      lat: -36.856,
+      lng: 174.744,
+      suburb: 'Ponsonby',
+      city: 'Auckland',
+      region: 'Auckland',
+      postcode: '1011',
+    });
   });
 
   it('throws when Google refuses the key, so the caller can fall back', async () => {
@@ -242,5 +272,32 @@ describe('Searching from a street address with Google switched on', () => {
     expect(failed.status).toBe(503);
     expect(failed.body.error.code).toBe('PLACES_UNAVAILABLE');
     expect((await request(app).get('/api/v1/places/google:ChIJqueen')).status).toBe(200);
+  });
+
+  it('gives the parts of a Google place without a street, so an address form can fill them in', async () => {
+    fakeGoogle.details.mockResolvedValue({
+      placeId: 'ChIJponsonby',
+      label: 'Ponsonby, Auckland 1011',
+      lat: -36.856,
+      lng: 174.744,
+      suburb: 'Ponsonby',
+      city: 'Auckland',
+      region: 'Auckland',
+      postcode: '1011',
+    });
+    const response = await request(app).get('/api/v1/places/google:ChIJponsonby');
+    expect(response.status).toBe(200);
+    expect(response.body.place).toEqual({
+      id: 'google:ChIJponsonby',
+      type: 'ADDRESS',
+      name: 'Ponsonby, Auckland 1011',
+      label: 'Ponsonby, Auckland 1011',
+      suburb: 'Ponsonby',
+      city: 'Auckland',
+      region: 'Auckland',
+      postcode: '1011',
+      lat: -36.856,
+      lng: 174.744,
+    });
   });
 });

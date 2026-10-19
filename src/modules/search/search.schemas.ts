@@ -54,6 +54,14 @@ export const placeDetailsSchema = placeSuggestionSchema
   .extend({
     lat: z.number(),
     lng: z.number(),
+    suburb: z
+      .string()
+      .optional()
+      .meta({ description: 'Google places: the suburb, when Google knows it, even without a street' }),
+    postcode: z
+      .string()
+      .optional()
+      .meta({ description: 'Google places: the 4-digit postcode, when Google knows it' }),
     address: nzAddressInputSchema
       .optional()
       .meta({ description: 'A street address in the structured NZ format, when every part is known' }),
