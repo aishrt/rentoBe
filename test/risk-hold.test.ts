@@ -36,7 +36,13 @@ describe('raising a flag', () => {
     const guest = await createUser();
     expect(await raiseRiskFlag(guest._id, 'SHARED_CARD', 'Card used by 1 other account')).toBe(true);
     expect(await raiseRiskFlag(guest._id, 'SHARED_CARD', 'Card used by 1 other account')).toBe(false);
-    expect(await NotificationModel.countDocuments({ userId: admin._id, type: 'RISK_FLAG_RAISED' })).toBe(1);
+    expect(
+      await NotificationModel.countDocuments({
+        userId: admin._id,
+        type: 'RISK_FLAG_RAISED',
+        channel: 'IN_APP',
+      }),
+    ).toBe(1);
   });
 });
 
