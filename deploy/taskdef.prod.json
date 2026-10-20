@@ -24,7 +24,8 @@
         { "name": "ADMIN_EMAIL", "value": "rentovroom@gmail.com" },
         { "name": "SENTRY_ENVIRONMENT", "value": "production" },
         { "name": "MAIL_DRIVER", "value": "resend" },
-        { "name": "SMS_DRIVER", "value": "dummy" },
+        { "name": "SMS_DRIVER", "value": "twilio" },
+        { "name": "TWILIO_MESSAGING_SERVICE_SID", "value": "MG97651488b96e8e43aa715dc0ba8e104a" },
         { "name": "API_PUBLIC_URL", "value": "https://api.rentovroom.com" },
         { "name": "PLACES_DRIVER", "value": "google" },
         { "name": "UPLOAD_DRIVER", "value": "s3" },
@@ -68,10 +69,6 @@
         {
           "name": "TWILIO_VERIFY_SERVICE_SID",
           "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:TWILIO_VERIFY_SERVICE_SID::"
-        },
-        {
-          "name": "SMS_DUMMY_CODE",
-          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:935937182366:secret:rento-vroom/prod-Jd9Q8D:SMS_DUMMY_CODE::"
         },
         {
           "name": "STRIPE_SECRET_KEY",
