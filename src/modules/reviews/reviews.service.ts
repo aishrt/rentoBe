@@ -301,7 +301,9 @@ export async function submitReview(
         : 'Rate how they looked after the car',
     });
   }
-  const reason = moderationReason(input.body);
+  // With approval required, every review is held for a moderator; the content checks give a sharper reason.
+  const reason =
+    moderationReason(input.body) ?? (settings.reviews.requireApproval ? 'Awaiting admin approval' : null);
   let created;
   try {
     created = await ReviewModel.create({

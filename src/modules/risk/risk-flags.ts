@@ -1,4 +1,6 @@
 import mongoose, { type ClientSession, type Types } from 'mongoose';
+import { logger } from '../../integrations/logger.js';
+import { alertStaff } from '../staff/staff-alerts.js';
 import { UserModel } from '../users/user.model.js';
 
 /**
@@ -13,6 +15,8 @@ export const RISK_FLAG_CODES = [
   'CARD_COUNTRY',
   'RADAR_WARNING',
   'REPEATED_REPORTS',
+  'SHARED_CARD',
+  'NEW_ACCOUNT_HIGH_VALUE',
 ] as const;
 export type RiskFlagCode = (typeof RISK_FLAG_CODES)[number];
 
@@ -31,5 +35,19 @@ export async function raiseRiskFlag(
     { $push: { riskFlags: { code, detail, createdAt: now } } },
     { session },
   );
-  return result.modifiedCount > 0;
+  if (result.modifiedCount === 0) return false;
+  // Staff hear of it at once, once per flag; a failed alert never undoes the flag.
+  const alert = alertStaff(
+    {
+      type: 'RISK_FLAG_RAISED',
+      title: 'A risk flag needs a look',
+      body: `${detail}.`,
+      link: '/admin/risk',
+      dedupeKey: `RISK_FLAG:${userId.toString()}:${code}:${now.getTime()}`,
+    },
+    { session },
+  );
+  if (session) await alert;
+  else await alert.catch((error: unknown) => logger.warn({ err: error, code }, 'Risk alert not sent'));
+  return true;
 }

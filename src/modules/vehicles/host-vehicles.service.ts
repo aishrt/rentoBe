@@ -20,6 +20,7 @@ import { BookingModel } from '../bookings/booking.model.js';
 import { hostAnswers } from '../bookings/booking-view.js';
 import { notify } from '../notifications/notify.js';
 import { PlaceModel } from '../search/place.model.js';
+import { alertStaff } from '../staff/staff-alerts.js';
 import { discardFiles, uploadFolder } from '../uploads/upload-folders.js';
 import { UserModel } from '../users/user.model.js';
 import type { HostVehicleView, VehiclePatch } from './host-vehicles.schemas.js';
@@ -765,6 +766,15 @@ export async function submitVehicle(userId: string, id: string, ip?: string): Pr
         url: `${siteUrl()}/host/vehicles/${vehicle.id}`,
       },
     },
+  });
+  // The review queue is staff's to work, so tell them it has a new car (plan §7, admin alerts). Each
+  // submission alerts once, so a resubmit after changes were requested alerts again.
+  await alertStaff({
+    type: 'LISTING_SUBMITTED_STAFF',
+    title: `New car to review: ${vehicleTitle(vehicle)}`,
+    body: `${user.firstName} submitted their ${vehicleTitle(vehicle)} for review. Check its details, photos and documents, then approve it or request changes.`,
+    link: `/admin/vehicles/${vehicle.id}`,
+    dedupeKey: `LISTING_SUBMITTED_STAFF:${vehicle.id}:${Date.now()}`,
   });
   return toHostVehicleView(vehicle, settings);
 }

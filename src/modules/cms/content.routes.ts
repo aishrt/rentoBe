@@ -154,7 +154,11 @@ export function policiesRouter() {
       vehicles: settings.vehicles,
       search: settings.search,
       hostEstimator: settings.hostEstimator,
-      reviews: { windowDays: settings.reviews.windowDays, revealTogether: settings.reviews.revealTogether },
+      reviews: {
+        windowDays: settings.reviews.windowDays,
+        revealTogether: settings.reviews.revealTogether,
+        requireApproval: settings.reviews.requireApproval,
+      },
       trips: { lateReturnGraceMinutes: settings.trips.lateReturnGraceMinutes },
     };
     cacheable(res).json(policies);
