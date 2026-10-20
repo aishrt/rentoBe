@@ -133,6 +133,10 @@ export const DEFAULT_SETTINGS: PlatformSettings = {
     bookingsPerDay: 5,
     reportsBeforeFlag: 3,
     hostCancellationsPer90Days: 3,
+    autoHoldEnabled: true,
+    holdScore: 3,
+    newAccountHours: 24,
+    newAccountHighValueCents: 150000,
   },
   sms: {
     quietHoursStart: '21:00',

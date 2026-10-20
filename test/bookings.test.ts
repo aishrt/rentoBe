@@ -1571,3 +1571,34 @@ describe('Trips and bookings lists', () => {
     expect(parseNzDateTime(nzDay(15))).not.toBeNull();
   });
 });
+
+describe('Risk hold at checkout', () => {
+  it('stops a Guest whose open risk flags reach the hold score, until staff clear them', async () => {
+    const { vehicle } = await hostWithCar(true);
+    const { guest, agent } = await readyGuest();
+    await UserModel.updateOne(
+      { _id: guest._id },
+      {
+        $push: {
+          riskFlags: {
+            $each: [
+              { code: 'RADAR_WARNING', createdAt: new Date() },
+              { code: 'CARD_COUNTRY', createdAt: new Date() },
+            ],
+          },
+        },
+      },
+    );
+    const held = await agent.post('/api/v1/bookings').send(trip(vehicle.id));
+    expect(held.status).toBe(409);
+    expect(held.body.error.code).toBe('ACCOUNT_UNDER_REVIEW');
+
+    // Staff clear the Radar flag: the score drops to 1 and checkout opens again.
+    await UserModel.updateOne(
+      { _id: guest._id, 'riskFlags.code': 'RADAR_WARNING' },
+      { $set: { 'riskFlags.$.clearedAt': new Date() } },
+    );
+    const open = await agent.post('/api/v1/bookings').send(trip(vehicle.id));
+    expect(open.status).toBe(201);
+  });
+});

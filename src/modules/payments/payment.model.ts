@@ -89,6 +89,8 @@ export interface Payment {
    * updatedAt) doesn't change it. Payments recorded before this field existed have none.
    */
   succeededAt?: Date;
+  /** The card's Stripe fingerprint, set by the risk check: the same card on other accounts is a risk signal. */
+  cardFingerprint?: string;
   refunds: Refund[];
   dispute?: Dispute;
   createdAt: Date;
@@ -120,6 +122,7 @@ const paymentSchema = new Schema<Payment>(
     method: String,
     failureReason: String,
     succeededAt: Date,
+    cardFingerprint: String,
     refunds: { type: [refundSchema], default: [] },
     dispute: {
       type: new Schema<Dispute>(
@@ -148,6 +151,7 @@ paymentSchema.pre('save', function stampSucceededAt() {
 
 paymentSchema.index({ stripePaymentIntentId: 1 }, { unique: true });
 paymentSchema.index({ bookingId: 1 });
+paymentSchema.index({ cardFingerprint: 1 }, { sparse: true });
 paymentSchema.index({ status: 1, createdAt: -1 });
 
 export const PaymentModel = model<Payment>('Payment', paymentSchema);

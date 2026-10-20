@@ -2133,6 +2133,25 @@
               "hostCancellationsPer90Days": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "autoHoldEnabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "holdScore": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 3
+              },
+              "newAccountHours": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 24
+              },
+              "newAccountHighValueCents": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 150000
               }
             },
             "required": [
@@ -3080,6 +3099,25 @@
               "hostCancellationsPer90Days": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "autoHoldEnabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "holdScore": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 3
+              },
+              "newAccountHours": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 24
+              },
+              "newAccountHighValueCents": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 150000
               }
             },
             "required": [

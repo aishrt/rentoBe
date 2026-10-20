@@ -3,6 +3,7 @@ import type Stripe from 'stripe';
 import { stripe } from '../../integrations/stripe.js';
 import { enqueue } from '../../jobs/queue.js';
 import { countryName } from '../../lib/countries.js';
+import { formatNzdExact } from '../../lib/format.js';
 import { getPlatformSettings } from '../admin/platform-settings.service.js';
 import { BookingModel } from '../bookings/booking.model.js';
 import { notAbandonedCheckout } from '../bookings/made-bookings.js';
@@ -15,8 +16,8 @@ import { raiseRiskFlag } from './risk-flags.js';
 /*
  * The payment and booking signals behind risk flags (plan §9 Days 20–22, §14): many failed payments in a
  * day, many bookings in a day, a card from another country than the account, and Stripe Radar's warnings.
- * A flag only puts the person in the admins' risk queue; nothing is blocked automatically (that is the
- * later advanced fraud work, roadmap R12).
+ * A flag puts the person in the admins' risk queue and alerts staff. Flags add up to a score, and a Guest
+ * whose open flags reach the hold score can't start a new checkout until staff clear them (risk-policy.ts).
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -84,6 +85,27 @@ export async function queuePaymentRiskCheck(paymentId: string, session: ClientSe
 }
 
 /**
+ * A new booking from an account only a day or so old, for a lot of money, raises NEW_ACCOUNT_HIGH_VALUE.
+ * The booking itself goes ahead; the flag adds to the Guest's score.
+ */
+export async function checkNewAccountValue(
+  guest: { _id: Types.ObjectId; createdAt: Date },
+  booking: { ref: string; totalCents: number },
+  now = new Date(),
+) {
+  const settings = await getPlatformSettings();
+  const ageMs = now.getTime() - guest.createdAt.getTime();
+  if (ageMs > settings.risk.newAccountHours * 60 * 60 * 1000) return;
+  if (booking.totalCents < settings.risk.newAccountHighValueCents) return;
+  await raiseRiskFlag(
+    guest._id,
+    'NEW_ACCOUNT_HIGH_VALUE',
+    `${booking.ref} is ${formatNzdExact(booking.totalCents)} from an account under ${settings.risk.newAccountHours} hours old`,
+    { now },
+  );
+}
+
+/**
  * `risk.paymentCheck`: reads the card's country and Radar's verdict from the payment's charge. A card
  * issued outside NZ and outside the country of the Guest's licence raises CARD_COUNTRY; Radar's elevated
  * or highest risk, or a manual review, raises RADAR_WARNING.
@@ -98,6 +120,27 @@ export async function checkPaymentRisk(paymentId: string, now = new Date()) {
   });
   const charge = intent.latest_charge as Stripe.Charge | string | null;
   if (!charge || typeof charge === 'string') return;
+
+  const fingerprint = charge.payment_method_details?.card?.fingerprint;
+  if (fingerprint) {
+    await PaymentModel.updateOne({ _id: payment._id }, { $set: { cardFingerprint: fingerprint } });
+    // The same card on another Guest's booking.
+    const sameCard = await PaymentModel.find({ cardFingerprint: fingerprint, _id: { $ne: payment._id } })
+      .select('bookingId')
+      .lean();
+    const others = await BookingModel.distinct('guestId', {
+      _id: mongoose.trusted({ $in: sameCard.map((other) => other.bookingId) }),
+      guestId: mongoose.trusted({ $ne: booking.guestId }),
+    });
+    if (others.length > 0) {
+      await raiseRiskFlag(
+        booking.guestId,
+        'SHARED_CARD',
+        `The card used for ${booking.ref} was also used by ${others.length} other account${others.length === 1 ? '' : 's'}`,
+        { now },
+      );
+    }
+  }
 
   const cardCountry = charge.payment_method_details?.card?.country;
   if (cardCountry && cardCountry !== 'NZ') {

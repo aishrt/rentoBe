@@ -19,7 +19,8 @@ import { bookingPayment } from '../payments/booking-payment.js';
 import { PaymentModel, isChargedBack, type PaymentDocument } from '../payments/payment.model.js';
 import { hostPartOf, tripPayoutOnCancel } from '../payouts/payouts.service.js';
 import { ReviewModel } from '../reviews/review.model.js';
-import { checkBookingVelocity } from '../risk/risk-signals.js';
+import { assertNotOnRiskHold } from '../risk/risk-policy.js';
+import { checkBookingVelocity, checkNewAccountValue } from '../risk/risk-signals.js';
 import { alertStaff } from '../staff/staff-alerts.js';
 import {
   eligibilityProblems,
@@ -146,6 +147,8 @@ export async function createBooking(
   }).sort({ createdAt: -1 });
 
   const settings = await getPlatformSettings();
+  // Open risk flags that add up to the hold score stop a new checkout until staff clear them (plan §14).
+  assertNotOnRiskHold(guest, settings);
   const trip = await evaluateTrip(vehicle, input, {
     settings,
     hostGstRegistered: host.hostProfile?.gstRegistered ?? false,
@@ -265,6 +268,11 @@ export async function createBooking(
       if (previousPayment) await cancelIntent(previousPayment).catch(() => undefined);
       // Many bookings in a day goes to the admins' risk queue (plan §14); it never stops this one.
       await checkBookingVelocity(guest._id, now).catch(() => undefined);
+      await checkNewAccountValue(
+        guest,
+        { ref: created.ref, totalCents: created.price.totalCents },
+        now,
+      ).catch(() => undefined);
       return created;
     } catch (error) {
       // Two bookings drew the same reference; draw again.

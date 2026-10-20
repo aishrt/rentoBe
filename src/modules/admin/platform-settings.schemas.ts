@@ -196,6 +196,12 @@ export const platformSettingsSchema = z.object({
     bookingsPerDay: z.number().int().min(1),
     reportsBeforeFlag: z.number().int().min(1),
     hostCancellationsPer90Days: z.number().int().min(1),
+    /** A Guest whose open flags add up to `holdScore` can't start a new checkout until staff clear them. */
+    autoHoldEnabled: z.boolean().default(true),
+    holdScore: z.number().int().min(1).default(3),
+    /** An account this new booking this much or more raises NEW_ACCOUNT_HIGH_VALUE. */
+    newAccountHours: z.number().int().min(1).default(24),
+    newAccountHighValueCents: wholeCents.default(150000),
   }),
   /** Non-urgent SMS in these NZ hours wait until the end (plan §7). */
   sms: z.object({ quietHoursStart: timeOfDay, quietHoursEnd: timeOfDay }),
