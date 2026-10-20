@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { JobContext } from '../src/jobs/handlers/index.js';
 import { reviewRequestJob, revealReviewsJob } from '../src/jobs/handlers/trip-jobs.js';
 import { JobModel } from '../src/jobs/job.model.js';
@@ -61,6 +61,15 @@ async function setReviewWindow(windowDays: number) {
   );
 }
 
+/** Staff turn the approve-every-review setting on or off in Platform settings. */
+async function setRequireApproval(requireApproval: boolean) {
+  await PlatformSettingsModel.updateOne(
+    { _id: PLATFORM_SETTINGS_ID },
+    { $set: { 'settings.reviews.requireApproval': requireApproval } },
+    { upsert: true },
+  );
+}
+
 const guestReview = (ref: string, body = 'Spotless car and a friendly host.') => ({
   bookingRef: ref,
   overall: 5,
@@ -80,6 +89,11 @@ describe('moderation rules', () => {
 });
 
 describe('two-way reviews', () => {
+  // Approval is on by default; these tests cover the rules that apply with it off.
+  beforeEach(async () => {
+    await setRequireApproval(false);
+  });
+
   it('stay hidden until both sides have reviewed, then publish together and update the ratings', async () => {
     const { booking, guestAgent, hostAgent, host, vehicle, guest } = await completedTrip();
     await ReviewModel.create({
