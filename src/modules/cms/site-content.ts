@@ -68,6 +68,20 @@ export const DEFAULT_FOOTER: SiteFooter = {
         { label: 'Guest agreement', href: '/guest-agreement' },
       ],
     },
+    {
+      title: 'Policies',
+      links: [
+        { label: 'Community guidelines', href: '/community-guidelines' },
+        { label: 'Refund policy', href: '/refund-policy' },
+        { label: 'Vehicle eligibility', href: '/vehicle-eligibility' },
+        { label: 'Driver eligibility', href: '/driver-eligibility' },
+        { label: 'Payment & fees', href: '/payment-and-fees' },
+        { label: 'Damage & claims', href: '/damage-and-claims' },
+        { label: 'Security deposit', href: '/security-deposit' },
+        { label: 'Prohibited uses', href: '/prohibited-uses' },
+        { label: 'Late returns & charges', href: '/late-returns-and-charges' },
+      ],
+    },
   ],
   socialLinks: [{ label: 'Instagram', href: 'https://www.instagram.com/rento_vroom' }],
 };

@@ -88,6 +88,7 @@ describe('Public content', () => {
       'Host',
       'Support',
       'Legal',
+      'Policies',
     ]);
     expect(footer.body.footer.groups[2].links[0]).toEqual({ label: 'Help centre', href: '/help' });
 

@@ -32,7 +32,7 @@ import { DEMO_VEHICLES, REVIEW_VEHICLE, buildDemoVehicle } from './demo-vehicles
 import { DESTINATIONS } from './destinations.js';
 import { FAQS } from './faqs.js';
 import { HELP_ARTICLES } from './help-articles.js';
-import { LEGAL_PAGES, PLACEHOLDER_MARKER } from './legal.js';
+import { DRAFT_MARKER, LEGAL_PAGES, PLACEHOLDER_MARKER } from './legal.js';
 import { CITIES, VISITOR_DESTINATIONS } from './places.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -157,10 +157,11 @@ export async function seedReferenceData() {
   }
   for (const page of LEGAL_PAGES) {
     created.cmsBlocks += await createIfMissing(CmsBlockModel, { key: page.key }, page);
-    // The placeholder text became a full draft on 24/10/2026. Replaced only while the page still has the
-    // placeholder, so a published version (an admin's or the legal adviser's) is never overwritten.
+    // The placeholder text became a full draft, then final text, on 24/10/2026. Replaced only while the page
+    // still has the placeholder or the draft's markers, so a published version (an admin's or the legal
+    // adviser's) is never overwritten.
     await CmsBlockModel.updateOne(
-      { key: page.key, 'content.markdown': new RegExp(PLACEHOLDER_MARKER) },
+      { key: page.key, 'content.markdown': new RegExp(`${PLACEHOLDER_MARKER}|${DRAFT_MARKER}`) },
       { $set: { content: page.content } },
     );
   }
