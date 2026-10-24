@@ -70,7 +70,7 @@ describe('Public content', () => {
     ]);
     const terms = await request(app).get('/api/v1/cms/legal.terms');
     expect(terms.body.page).toMatchObject({ key: 'legal.terms', title: 'Terms & Conditions' });
-    expect(terms.body.page.markdown).toContain('placeholder');
+    expect(terms.body.page.markdown).toContain('Draft for legal review');
     expect((await request(app).get('/api/v1/cms/home.featured-vehicles')).status).toBe(404);
     expect((await request(app).get('/api/v1/cms/home.featured-reviews')).status).toBe(404);
   });
@@ -80,7 +80,9 @@ describe('Public content', () => {
     expect(hero.body.hero.headline).toBe('Rent a car from local owners across New Zealand.');
     expect(hero.headers['cache-control']).toBe('public, max-age=60');
     const footer = await request(app).get('/api/v1/cms/site.footer');
-    expect(footer.body.footer.socialLinks).toEqual([]);
+    expect(footer.body.footer.socialLinks).toEqual([
+      { label: 'Instagram', href: 'https://www.instagram.com/rento_vroom' },
+    ]);
     expect(footer.body.footer.groups.map((group: { title: string }) => group.title)).toEqual([
       'Rent',
       'Host',

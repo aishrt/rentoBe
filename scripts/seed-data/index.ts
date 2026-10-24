@@ -32,7 +32,7 @@ import { DEMO_VEHICLES, REVIEW_VEHICLE, buildDemoVehicle } from './demo-vehicles
 import { DESTINATIONS } from './destinations.js';
 import { FAQS } from './faqs.js';
 import { HELP_ARTICLES } from './help-articles.js';
-import { LEGAL_PAGES } from './legal.js';
+import { LEGAL_PAGES, PLACEHOLDER_MARKER } from './legal.js';
 import { CITIES, VISITOR_DESTINATIONS } from './places.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -140,8 +140,29 @@ export async function seedReferenceData() {
   for (const article of HELP_ARTICLES) {
     created.helpArticles += await createIfMissing(HelpArticleModel, { slug: article.slug }, article);
   }
+  // The button is "Report an incident", not "Report an issue" (24/10/2026). Corrects the seeded text only
+  // while it still has the original wording, so an admin's own edit is never overwritten.
+  const incidentFaq = FAQS.find((faq) => faq.question === 'What should I do after an accident or damage?');
+  if (incidentFaq) {
+    await FaqModel.updateOne(
+      { question: incidentFaq.question, answer: /Report an issue/ },
+      { $set: { answer: incidentFaq.answer } },
+    );
+  }
+  for (const slug of ['reporting-an-incident', 'damage-and-claims']) {
+    const article = HELP_ARTICLES.find((candidate) => candidate.slug === slug);
+    if (article) {
+      await HelpArticleModel.updateOne({ slug, body: /Report an issue/ }, { $set: { body: article.body } });
+    }
+  }
   for (const page of LEGAL_PAGES) {
     created.cmsBlocks += await createIfMissing(CmsBlockModel, { key: page.key }, page);
+    // The placeholder text became a full draft on 24/10/2026. Replaced only while the page still has the
+    // placeholder, so a published version (an admin's or the legal adviser's) is never overwritten.
+    await CmsBlockModel.updateOne(
+      { key: page.key, 'content.markdown': new RegExp(PLACEHOLDER_MARKER) },
+      { $set: { content: page.content } },
+    );
   }
   created.platformSettings = (await ensurePlatformSettings()) ? 1 : 0;
 

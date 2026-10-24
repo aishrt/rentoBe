@@ -31,7 +31,7 @@ export const DEFAULT_HERO: HomeHero = {
     'City runabouts, family SUVs and EVs for the long way round, booked in minutes from people who live here.',
 };
 
-/** The footer's links at launch. Social accounts are empty until the client supplies them (spec §4). */
+/** The footer's links at launch, with the Instagram account the client supplied (spec §4). */
 export const DEFAULT_FOOTER: SiteFooter = {
   groups: [
     {
@@ -69,7 +69,7 @@ export const DEFAULT_FOOTER: SiteFooter = {
       ],
     },
   ],
-  socialLinks: [],
+  socialLinks: [{ label: 'Instagram', href: 'https://www.instagram.com/rento_vroom' }],
 };
 
 /** A block's content when it's saved and valid; otherwise the default. */
