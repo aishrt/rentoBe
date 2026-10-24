@@ -223,8 +223,9 @@ Message your Host straight away. A short grace period applies. After that we rem
 - **Extra distance** above the listing's limit. Large amounts are checked by our staff first.
 - **Fuel or charge**, if the car comes back below the level the listing asks for
 - **Cleaning**, if the car needs more than a normal clean
+- **Tolls, fines and tickets** from your trip. You pay these, not the Host. We either redirect the notice to you or charge its amount to your card on file.
 
-Each charge shows the reason and the evidence, such as odometer readings and photos. If you disagree, contact our support team.`,
+Each charge shows the reason and the evidence, such as odometer readings, photos or the notice. If you disagree, contact our support team.`,
   },
   {
     slug: 'fuel-distance-and-cleaning',

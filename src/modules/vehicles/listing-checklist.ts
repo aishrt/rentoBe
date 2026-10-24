@@ -89,7 +89,8 @@ export function listingChecklist(
 
   // Step 1: vehicle details.
   if (!vehicle.regoPlate) need(1, 'regoPlate', 'Add the number plate');
-  if (rules.vinOrChassisRequired && !vehicle.vin && !vehicle.chassisNo) {
+  // A number plate identifies the car, so the VIN or chassis number is only asked for without one.
+  if (rules.vinOrChassisRequired && !vehicle.regoPlate && !vehicle.vin && !vehicle.chassisNo) {
     need(1, 'vin', 'Add the VIN, or the chassis number for an import without one');
   }
   if (!vehicle.make) need(1, 'make', 'Add the make');

@@ -62,6 +62,8 @@ export const wasApproved = (vehicle: Pick<VehicleDocument, 'status' | 'keyReview
   Array.isArray(vehicle.keyChanges);
 /** Statuses that hold a plate: a plate can be on only one of these (plan §3, Validation rules). */
 const LISTED: VehicleStatus[] = ['UNDER_REVIEW', 'CHANGES_REQUESTED', 'ACTIVE', 'INACTIVE', 'SUSPENDED'];
+/** Cars older than this can't be listed (client request, Oct 2026). */
+const MAX_VEHICLE_AGE_YEARS = 15;
 const KEY_FIELDS = ['regoPlate', 'vin', 'chassisNo', 'make', 'model', 'year'] as const;
 const MAX_PHOTOS = 30;
 const MAX_DOCUMENTS = 15;
@@ -379,7 +381,11 @@ export async function patchVehicle(
   const fields: Record<string, string> = {};
 
   const nextYear = new Date().getFullYear() + 1;
+  const oldestYear = new Date().getFullYear() - MAX_VEHICLE_AGE_YEARS;
   if (patch.year !== undefined && patch.year > nextYear) fields.year = `The year can be up to ${nextYear}`;
+  else if (patch.year !== undefined && patch.year < oldestYear) {
+    fields.year = `Cars can be up to ${MAX_VEHICLE_AGE_YEARS} years old (${oldestYear} or newer)`;
+  }
   if (patch.seats !== undefined && (patch.seats < limits.seats.min || patch.seats > limits.seats.max)) {
     fields.seats = `Seats must be ${limits.seats.min}–${limits.seats.max}`;
   }

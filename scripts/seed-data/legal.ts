@@ -206,7 +206,7 @@ Return the car with the fuel or charge level and cleanliness the listing require
 
 ## 5. Tolls, fines and tickets
 
-**REQUIRES_BUSINESS_APPROVAL (D20):** who pays tolls, fines and tickets from a trip, and how they are passed on. While the car is rented to you, you are expected to deal with anything the road rules treat as yours.
+You, the Guest, pay all tolls, traffic fines, parking tickets and infringement notices incurred while the car is booked to you, from pickup to check-out. If a notice reaches the Host, the Host reports it with the notice attached. We may give the issuing authority your driver details so the notice is redirected to you, or charge the amount of the notice to your card on file, with the notice as evidence. You can reply on the case. **Needs NZ legal review:** the final clause wording.
 
 ## 6. Returning the car
 
