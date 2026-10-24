@@ -70,7 +70,7 @@ describe('Public content', () => {
     ]);
     const terms = await request(app).get('/api/v1/cms/legal.terms');
     expect(terms.body.page).toMatchObject({ key: 'legal.terms', title: 'Terms & Conditions' });
-    expect(terms.body.page.markdown).toContain('Draft for legal review');
+    expect(terms.body.page.markdown).not.toContain('REQUIRES_BUSINESS_APPROVAL');
     expect((await request(app).get('/api/v1/cms/home.featured-vehicles')).status).toBe(404);
     expect((await request(app).get('/api/v1/cms/home.featured-reviews')).status).toBe(404);
   });
@@ -109,7 +109,7 @@ describe('Public content', () => {
       headline: 'Drive Aotearoa with a local’s car.',
       subheading: 'Booked in minutes from locals.',
     });
-    expect((await request(app).get('/api/v1/cms/site.footer')).body.footer.groups).toHaveLength(4);
+    expect((await request(app).get('/api/v1/cms/site.footer')).body.footer.groups).toHaveLength(5);
   });
 
   it('lists FAQs by audience and for the homepage', async () => {
