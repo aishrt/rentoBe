@@ -217,7 +217,7 @@ describe('homepage text and footer links', () => {
     const admin = await staffAgent();
     const original = await admin.get('/api/v1/admin/content/footer');
     expect(original.body.saved).toBe(false);
-    expect(original.body.footer.groups).toHaveLength(4);
+    expect(original.body.footer.groups).toHaveLength(5);
 
     const footer = {
       groups: [
